@@ -81,8 +81,6 @@ int main (int argc, char **argv)
 	static char usestr[] = "Usage: diskview [-v] filename";
 	int i;
 
-	util_io_init();
-
 	for (i = 1; i < argc;) {
 		arg = argv[i++];
 		if (*arg == '-') {

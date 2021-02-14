@@ -59,7 +59,8 @@ BSC32=bscmake.exe
 # ADD BSC32 /nologo
 BSC32_FLAGS=/nologo /o$(OUTDIR)/"mkboot.bsc" 
 BSC32_SBRS= \
-	$(INTDIR)/mkboot.sbr
+	$(INTDIR)/mkboot.sbr \
+	$(INTDIR)/util_io.sbr
 
 $(OUTDIR)/mkboot.bsc : $(OUTDIR)  $(BSC32_SBRS)
     $(BSC32) @<<
@@ -74,7 +75,8 @@ LINK32_FLAGS=kernel32.lib user32.lib gdi32.lib /NOLOGO /SUBSYSTEM:console\
  /OUT:$(OUTDIR)/"mkboot.exe" 
 DEF_FILE=
 LINK32_OBJS= \
-	$(INTDIR)/mkboot.obj
+	$(INTDIR)/mkboot.obj \
+	$(INTDIR)/util_io.obj
 
 $(OUTDIR)/mkboot.exe : $(OUTDIR)  $(DEF_FILE) $(LINK32_OBJS)
     $(LINK32) @<<
@@ -112,7 +114,8 @@ BSC32=bscmake.exe
 # ADD BSC32 /nologo
 BSC32_FLAGS=/nologo /o$(OUTDIR)/"mkboot.bsc" 
 BSC32_SBRS= \
-	$(INTDIR)/mkboot.sbr
+	$(INTDIR)/mkboot.sbr \
+	$(INTDIR)/util_io.sbr
 
 $(OUTDIR)/mkboot.bsc : $(OUTDIR)  $(BSC32_SBRS)
     $(BSC32) @<<
@@ -127,7 +130,8 @@ LINK32_FLAGS=kernel32.lib user32.lib gdi32.lib /NOLOGO /SUBSYSTEM:console\
  /OUT:$(OUTDIR)/"mkboot.exe" 
 DEF_FILE=
 LINK32_OBJS= \
-	$(INTDIR)/mkboot.obj
+	$(INTDIR)/mkboot.obj \
+	$(INTDIR)/util_io.obj
 
 $(OUTDIR)/mkboot.exe : $(OUTDIR)  $(DEF_FILE) $(LINK32_OBJS)
     $(LINK32) @<<
@@ -154,6 +158,16 @@ $(OUTDIR)/mkboot.exe : $(OUTDIR)  $(DEF_FILE) $(LINK32_OBJS)
 SOURCE=.\mkboot.c
 
 $(INTDIR)/mkboot.obj :  $(SOURCE)  $(INTDIR)
+
+# End Source File
+################################################################################
+# Begin Source File
+
+SOURCE=.\util_io.c
+DEP_UTIL_=\
+	.\util_io.h
+
+$(INTDIR)/util_io.obj :  $(SOURCE)  $(DEP_UTIL_) $(INTDIR)
 
 # End Source File
 # End Group

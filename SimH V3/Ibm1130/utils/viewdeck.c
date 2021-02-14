@@ -14,6 +14,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include "util_io.h"
 
 #define TRUE  1
 #define FALSE 0
@@ -64,7 +65,7 @@ int main (int argc, char **argv)
 		return 1;
 	}
 
-	while (fread(buf, sizeof(short), 80, fd) == 80) {
+	while (fxread(buf, sizeof(short), 80, fd) == 80) {
 		if (coldstart) {
 			format_coldstart(buf);
 			break;
@@ -82,7 +83,7 @@ int main (int argc, char **argv)
 	}
 
 	if (coldstart) {
-		if (fread(buf, sizeof(short), 1, fd) == 1)
+		if (fxread(buf, sizeof(short), 1, fd) == 1)
 			bail("Coldstart deck has more than one card");
 	}
 

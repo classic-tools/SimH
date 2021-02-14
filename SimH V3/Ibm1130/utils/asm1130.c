@@ -13,6 +13,10 @@
 // ASM1130 - IBM 1130 Cross Assembler
 //
 // Version
+//		   1.10 - 2003Dec08 - Fixed opcode value for XCH instruction, thanks to
+//							  Roger Simpson.
+//		   1.09 - 2003Aug03 - Added fxwrite so asm will write little-endian files
+//							  on all CPUs.
 //         1.08 - 2003Mar18 - Fixed bug that complained about valid MDX displacement of +127
 //		   1.07 - 2003Jan05 - Filenames are now left in lower case. SYMBOLS.SYS stays all upper case
 //		   1.06 - 2002May02	- Fixed bug in ebdic constants (data goes into low byte)
@@ -123,6 +127,7 @@
 #include <setjmp.h>
 #include <time.h>
 #include <ctype.h>
+#include "util_io.h"
 
 // ---------------------------------------------------------------1------------------
 // DEFINITIONS
@@ -139,7 +144,7 @@
 #define MIN(a,b)       (((a) <= (b)) ? (a) : (b))
 #define MAX(a,b)       (((a) >= (b)) ? (a) : (b))
 
-#ifndef WIN32
+#ifndef _WIN32
    int strnicmp (char *a, char *b, int n);
    int strcmpi  (char *a, char *b);
 #endif
@@ -214,7 +219,7 @@ typedef enum {REALMODE_UNSPECIFIED = 0, REALMODE_STANDARD = 0x0001, REALMODE_EXT
 
 typedef enum {OUTMODE_LOAD, OUTMODE_1130, OUTMODE_1800, OUTMODE_BINARY} OUTMODE;
 
-#ifdef WIN32
+#ifdef _WIN32
 #  define OUTWRITEMODE "wb"			// write outfile in binary mode
 #  define ENDLINE      "\r\n"		// explictly write CR/LF
 #else
@@ -1306,7 +1311,7 @@ struct tag_op ops[] = {
 	"STS",	0x2800,	std_op, ALL, 		NONE,	0,
 	"STX",	0x6800,	std_op, ALL, 		NONE,	NO_IDX,
 	"WAIT",	0x3000, std_op, NONE,		NONE,	NO_ARGS,
-	"XCH",	0x1810, std_op, NONE,		NONE,	0,		// same as RTE 16
+	"XCH",	0x18D0, std_op, NONE,		NONE,	0,		// same as RTE 16, 18C0 + 10
 	"XIO",  0x0800, std_op, ALL,		NONE,	IS_DBL,
 
 	"BSC",	0x4800, bsc_op, ALL,		NONE,	0,		// branch family
@@ -1524,7 +1529,7 @@ void bincard_writecard (char *sbrk_text)
 	for (i = 0; i < 8; i++)
 		binout[j++] = ascii_to_hollerith(ident[i]);
 	
-	fwrite(binout, sizeof(binout[0]), 80, fout);		// write card image
+	fxwrite(binout, sizeof(binout[0]), 80, fout);		// write card image
 }
 
 // binard_writedata - emit an object data card
@@ -1883,7 +1888,7 @@ void proc (char *fname)
 		strcpy(curfn, fname);					// otherwise use extension specified
 
 // let's leave filename case alone even if it doesn't matter
-//#if (defined(WIN32) || defined(VMS))
+//#if (defined(_WIN32) || defined(VMS))
 //	upcase(curfn);								// only force uppercase of name on Windows and VMS
 //#endif
 
@@ -2065,7 +2070,7 @@ void startpass (int n)
 	n_literals = 0;								// literal values pending output
 	lit_tag    = 0;
 
-	if (pass == 1) {							// first pass only
+	if (pass == 1) {									// first pass only
 		for (nops = 0, p = ops; p->mnem != NULL; p++, nops++)			// count opcodes
 			;
 
@@ -2074,7 +2079,7 @@ void startpass (int n)
 		if (preload)
 			preload_symbols();
 	}
-	else {															// second pass only
+	else {												// second pass only
 		if (outfn == NULL)
 			outfn = addextn(curfn, (outmode == OUTMODE_LOAD) ? ".out" : ".bin" , NULL);
 
@@ -4446,8 +4451,7 @@ char *detab (char *instr)
 	return outstr;
 }
 
-
-#ifndef WIN32
+#ifndef _WIN32
 
 int strnicmp (char *a, char *b, int n)
 {

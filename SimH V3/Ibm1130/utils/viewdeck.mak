@@ -25,6 +25,7 @@ CFG=Win32 Debug
 
 ################################################################################
 # Begin Project
+# PROP Target_Last_Scanned "Win32 Debug"
 CPP=cl.exe
 RSC=rc.exe
 
@@ -46,9 +47,9 @@ ALL : $(OUTDIR)/viewdeck.exe $(OUTDIR)/viewdeck.bsc
 $(OUTDIR) : 
     if not exist $(OUTDIR)/nul mkdir $(OUTDIR)
 
-# ADD BASE CPP /nologo /ML /W3 /GX /YX /O2 /D "WIN32" /D "NDEBUG" /D "_CONSOLE" /FR /c
-# ADD CPP /nologo /ML /W3 /GX /YX /O2 /D "WIN32" /D "NDEBUG" /D "_CONSOLE" /FR /c
-CPP_PROJ=/nologo /ML /W3 /GX /YX /O2 /D "WIN32" /D "NDEBUG" /D "_CONSOLE"\
+# ADD BASE CPP /nologo /W3 /GX /YX /O2 /D "WIN32" /D "NDEBUG" /D "_CONSOLE" /FR /c
+# ADD CPP /nologo /W3 /GX /YX /O2 /D "WIN32" /D "NDEBUG" /D "_CONSOLE" /FR /c
+CPP_PROJ=/nologo /W3 /GX /YX /O2 /D "WIN32" /D "NDEBUG" /D "_CONSOLE"\
  /FR$(INTDIR)/ /Fp$(OUTDIR)/"viewdeck.pch" /Fo$(INTDIR)/ /c 
 CPP_OBJS=.\WinRel/
 # ADD BASE RSC /l 0x409 /d "NDEBUG"
@@ -58,7 +59,8 @@ BSC32=bscmake.exe
 # ADD BSC32 /nologo
 BSC32_FLAGS=/nologo /o$(OUTDIR)/"viewdeck.bsc" 
 BSC32_SBRS= \
-	$(INTDIR)/viewdeck.sbr
+	$(INTDIR)/viewdeck.sbr \
+	$(INTDIR)/util_io.sbr
 
 $(OUTDIR)/viewdeck.bsc : $(OUTDIR)  $(BSC32_SBRS)
     $(BSC32) @<<
@@ -73,7 +75,8 @@ LINK32_FLAGS=kernel32.lib user32.lib gdi32.lib winspool.lib comdlg32.lib\
  /PDB:$(OUTDIR)/"viewdeck.pdb" /MACHINE:I386 /OUT:$(OUTDIR)/"viewdeck.exe" 
 DEF_FILE=
 LINK32_OBJS= \
-	$(INTDIR)/viewdeck.obj
+	$(INTDIR)/viewdeck.obj \
+	$(INTDIR)/util_io.obj
 
 $(OUTDIR)/viewdeck.exe : $(OUTDIR)  $(DEF_FILE) $(LINK32_OBJS)
     $(LINK32) @<<
@@ -98,9 +101,9 @@ ALL : $(OUTDIR)/viewdeck.exe $(OUTDIR)/viewdeck.bsc
 $(OUTDIR) : 
     if not exist $(OUTDIR)/nul mkdir $(OUTDIR)
 
-# ADD BASE CPP /nologo /ML /W3 /GX /Zi /YX /Od /D "WIN32" /D "_DEBUG" /D "_CONSOLE" /FR /c
-# ADD CPP /nologo /ML /W3 /GX /Zi /YX /Od /D "WIN32" /D "_DEBUG" /D "_CONSOLE" /FR /c
-CPP_PROJ=/nologo /ML /W3 /GX /Zi /YX /Od /D "WIN32" /D "_DEBUG" /D "_CONSOLE"\
+# ADD BASE CPP /nologo /W3 /GX /Zi /YX /Od /D "WIN32" /D "_DEBUG" /D "_CONSOLE" /FR /c
+# ADD CPP /nologo /W3 /GX /Zi /YX /Od /D "WIN32" /D "_DEBUG" /D "_CONSOLE" /FR /c
+CPP_PROJ=/nologo /W3 /GX /Zi /YX /Od /D "WIN32" /D "_DEBUG" /D "_CONSOLE"\
  /FR$(INTDIR)/ /Fp$(OUTDIR)/"viewdeck.pch" /Fo$(INTDIR)/\
  /Fd$(OUTDIR)/"viewdeck.pdb" /c 
 CPP_OBJS=.\WinDebug/
@@ -111,7 +114,8 @@ BSC32=bscmake.exe
 # ADD BSC32 /nologo
 BSC32_FLAGS=/nologo /o$(OUTDIR)/"viewdeck.bsc" 
 BSC32_SBRS= \
-	$(INTDIR)/viewdeck.sbr
+	$(INTDIR)/viewdeck.sbr \
+	$(INTDIR)/util_io.sbr
 
 $(OUTDIR)/viewdeck.bsc : $(OUTDIR)  $(BSC32_SBRS)
     $(BSC32) @<<
@@ -127,7 +131,8 @@ LINK32_FLAGS=kernel32.lib user32.lib gdi32.lib winspool.lib comdlg32.lib\
  /OUT:$(OUTDIR)/"viewdeck.exe" 
 DEF_FILE=
 LINK32_OBJS= \
-	$(INTDIR)/viewdeck.obj
+	$(INTDIR)/viewdeck.obj \
+	$(INTDIR)/util_io.obj
 
 $(OUTDIR)/viewdeck.exe : $(OUTDIR)  $(DEF_FILE) $(LINK32_OBJS)
     $(LINK32) @<<
@@ -154,6 +159,16 @@ $(OUTDIR)/viewdeck.exe : $(OUTDIR)  $(DEF_FILE) $(LINK32_OBJS)
 SOURCE=.\viewdeck.c
 
 $(INTDIR)/viewdeck.obj :  $(SOURCE)  $(INTDIR)
+
+# End Source File
+################################################################################
+# Begin Source File
+
+SOURCE=.\util_io.c
+DEP_UTIL_=\
+	.\util_io.h
+
+$(INTDIR)/util_io.obj :  $(SOURCE)  $(DEP_UTIL_) $(INTDIR)
 
 # End Source File
 # End Group

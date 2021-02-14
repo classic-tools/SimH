@@ -59,7 +59,8 @@ BSC32=bscmake.exe
 # ADD BSC32 /nologo
 BSC32_FLAGS=/nologo /o$(OUTDIR)/"bindump.bsc" 
 BSC32_SBRS= \
-	$(INTDIR)/bindump.sbr
+	$(INTDIR)/bindump.sbr \
+	$(INTDIR)/util_io.sbr
 
 $(OUTDIR)/bindump.bsc : $(OUTDIR)  $(BSC32_SBRS)
     $(BSC32) @<<
@@ -74,7 +75,8 @@ LINK32_FLAGS=kernel32.lib user32.lib gdi32.lib winspool.lib comdlg32.lib\
  /MACHINE:I386 /OUT:$(OUTDIR)/"bindump.exe" 
 DEF_FILE=
 LINK32_OBJS= \
-	$(INTDIR)/bindump.obj
+	$(INTDIR)/bindump.obj \
+	$(INTDIR)/util_io.obj
 
 $(OUTDIR)/bindump.exe : $(OUTDIR)  $(DEF_FILE) $(LINK32_OBJS)
     $(LINK32) @<<
@@ -112,7 +114,8 @@ BSC32=bscmake.exe
 # ADD BSC32 /nologo
 BSC32_FLAGS=/nologo /o$(OUTDIR)/"bindump.bsc" 
 BSC32_SBRS= \
-	$(INTDIR)/bindump.sbr
+	$(INTDIR)/bindump.sbr \
+	$(INTDIR)/util_io.sbr
 
 $(OUTDIR)/bindump.bsc : $(OUTDIR)  $(BSC32_SBRS)
     $(BSC32) @<<
@@ -127,7 +130,8 @@ LINK32_FLAGS=kernel32.lib user32.lib gdi32.lib winspool.lib comdlg32.lib\
  /MACHINE:I386 /OUT:$(OUTDIR)/"bindump.exe" 
 DEF_FILE=
 LINK32_OBJS= \
-	$(INTDIR)/bindump.obj
+	$(INTDIR)/bindump.obj \
+	$(INTDIR)/util_io.obj
 
 $(OUTDIR)/bindump.exe : $(OUTDIR)  $(DEF_FILE) $(LINK32_OBJS)
     $(LINK32) @<<
@@ -154,6 +158,16 @@ $(OUTDIR)/bindump.exe : $(OUTDIR)  $(DEF_FILE) $(LINK32_OBJS)
 SOURCE=.\bindump.c
 
 $(INTDIR)/bindump.obj :  $(SOURCE)  $(INTDIR)
+
+# End Source File
+################################################################################
+# Begin Source File
+
+SOURCE=.\util_io.c
+DEP_UTIL_=\
+	.\util_io.h
+
+$(INTDIR)/util_io.obj :  $(SOURCE)  $(DEP_UTIL_) $(INTDIR)
 
 # End Source File
 # End Group

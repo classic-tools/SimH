@@ -47,8 +47,8 @@ CC = gcc -O0 -lm -I .
 # Common Libraries
 #
 BIN = 
-SIM = scp.c scp_tty.c sim_sock.c sim_tmxr.c
-SIM_INC = sim_defs.h sim_rev.h sim_sock.h sim_tmxr.h
+SIM = scp.c sim_console.c sim_fio.c sim_sock.c sim_timer.c sim_tmxr.c scp_tty.c 
+SIM_INC = scp.h sim_console.h sim_defs.h sim_fio.h sim_rev.h sim_sock.h sim_timer.h sim_tmxr.h
 
 #
 # Emulator source files and compile time options

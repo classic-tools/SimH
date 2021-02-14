@@ -50,6 +50,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include "util_io.h"
 
 #ifndef TRUE
     #define BOOL  int
@@ -57,7 +58,7 @@
     #define FALSE 0
 #endif
 
-#ifndef WIN32
+#ifndef _WIN32
     int strnicmp (char *a, char *b, int n);
     int strcmpi (char *a, char *b);
 #endif
@@ -375,7 +376,7 @@ void loaddata (char *fname)
 	if (verbose)	
 		printf("\n%s:\n", fname);
 
-	while (fread(card, sizeof(card[0]), 80, fp) > 0) {
+	while (fxread(card, sizeof(card[0]), 80, fp) > 0) {
 		unpack(card, buf);
 		verify_checksum(card);
 
@@ -653,7 +654,7 @@ char *upcase (char *str)
 	return str;
 }
 
-#ifndef WIN32
+#ifndef _WIN32
 
 int strnicmp (char *a, char *b, int n)
 {

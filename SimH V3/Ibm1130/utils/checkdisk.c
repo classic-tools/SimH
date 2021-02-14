@@ -35,7 +35,7 @@
 #include <string.h>
 #include "util_io.h"
 
-#ifdef WIN32
+#ifdef _WIN32
 #  include <io.h> 
 #else
 	long filelength (int fno);
@@ -70,8 +70,6 @@ int main (int argc, char **argv)
 	BOOL fixit = FALSE, dump = FALSE;
 	int dsec, nsec = 1;
 	unsigned short wd, buf[DSK_NUMWD];
-
-	util_io_init();
 
 	for (i = 1; i < argc;) {
 		arg = argv[i++];
@@ -249,7 +247,7 @@ char *lowcase (char *str)
 	return str;
 }
 
-#ifndef WIN32
+#ifndef _WIN32
 
 long filelength (int fno)
 {

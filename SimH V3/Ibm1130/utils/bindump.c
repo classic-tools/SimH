@@ -20,11 +20,13 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#ifdef WIN32
+#ifdef _WIN32
 #  include <windows.h>
 #  include <io.h>
 #  include <fcntl.h>
 #endif
+
+#include "util_io.h"
 
 #ifndef TRUE
     #define BOOL  int
@@ -102,7 +104,7 @@ int main (int argc, char **argv)
 
 void process (char *nm)
 {
-#ifdef WIN32
+#ifdef _WIN32
 	WIN32_FIND_DATA fd;
 	HANDLE hFind;
 	char *c, buf[256];
@@ -194,7 +196,7 @@ void sort_phases (char *fname)
 
 	phid = 0;
 	for (i = 0; i < ncards; i++) {
-		if (fread(deck[i].card, sizeof(card[0]), 80, fd) != 80) {
+		if (fxread(deck[i].card, sizeof(card[0]), 80, fd) != 80) {
 			free(deck);
 			fprintf(stderr, "%s: error reading deck\n");
 			fclose(fd);
@@ -232,12 +234,12 @@ void sort_phases (char *fname)
 
 	qsort(deck, ncards, sizeof(struct tag_card), cardcomp);	// sort the deck
 
-#ifdef WIN32
+#ifdef _WIN32
 	_setmode(_fileno(stdout), _O_BINARY);			// set standard output to binary mode
 #endif
 
 	for (i = 0; i < ncards; i++) 					// write to stdout
-		fwrite(deck[i].card, sizeof(card[0]), 80, stdout);
+		fxwrite(deck[i].card, sizeof(card[0]), 80, stdout);
 
 	free(deck);
 }
@@ -256,7 +258,7 @@ void dump_phids (char *fname)
 	
 	printf("\n%s:\n", fname);
 
-	while (fread(card, sizeof(card[0]), 80, fp) > 0) {
+	while (fxread(card, sizeof(card[0]), 80, fp) > 0) {
 		unpack(card, buf);
 		verify_checksum(buf);
 
@@ -319,7 +321,7 @@ void dump_data (char *fname)
 	
 	printf("\n%s:\n", fname);
 
-	while (fread(card, sizeof(card[0]), 80, fp) > 0) {
+	while (fxread(card, sizeof(card[0]), 80, fp) > 0) {
 		unpack(card, buf);
 		verify_checksum(buf);
 
@@ -749,4 +751,5 @@ char *getname (unsigned short *ptr)
 	str[5] = '\0';
 	return str;
 }
+
 

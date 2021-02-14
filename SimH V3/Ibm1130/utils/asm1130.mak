@@ -59,7 +59,8 @@ BSC32=bscmake.exe
 # ADD BSC32 /nologo
 BSC32_FLAGS=/nologo /o$(OUTDIR)/"asm1130.bsc" 
 BSC32_SBRS= \
-	$(INTDIR)/asm1130.sbr
+	$(INTDIR)/asm1130.sbr \
+	$(INTDIR)/util_io.sbr
 
 $(OUTDIR)/asm1130.bsc : $(OUTDIR)  $(BSC32_SBRS)
     $(BSC32) @<<
@@ -74,7 +75,8 @@ LINK32_FLAGS=kernel32.lib user32.lib gdi32.lib /NOLOGO /SUBSYSTEM:console\
  /OUT:$(OUTDIR)/"asm1130.exe" 
 DEF_FILE=
 LINK32_OBJS= \
-	$(INTDIR)/asm1130.obj
+	$(INTDIR)/asm1130.obj \
+	$(INTDIR)/util_io.obj
 
 $(OUTDIR)/asm1130.exe : $(OUTDIR)  $(DEF_FILE) $(LINK32_OBJS)
     $(LINK32) @<<
@@ -112,7 +114,8 @@ BSC32=bscmake.exe
 # ADD BSC32 /nologo
 BSC32_FLAGS=/nologo /o$(OUTDIR)/"asm1130.bsc" 
 BSC32_SBRS= \
-	$(INTDIR)/asm1130.sbr
+	$(INTDIR)/asm1130.sbr \
+	$(INTDIR)/util_io.sbr
 
 $(OUTDIR)/asm1130.bsc : $(OUTDIR)  $(BSC32_SBRS)
     $(BSC32) @<<
@@ -127,7 +130,8 @@ LINK32_FLAGS=kernel32.lib user32.lib gdi32.lib /NOLOGO /SUBSYSTEM:console\
  /OUT:$(OUTDIR)/"asm1130.exe" 
 DEF_FILE=
 LINK32_OBJS= \
-	$(INTDIR)/asm1130.obj
+	$(INTDIR)/asm1130.obj \
+	$(INTDIR)/util_io.obj
 
 $(OUTDIR)/asm1130.exe : $(OUTDIR)  $(DEF_FILE) $(LINK32_OBJS)
     $(LINK32) @<<
@@ -154,6 +158,16 @@ $(OUTDIR)/asm1130.exe : $(OUTDIR)  $(DEF_FILE) $(LINK32_OBJS)
 SOURCE=.\asm1130.c
 
 $(INTDIR)/asm1130.obj :  $(SOURCE)  $(INTDIR)
+
+# End Source File
+################################################################################
+# Begin Source File
+
+SOURCE=.\util_io.c
+DEP_UTIL_=\
+	.\util_io.h
+
+$(INTDIR)/util_io.obj :  $(SOURCE)  $(DEP_UTIL_) $(INTDIR)
 
 # End Source File
 # End Group
