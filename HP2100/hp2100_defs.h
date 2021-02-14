@@ -23,6 +23,7 @@
    be used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   30-Nov-01	RMS	Added extended SET/SHOW support
    15-Oct-00	RMS	Added dynamic device numbers
    14-Apr-99	RMS	Changed t_addr to unsigned
 
@@ -178,5 +179,7 @@ struct hpdev {
 
 /* Function prototypes */
 
-t_bool hp_setdev (UNIT *uptr, int32 val);
-t_bool hp_setdev2 (UNIT *uptr, int32 val);
+t_stat hp_setdev (UNIT *uptr, int32 val, char *cptr, void *desc);
+t_stat hp_showdev (FILE *st, UNIT *uptr, int32 val, void *desc);
+t_stat hp_setdev2 (UNIT *uptr, int32 val, char *cptr, void *desc);
+t_stat hp_showdev2 (FILE *st, UNIT *uptr, int32 val, void *desc);

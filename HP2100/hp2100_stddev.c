@@ -28,6 +28,9 @@
    tty		12531C buffered teleprinter interface
    clk		12539A/B/C time base generator
 
+   03-Nov-01	RMS	Changed DEVNO to use extended SET/SHOW
+   29-Nov-01	RMS	Added read only unit support
+   24-Nov-01	RMS	Changed TIME to an array
    07-Sep-01	RMS	Moved function prototypes
    21-Nov-00	RMS	Fixed flag, buffer power up state
 			Added status input for ptp, tty
@@ -82,7 +85,8 @@ t_stat clk_reset (DEVICE *dptr);
 */
 
 UNIT ptr_unit = {
-	UDATA (&ptr_svc, UNIT_SEQ+UNIT_ATTABLE, 0), SERIAL_IN_WAIT };
+	UDATA (&ptr_svc, UNIT_SEQ+UNIT_ATTABLE+UNIT_ROABLE, 0),
+		SERIAL_IN_WAIT };
 
 REG ptr_reg[] = {
 	{ ORDATA (BUF, ptr_unit.buf, 8) },
@@ -97,7 +101,8 @@ REG ptr_reg[] = {
 	{ NULL }  };
 
 MTAB ptr_mod[] = {
-	{ UNIT_DEVNO, inPTR, NULL, "DEVNO", &hp_setdev },
+	{ MTAB_XTD | MTAB_VDV, inPTR, "DEVNO", "DEVNO",
+		&hp_setdev, &hp_showdev, NULL },
 	{ 0 }  };
 
 DEVICE ptr_dev = {
@@ -130,7 +135,8 @@ REG ptp_reg[] = {
 	{ NULL }  };
 
 MTAB ptp_mod[] = {
-	{ UNIT_DEVNO, inPTP, NULL, "DEVNO", &hp_setdev },
+	{ MTAB_XTD | MTAB_VDV, inPTP, "DEVNO", "DEVNO",
+		&hp_setdev, &hp_showdev, NULL },
 	{ 0 }  };
 
 DEVICE ptp_dev = {
@@ -153,7 +159,7 @@ DEVICE ptp_dev = {
 
 UNIT tty_unit[] = {
 	{ UDATA (&tti_svc, UNIT_UC, 0), KBD_POLL_WAIT },
-	{ UDATA (&tto_svc, UNIT_UC, 0), SERIAL_OUT_WAIT },
+	{ UDATA (&tto_svc, 0, 0), SERIAL_OUT_WAIT },
 	{ UDATA (&tto_svc, UNIT_SEQ+UNIT_ATTABLE, 0), SERIAL_OUT_WAIT }  };
 
 REG tty_reg[] = {
@@ -176,7 +182,8 @@ REG tty_reg[] = {
 MTAB tty_mod[] = {
 	{ UNIT_UC, 0, "lower case", "LC", NULL },
 	{ UNIT_UC, UNIT_UC, "upper case", "UC", NULL },
-	{ UNIT_DEVNO, inTTY, NULL, "DEVNO", &hp_setdev },
+	{ MTAB_XTD | MTAB_VDV, inTTY, "DEVNO", "DEVNO",
+		&hp_setdev, &hp_showdev, NULL },
 	{ 0 }  };
 
 DEVICE tty_dev = {
@@ -203,19 +210,13 @@ REG clk_reg[] = {
 	{ FLDATA (FLG, infotab[inCLK].flg, 0) },
 	{ FLDATA (FBF, infotab[inCLK].fbf, 0) },
 	{ FLDATA (ERR, clk_error, CLK_V_ERROR) },
-	{ DRDATA (TIME0, clk_delay[0], 31), PV_LEFT },
-	{ DRDATA (TIME1, clk_delay[1], 31), PV_LEFT },
-	{ DRDATA (TIME2, clk_delay[2], 31), PV_LEFT },
-	{ DRDATA (TIME3, clk_delay[3], 31), PV_LEFT },
-	{ DRDATA (TIME4, clk_delay[4], 31), PV_LEFT },
-	{ DRDATA (TIME5, clk_delay[5], 31), PV_LEFT },
-	{ DRDATA (TIME6, clk_delay[6], 31), PV_LEFT },
-	{ DRDATA (TIME7, clk_delay[7], 31), PV_LEFT },
+	{ BRDATA (TIME, clk_delay, 8, 31, 8) },
 	{ ORDATA (DEVNO, infotab[inCLK].devno, 6), REG_RO },
 	{ NULL }  };
 
 MTAB clk_mod[] = {
-	{ UNIT_DEVNO, inCLK, NULL, "DEVNO", &hp_setdev },
+	{ MTAB_XTD | MTAB_VDV, inCLK, "DEVNO", "DEVNO",
+		&hp_setdev, &hp_showdev, NULL },
 	{ 0 }  };
 
 DEVICE clk_dev = {
@@ -447,6 +448,8 @@ t_stat tto_out (int32 ch)
 t_stat ret = SCPE_OK;
 
 if (tty_mode & TM_PRI) {				/* printing? */
+	if ((tty_unit[TTI].flags & UNIT_UC) && islower (ch))	/* upper case? */
+		ch = toupper (ch);
 	ret = sim_putchar (ch & 0177);			/* output char */
 	tty_unit[TTO].pos = tty_unit[TTO].pos + 1;  }
 if (tty_mode & TM_PUN) {				/* punching? */

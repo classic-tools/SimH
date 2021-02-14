@@ -25,6 +25,8 @@
 
    cpu		Nova central processor
 
+   07-Dec-01	RMS	Revised to use breakpoint package
+   30-Nov-01	RMS	Added extended SET/SHOW support
    10-Aug-01	RMS	Removed register in declarations
    17-Jul-01	RMS	Moved function prototype
    26-Apr-01	RMS	Added device enable/disable support
@@ -211,8 +213,6 @@
 				M[x] = (M[x] - 1) & 0177777; \
 			x = M[x] & AMASK
 
-#define ILL_ADR_FLAG	A_IND
-#define save_ibkpt	(cpu_unit.u3)
 #define UNIT_V_MDV	(UNIT_V_UF)			/* MDV present */
 #define UNIT_MDV	(1 << UNIT_V_MDV)
 #define UNIT_V_STK	(UNIT_V_UF+1)			/* stack instr */
@@ -241,15 +241,14 @@ int32 pimask = 0;					/* priority int mask */
 int32 pwr_low = 0;					/* power fail flag */
 int32 ind_max = 16;					/* iadr nest limit */
 int32 stop_dev = 0;					/* stop on ill dev */
-int32 ibkpt_addr = ILL_ADR_FLAG | AMASK;		/* ibreakpoint addr */
 int32 old_PC = 0;					/* previous PC */
-
 extern int32 sim_int_char;
+extern int32 sim_brk_types, sim_brk_dflt, sim_brk_summ;	/* breakpoint info */
+
 t_stat cpu_ex (t_value *vptr, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_dep (t_value val, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_reset (DEVICE *dptr);
-t_stat cpu_svc (UNIT *uptr);
-t_stat cpu_set_size (UNIT *uptr, int32 value);
+t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc);
 t_stat cpu_boot (int32 unitno);
 extern int32 ptr (int32 pulse, int32 code, int32 AC);
 extern int32 ptp (int32 pulse, int32 code, int32 AC);
@@ -310,7 +309,7 @@ struct ndev dev_table[64] = {
    cpu_mod	CPU modifiers list
 */
 
-UNIT cpu_unit = { UDATA (&cpu_svc, UNIT_FIX + UNIT_BINK + UNIT_MDV,
+UNIT cpu_unit = { UDATA (NULL, UNIT_FIX + UNIT_BINK + UNIT_MDV,
 		MAXMEMSIZE) };
 
 REG cpu_reg[] = {
@@ -338,7 +337,6 @@ REG cpu_reg[] = {
 	{ FLDATA (IBYT, cpu_unit.flags, UNIT_V_BYT), REG_HRO },
 	{ DRDATA (INDMAX, ind_max, 16), REG_NZ + PV_LEFT },
 	{ ORDATA (OLDPC, old_PC, 15), REG_RO },
-	{ ORDATA (BREAK, ibkpt_addr, 16) },
 	{ ORDATA (WRU, sim_int_char, 8) },
 	{ ORDATA (IOTENB, iot_enb, 32), REG_HRO },
 	{ NULL }  };
@@ -401,10 +399,7 @@ if (int_req > INT_PENDING) {				/* interrupt? */
 		break;  }
 	PC = MA;  }					/* end interrupt */
 
-if (PC == ibkpt_addr) {					/* breakpoint? */
-	save_ibkpt = ibkpt_addr;			/* save address */
-	ibkpt_addr = ibkpt_addr | ILL_ADR_FLAG;		/* disable */
-	sim_activate (&cpu_unit, 1);			/* sched re-enable */
+if (sim_brk_summ && sim_brk_test (PC, SWMASK ('E'))) {	/* breakpoint? */
 	reason = STOP_IBKPT;				/* stop simulation */
 	break;  }
 
@@ -828,7 +823,8 @@ int_req = int_req & ~(INT_ION | INT_STK);
 pimask = 0;
 dev_disable = 0;
 pwr_low = 0;
-return cpu_svc (&cpu_unit);
+sim_brk_types = sim_brk_dflt = SWMASK ('E');
+return SCPE_OK;
 }
 
 /* Memory examine */
@@ -849,26 +845,17 @@ M[addr] = val & DMASK;
 return SCPE_OK;
 }
 
-/* Breakpoint service */
-
-t_stat cpu_svc (UNIT *uptr)
-{
-if ((ibkpt_addr & ~ILL_ADR_FLAG) == save_ibkpt) ibkpt_addr = save_ibkpt;
-save_ibkpt = -1;
-return SCPE_OK;
-}
-
-t_stat cpu_set_size (UNIT *uptr, int32 value)
+t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc)
 {
 int32 mc = 0;
 t_addr i;
 
-if ((value <= 0) || (value > MAXMEMSIZE) || ((value & 07777) != 0))
+if ((val <= 0) || (val > MAXMEMSIZE) || ((val & 07777) != 0))
 	return SCPE_ARG;
-for (i = value; i < MEMSIZE; i++) mc = mc | M[i];
+for (i = val; i < MEMSIZE; i++) mc = mc | M[i];
 if ((mc != 0) && (!get_yn ("Really truncate memory [N]?", FALSE)))
 	return SCPE_OK;
-MEMSIZE = value;
+MEMSIZE = val;
 for (i = MEMSIZE; i < MAXMEMSIZE; i++) M[i] = 0;
 return SCPE_OK;
 }

@@ -26,6 +26,9 @@
    dt		(PDP-9) TC02/TU55 DECtape
 		(PDP-15) TC15/TU56 DECtape
 
+   29-Nov-01	RMS	Added read only unit support
+   25-Nov-01	RMS	Revised interrupt structure
+			Changed POS, STATT, LASTT, FLG to arrays
    29-Aug-01	RMS	Added casts to PDP-8 unpack routine
    17-Jul-01	RMS	Moved function prototype
    11-May-01	RMS	Fixed bug in reset
@@ -83,6 +86,7 @@
 #define LASTT		u4				/* last time update */
 #define DT_WC		030				/* word count */
 #define DT_CA		031				/* current addr */
+#define UNIT_WPRT	(UNIT_WLK | UNIT_RO)		/* write protect */
 
 /* System independent DECtape constants */
 
@@ -227,12 +231,12 @@
 #define LOG_BL		010				/* block # lblk */
 
 #define DT_UPDINT	if ((dtsa & DTA_ENB) && (dtsb & (DTB_ERF | DTB_DTF))) \
-			int_req = int_req | INT_DTA; \
-			else int_req = int_req & ~INT_DTA;
+			SET_INT (DTA); \
+			else CLR_INT (DTA);
 #define ABS(x)		(((x) < 0)? (-(x)): (x))
 
 extern int32 M[];
-extern int32 int_req, dev_enb;
+extern int32 int_hwre[API_HLVL+1], dev_enb;
 extern UNIT cpu_unit;
 extern int32 sim_switches;
 int32 dtsa = 0;						/* status A */
@@ -267,19 +271,27 @@ extern int32 sim_is_running;
 */
 
 UNIT dt_unit[] = {
-	{ UDATA (&dt_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE, DT_CAPAC) },
-	{ UDATA (&dt_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE, DT_CAPAC) },
-	{ UDATA (&dt_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE, DT_CAPAC) },
-	{ UDATA (&dt_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE, DT_CAPAC) },
-	{ UDATA (&dt_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE, DT_CAPAC) },
-	{ UDATA (&dt_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE, DT_CAPAC) },
-	{ UDATA (&dt_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE, DT_CAPAC) },
-	{ UDATA (&dt_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE, DT_CAPAC) }  };
+	{ UDATA (&dt_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
+		UNIT_ROABLE, DT_CAPAC) },
+	{ UDATA (&dt_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
+		UNIT_ROABLE, DT_CAPAC) },
+	{ UDATA (&dt_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
+		UNIT_ROABLE, DT_CAPAC) },
+	{ UDATA (&dt_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
+		UNIT_ROABLE, DT_CAPAC) },
+	{ UDATA (&dt_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
+		UNIT_ROABLE, DT_CAPAC) },
+	{ UDATA (&dt_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
+		UNIT_ROABLE, DT_CAPAC) },
+	{ UDATA (&dt_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
+		UNIT_ROABLE, DT_CAPAC) },
+	{ UDATA (&dt_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
+		UNIT_ROABLE, DT_CAPAC) }  };
 
 REG dt_reg[] = {
 	{ GRDATA (DTSA, dtsa, 8, 12, 6) },
 	{ GRDATA (DTSB, dtsb, 8, 12, 6) },
-	{ FLDATA (INT, int_req, INT_V_DTA) },
+	{ FLDATA (INT, int_hwre[API_DTA], INT_V_DTA) },
 	{ FLDATA (ENB, dtsa, DTA_V_ENB) },
 	{ FLDATA (DTF, dtsb, DTB_V_DTF) },
 	{ FLDATA (ERF, dtsb, DTB_V_ERF) },
@@ -291,46 +303,14 @@ REG dt_reg[] = {
 	{ ORDATA (SUBSTATE, dt_substate, 2) },
 	{ ORDATA (LOG, dt_log, 4), REG_HIDDEN },
 	{ DRDATA (LBLK, dt_logblk, 12), REG_HIDDEN },
-	{ DRDATA (POS0, dt_unit[0].pos, 31), PV_LEFT + REG_RO },
-	{ DRDATA (POS1, dt_unit[1].pos, 31), PV_LEFT + REG_RO },
-	{ DRDATA (POS2, dt_unit[2].pos, 31), PV_LEFT + REG_RO },
-	{ DRDATA (POS3, dt_unit[3].pos, 31), PV_LEFT + REG_RO },
-	{ DRDATA (POS4, dt_unit[4].pos, 31), PV_LEFT + REG_RO },
-	{ DRDATA (POS5, dt_unit[5].pos, 31), PV_LEFT + REG_RO },
-	{ DRDATA (POS6, dt_unit[6].pos, 31), PV_LEFT + REG_RO },
-	{ DRDATA (POS7, dt_unit[7].pos, 31), PV_LEFT + REG_RO },
-	{ ORDATA (STATE0, dt_unit[0].STATE, 18), REG_RO },
-	{ ORDATA (STATE1, dt_unit[1].STATE, 18), REG_RO },
-	{ ORDATA (STATE2, dt_unit[2].STATE, 18), REG_RO },
-	{ ORDATA (STATE3, dt_unit[3].STATE, 18), REG_RO },
-	{ ORDATA (STATE4, dt_unit[4].STATE, 18), REG_RO },
-	{ ORDATA (STATE5, dt_unit[5].STATE, 18), REG_RO },
-	{ ORDATA (STATE6, dt_unit[6].STATE, 18), REG_RO },
-	{ ORDATA (STATE7, dt_unit[7].STATE, 18), REG_RO },
-	{ DRDATA (LASTT0, dt_unit[0].LASTT, 32), REG_HRO },
-	{ DRDATA (LASTT1, dt_unit[1].LASTT, 32), REG_HRO },
-	{ DRDATA (LASTT2, dt_unit[2].LASTT, 32), REG_HRO },
-	{ DRDATA (LASTT3, dt_unit[3].LASTT, 32), REG_HRO },
-	{ DRDATA (LASTT4, dt_unit[4].LASTT, 32), REG_HRO },
-	{ DRDATA (LASTT5, dt_unit[5].LASTT, 32), REG_HRO },
-	{ DRDATA (LASTT6, dt_unit[6].LASTT, 32), REG_HRO },
-	{ DRDATA (LASTT7, dt_unit[7].LASTT, 32), REG_HRO },
-	{ GRDATA (FLG0, dt_unit[0].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG1, dt_unit[1].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG2, dt_unit[2].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG3, dt_unit[3].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG4, dt_unit[4].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG5, dt_unit[5].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG6, dt_unit[6].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG7, dt_unit[7].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
+	{ URDATA (POS, dt_unit[0].pos, 10, 31, 0,
+		  DT_NUMDR, PV_LEFT | REG_RO) },
+	{ URDATA (STATT, dt_unit[0].STATE, 8, 18, 0,
+		  DT_NUMDR, REG_RO) },
+	{ URDATA (LASTT, dt_unit[0].LASTT, 10, 32, 0,
+		  DT_NUMDR, REG_HRO) },
+	{ URDATA (FLG, dt_unit[0].flags, 8, UNIT_W_UF, UNIT_V_UF - 1,
+		  DT_NUMDR, REG_HRO) },
 	{ FLDATA (*DEVENB, dev_enb, INT_V_DTA), REG_HRO },
 	{ NULL }  };
 
@@ -366,8 +346,8 @@ if (((pulse & 060) == 040) && (pulse & 05)) {		/* select */
 	fnc = DTA_GETFNC (dtsa);			/* get fnc */
 	if (((uptr -> flags) & UNIT_DIS) ||		/* disabled? */
 	     (fnc >= FNC_WMRK) ||			/* write mark? */
-	    ((fnc == FNC_WRIT) && (uptr -> flags & UNIT_WLK)) ||
-	    ((fnc == FNC_WALL) && (uptr -> flags & UNIT_WLK)))
+	    ((fnc == FNC_WRIT) && (uptr -> flags & UNIT_WPRT)) ||
+	    ((fnc == FNC_WALL) && (uptr -> flags & UNIT_WPRT)))
 		dt_seterr (uptr, DTB_SEL);		/* select err */
 	else dt_newsa (dtsa);				/* new func */
 	DT_UPDINT;
@@ -1046,7 +1026,7 @@ if (sim_is_active (uptr)) {
 		dtsb = dtsb | DTB_ERF | DTB_SEL | DTB_DTF;
 		DT_UPDINT;  }
 	uptr -> STATE = uptr -> pos = 0;  }
-if (uptr -> hwmark) {					/* any data? */
+if (uptr -> hwmark && ((uptr -> flags & UNIT_RO) == 0)) { /* any data? */
 	printf ("DT: writing buffer to file\n");
 	rewind (uptr -> fileref);			/* start of file */
 	if (uptr -> flags & UNIT_8FMT) {		/* PDP8? */

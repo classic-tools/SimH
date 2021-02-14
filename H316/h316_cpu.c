@@ -23,6 +23,11 @@
    be used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   cpu		H316/H516 CPU
+
+   03-Nov-01	RMS	Fixed NOHSA modifier
+   30-Nov-01	RMS	Added extended SET/SHOW support
+
    The register state for the Honeywell 316/516 CPU is:
 
    AR<1:16>		A register
@@ -184,8 +189,6 @@
 
 #include "h316_defs.h"
 
-#define ILL_ADR_FLAG	0100000
-#define save_ibkpt	(cpu_unit.u3)
 #define UNIT_V_MSIZE	(UNIT_V_UF)			/* dummy mask */
 #define UNIT_MSIZE	(1 << UNIT_V_MSIZE)
 #define m7		0001000				/* for generics */
@@ -216,21 +219,20 @@ int32 dev_enable = 0;					/* dev enable */
 int32 ind_max = 8;					/* iadr nest limit */
 int32 stop_inst = 1;					/* stop on ill inst */
 int32 stop_dev = 2;					/* stop on ill dev */
-int32 ibkpt_addr = ILL_ADR_FLAG | X_AMASK;		/* breakpoint addr */
 int32 old_PC = 0;					/* previous PC */
 int32 dlog = 0;						/* debug log */
 int32 turnoff = 0;
-
 extern int32 sim_int_char;
+extern int32 sim_brk_types, sim_brk_dflt, sim_brk_summ;	/* breakpoint info */
 extern FILE *sim_log;
+
 extern t_stat fprint_sym (FILE *of, t_addr addr, t_value *val,
 	UNIT *uptr, int32 sw);
 t_stat cpu_ex (t_value *vptr, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_dep (t_value val, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_reset (DEVICE *dptr);
-t_stat cpu_svc (UNIT *uptr);
-t_stat cpu_set_noext (UNIT *uptr, int32 value);
-t_stat cpu_set_size (UNIT *uptr, int32 value);
+t_stat cpu_set_noext (UNIT *uptr, int32 val, char *cptr, void *desc);
+t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc);
 
 /* CPU data structures
 
@@ -240,7 +242,7 @@ t_stat cpu_set_size (UNIT *uptr, int32 value);
    cpu_mod	CPU modifiers list
 */
 
-UNIT cpu_unit = { UDATA (&cpu_svc, UNIT_FIX + UNIT_BINK + UNIT_EXT,
+UNIT cpu_unit = { UDATA (NULL, UNIT_FIX + UNIT_BINK + UNIT_EXT,
 		MAXMEMSIZE) };
 
 REG cpu_reg[] = {
@@ -268,7 +270,6 @@ REG cpu_reg[] = {
 	{ FLDATA (STOP_DEV, stop_dev, 1) },
 	{ DRDATA (INDMAX, ind_max, 8), REG_NZ + PV_LEFT },
 	{ ORDATA (OLDP, old_PC, 15), REG_RO },
-	{ ORDATA (BREAK, ibkpt_addr, 16) },
 	{ ORDATA (WRU, sim_int_char, 8) },
 	{ FLDATA (DLOG, dlog, 0) },
 	{ FLDATA (HEXT, cpu_unit.flags, UNIT_V_EXT), REG_HRO },
@@ -278,7 +279,7 @@ REG cpu_reg[] = {
 MTAB cpu_mod[] = {
 	{ UNIT_EXT, 0, "no extend", "NOEXTEND", &cpu_set_noext },
 	{ UNIT_EXT, UNIT_EXT, "extend", "EXTEND", NULL },
-	{ UNIT_HSA, 0, "no HSA", "HSA", NULL },
+	{ UNIT_HSA, 0, "no HSA", "NOHSA", NULL },
 	{ UNIT_HSA, UNIT_HSA, "HSA", "HSA", NULL },
 	{ UNIT_MSIZE, 4096, NULL, "4K", &cpu_set_size },
 	{ UNIT_MSIZE, 8192, NULL, "8K", &cpu_set_size },
@@ -362,10 +363,8 @@ if ((dev_ready & (INT_PENDING | dev_enable)) > INT_PENDING) {	/* int req? */
 	if (dlog && sim_log) fprintf (sim_log, "Interrupt\n");
 	MB = 0120000 | M_INT;  }			/* inst = JST* 63 */
 
-else {	if (PC == ibkpt_addr) {				/* breakpoint? */
-		save_ibkpt = ibkpt_addr;		/* save address */
-		ibkpt_addr = ibkpt_addr | ILL_ADR_FLAG;	/* disable */
-		sim_activate (&cpu_unit, 1);		/* sched re-enable */
+else {	if (sim_brk_summ &&
+	    sim_brk_test (PC, SWMASK ('E'))) {		/* breakpoint? */
 		reason = STOP_IBKPT;			/* stop simulation */
 		break;  }
 	Y = PC;						/* set mem addr */
@@ -986,7 +985,8 @@ dp = 0;
 ext = pme = extoff_pending = 0;
 dev_ready = dev_ready & ~INT_PENDING;
 dev_enable = 0;
-return cpu_svc (&cpu_unit);
+sim_brk_types = sim_brk_dflt = SWMASK ('E');
+return SCPE_OK;
 }
 
 /* Memory examine */
@@ -1012,35 +1012,26 @@ else M[addr] = val & DMASK;
 return SCPE_OK;
 }
 
-/* Breakpoint service */
-
-t_stat cpu_svc (UNIT *uptr)
-{
-if ((ibkpt_addr & ~ILL_ADR_FLAG) == save_ibkpt) ibkpt_addr = save_ibkpt;
-save_ibkpt = -1;
-return SCPE_OK;
-}
-
 /* Option processors */
 
-t_stat cpu_set_noext (UNIT *uptr, int32 value)
+t_stat cpu_set_noext (UNIT *uptr, int32 val, char *cptr, void *desc)
 {
 if (MEMSIZE > (NX_AMASK + 1)) return SCPE_ARG;
 return SCPE_OK;
 }
 
-t_stat cpu_set_size (UNIT *uptr, int32 value)
+t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc)
 {
 int32 mc = 0;
 t_addr i;
 
-if ((value <= 0) || (value > MAXMEMSIZE) || ((value & 07777) != 0) ||
-    (((cpu_unit.flags & UNIT_EXT) == 0) && (value > (NX_AMASK + 1))))
+if ((val <= 0) || (val > MAXMEMSIZE) || ((val & 07777) != 0) ||
+    (((cpu_unit.flags & UNIT_EXT) == 0) && (val > (NX_AMASK + 1))))
 	return SCPE_ARG;
-for (i = value; i < MEMSIZE; i++) mc = mc | M[i];
+for (i = val; i < MEMSIZE; i++) mc = mc | M[i];
 if ((mc != 0) && (!get_yn ("Really truncate memory [N]?", FALSE)))
 	return SCPE_OK;
-MEMSIZE = value;
+MEMSIZE = val;
 for (i = MEMSIZE; i < MAXMEMSIZE; i++) M[i] = 0;
 return SCPE_OK;
 }

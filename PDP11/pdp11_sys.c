@@ -23,6 +23,7 @@
    be used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   29-Nov-01	RMS	Added read only unit support
    17-Sep-01	RMS	Removed multiconsole support
    26-Aug-01	RMS	Added DZ11
    20-Aug-01	RMS	Updated bad block inquiry
@@ -48,10 +49,10 @@ extern DEVICE ptr_dev, ptp_dev;
 extern DEVICE tti_dev, tto_dev;
 extern DEVICE lpt_dev, clk_dev;
 extern DEVICE dz_dev;
-extern DEVICE rk_dev, rx_dev;
-extern DEVICE rl_dev, rp_dev;
-extern DEVICE dt_dev, tm_dev;
-extern DEVICE ts_dev;
+extern DEVICE rk_dev, rl_dev;
+extern DEVICE rp_dev, rq_dev;
+extern DEVICE rx_dev, dt_dev;
+extern DEVICE tm_dev, ts_dev;
 /* extern DEVICE hk_dev; */
 extern UNIT cpu_unit;
 extern REG cpu_reg[];
@@ -80,8 +81,8 @@ DEVICE *sim_devices[] = {
 	&tti_dev, &tto_dev,
 	&lpt_dev, &clk_dev,
 	&dz_dev,
-	&rk_dev, /* &hk_dev, */
-	&rl_dev, &rp_dev,
+	&rk_dev, &rl_dev,
+	&rp_dev, &rq_dev,
 	&rx_dev, &dt_dev,
 	&tm_dev, &ts_dev,
 	NULL };
@@ -107,7 +108,8 @@ const char *sim_stop_messages[] = {
 	"Breakpoint",
 	"Wait state",
 	"Trap vector fetch abort",
-	"Trap stack push abort"  };
+	"Trap stack push abort",
+	"RQDX3 consistency error"  };
 
 /* Binary loader.
 
@@ -210,6 +212,7 @@ int16 *buf;
 
 if ((sec < 2) || (wds < 16)) return SCPE_ARG;
 if ((uptr -> flags & UNIT_ATT) == 0) return SCPE_UNATT;
+if (uptr -> flags & UNIT_RO) return SCPE_RO;
 if (!get_yn ("Create bad block table on last track? [N]", FALSE)) return SCPE_OK;
 da = (uptr -> capac - (sec * wds)) * sizeof (int16);
 if (fseek (uptr -> fileref, da, SEEK_SET)) return SCPE_IOERR;

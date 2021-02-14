@@ -23,6 +23,8 @@
    be used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   07-Dec-01	RMS	Revised to use breakpoint package
+   03-Dec-01	RMS	Added extended SET/SHOW support
    10-Aug-01	RMS	Removed register in declarations
    26-Nov-00	RMS	Fixed bug in dual device number routine
    21-Nov-00	RMS	Fixed bug in reset routine
@@ -238,8 +240,6 @@
 
 #include "hp2100_defs.h"
 
-#define ILL_ADR_FLAG	0100000
-#define save_ibkpt	(cpu_unit.u3)
 #define UNIT_V_MSIZE	(UNIT_V_UF)			/* dummy mask */
 #define UNIT_MSIZE	(1 << UNIT_V_MSIZE)
 #define UNIT_V_2100	(UNIT_V_UF + 1)			/* 2100 vs 2116 */
@@ -269,10 +269,10 @@ int32 maddr = 0;					/* mem prot err addr */
 int32 ind_max = 16;					/* iadr nest limit */
 int32 stop_inst = 1;					/* stop on ill inst */
 int32 stop_dev = 2;					/* stop on ill dev */
-int32 ibkpt_addr = ILL_ADR_FLAG | AMASK;		/* breakpoint addr */
 int32 old_PC = 0;					/* previous PC */
-
 extern int32 sim_int_char;
+extern int32 sim_brk_types, sim_brk_dflt, sim_brk_summ;	/* breakpoint info */
+
 int32 shift (int32 inval, int32 flag, int32 oper);
 int32 calc_dma (void);
 int32 calc_int (void);
@@ -282,8 +282,7 @@ t_stat cpu_dep (t_value val, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_reset (DEVICE *dptr);
 t_stat dma0_reset (DEVICE *dptr);
 t_stat dma1_reset (DEVICE *dptr);
-t_stat cpu_svc (UNIT *uptr);
-t_stat cpu_set_size (UNIT *uptr, int32 value);
+t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc);
 
 /* CPU data structures
 
@@ -293,7 +292,7 @@ t_stat cpu_set_size (UNIT *uptr, int32 value);
    cpu_mod	CPU modifiers list
 */
 
-UNIT cpu_unit = { UDATA (&cpu_svc, UNIT_FIX + UNIT_BINK,
+UNIT cpu_unit = { UDATA (NULL, UNIT_FIX + UNIT_BINK,
 		MAXMEMSIZE) };
 
 REG cpu_reg[] = {
@@ -317,7 +316,6 @@ REG cpu_reg[] = {
 	{ FLDATA (STOP_DEV, stop_dev, 1) },
 	{ DRDATA (INDMAX, ind_max, 16), REG_NZ + PV_LEFT },
 	{ ORDATA (OLDP, old_PC, 15), REG_RO },
-	{ ORDATA (BREAK, ibkpt_addr, 16) },
 	{ ORDATA (WRU, sim_int_char, 8) },
 	{ FLDATA (T2100, cpu_unit.flags, UNIT_V_2100), REG_HRO },
 	{ FLDATA (T21MX, cpu_unit.flags, UNIT_V_21MX), REG_HRO },
@@ -531,10 +529,8 @@ if (intrq && ((intrq <= PRO) || !ion_defer)) {		/* interrupt request? */
 	intrq = 0;					/* clear request */
 	clrCTL (PRO); }					/* protection off */
 
-else {	if (PC == ibkpt_addr) {				/* breakpoint? */
-		save_ibkpt = ibkpt_addr;		/* save address */
-		ibkpt_addr = ibkpt_addr | ILL_ADR_FLAG;	/* disable */
-		sim_activate (&cpu_unit, 1);		/* sched re-enable */
+else {	if (sim_brk_summ &&
+	    sim_brk_test (PC, SWMASK ('E'))) {		/* breakpoint? */
 		reason = STOP_IBKPT;			/* stop simulation */
 		break;  }
 	err_PC = PC;					/* save PC for error */
@@ -1343,7 +1339,8 @@ clrFLG (PRO);
 clrFBF (PRO);
 mfence = 0;
 maddr = 0;
-return cpu_svc (&cpu_unit);
+sim_brk_types = sim_brk_dflt = SWMASK ('E');
+return SCPE_OK;
 }
 
 t_stat dma0_reset (DEVICE *tptr)
@@ -1391,45 +1388,29 @@ else M[addr] = val & DMASK;
 return SCPE_OK;
 }
 
-/* Breakpoint service */
-
-t_stat cpu_svc (UNIT *uptr)
-{
-if ((ibkpt_addr & ~ILL_ADR_FLAG) == save_ibkpt) ibkpt_addr = save_ibkpt;
-save_ibkpt = -1;
-return SCPE_OK;
-}
-
-t_stat cpu_set_size (UNIT *uptr, int32 value)
+t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc)
 {
 int32 mc = 0;
 t_addr i;
 
-if ((value <= 0) || (value > MAXMEMSIZE) || ((value & 07777) != 0))
+if ((val <= 0) || (val > MAXMEMSIZE) || ((val & 07777) != 0))
 	return SCPE_ARG;
-for (i = value; i < MEMSIZE; i++) mc = mc | M[i];
+for (i = val; i < MEMSIZE; i++) mc = mc | M[i];
 if ((mc != 0) && (!get_yn ("Really truncate memory [N]?", FALSE)))
 	return SCPE_OK;
-MEMSIZE = value;
+MEMSIZE = val;
 for (i = MEMSIZE; i < MAXMEMSIZE; i++) M[i] = 0;
 return SCPE_OK;
 }
 
-/* Set device number */
+/* Set/show device number */
 
-extern char *read_line (char *ptr, int size, FILE *stream);
-extern t_value get_uint (char *cptr, int radix, t_value max, t_stat *status);
-
-t_stat hp_setdev (UNIT *uptr, int32 ord)
+t_stat hp_setdev (UNIT *uptr, int32 ord, char *cptr, void *desc)
 {
-char cbuf[CBUFSIZE], *cptr;
-int32 i, olddev, newdev;
+int32 i, newdev;
 t_stat r;
 
-olddev = infotab[ord].devno;
-printf ("Device number:	%-o	", olddev);
-cptr = read_line (cbuf, CBUFSIZE, stdin);
-if ((cptr == NULL) || (*cptr == 0)) return SCPE_OK;
+if (cptr == NULL) return SCPE_ARG;
 newdev = get_uint (cptr, 8, DEVMASK, &r);
 if (r != SCPE_OK) return r;
 if (newdev < VARDEV) return SCPE_ARG;
@@ -1440,23 +1421,35 @@ infotab[ord].devno = newdev;
 return SCPE_OK;
 }
 
-/* Set device number for data/control pair */
-
-t_stat hp_setdev2 (UNIT *uptr, int32 ord)
+t_stat hp_showdev (FILE *st, UNIT *uptr, int32 ord, void *desc)
 {
-int32 i, olddev;
+fprintf (st, "devno=%o", infotab[ord].devno);
+return SCPE_OK;
+}
+
+/* Set/show device number for data/control pair */
+
+t_stat hp_setdev2 (UNIT *uptr, int32 ord, char *cptr, void *desc)
+{
+int32 i, olddev, newdev;
 t_stat r;
 
 olddev = infotab[ord].devno;
-if ((r = hp_setdev (uptr, ord)) != SCPE_OK) return r;
-if (infotab[ord].devno == DEVMASK) {
+if ((r = hp_setdev (uptr, ord, cptr, NULL)) != SCPE_OK) return r;
+newdev = infotab[ord].devno + 1;
+if (newdev > DEVMASK) {
 	infotab[ord].devno = olddev;
 	return SCPE_ARG;  }
 for (i = 0; infotab[i].devno != 0; i++) {
-	if ((i != (ord + 1)) && 
-	    ((infotab[ord].devno + 1) == infotab[i].devno)) {
+	if ((i != (ord + 1)) && (newdev == infotab[i].devno)) {
 		infotab[ord].devno = olddev;
 		return SCPE_ARG;  }  }
 infotab[ord + 1].devno = infotab[ord].devno + 1;
+return SCPE_OK;
+}
+
+t_stat hp_showdev2 (FILE *st, UNIT *uptr, int32 ord, void *desc)
+{
+fprintf (st, "devno=%o/%o", infotab[ord].devno, infotab[ord + 1].devno);
 return SCPE_OK;
 }

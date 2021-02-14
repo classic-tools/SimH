@@ -27,6 +27,7 @@
 		(PDP-7,9) Type 647 line printer
 		(PDP-15) LP15 line printer
 
+   25-Nov-01	RMS	Revised interrupt structure
    19-Sep-01	RMS	Fixed bug in 647
    13-Feb-01	RMS	Revised for register arrays
    15-Feb-01	RMS	Fixed 3 cycle data break sequence
@@ -42,7 +43,7 @@
 #define BPTR_MAX	40				/* pointer max */
 #define LPT_BSIZE	120				/* line size */
 #define BPTR_MASK	077				/* buf ptr max */
-extern int32 int_req;
+extern int32 int_hwre[API_HLVL+1];
 int32 lpt_iot = 0, lpt_stopioe = 0, bptr = 0;
 char lpt_buf[LPT_BSIZE + 1] = { 0 };
 
@@ -61,9 +62,9 @@ UNIT lpt_unit = {
 
 REG lpt_reg[] = {
 	{ ORDATA (BUF, lpt_unit.buf, 8) },
-	{ FLDATA (INT, int_req, INT_V_LPT) },
-	{ FLDATA (DONE, int_req, INT_V_LPT) },
-	{ FLDATA (SPC, int_req, INT_V_LPTSPC) },
+	{ FLDATA (INT, int_hwre[API_LPT], INT_V_LPT) },
+	{ FLDATA (DONE, int_hwre[API_LPT], INT_V_LPT) },
+	{ FLDATA (SPC, int_hwre[API_LPTSPC], INT_V_LPTSPC) },
 	{ DRDATA (BPTR, bptr, 6) },
 	{ ORDATA (STATE, lpt_iot, 6), REG_HRO },
 	{ DRDATA (POS, lpt_unit.pos, 31), PV_LEFT },
@@ -90,8 +91,8 @@ static const char lpt_trans[64] = {
 	'o','J','K','L','M','N','O','P','Q','R','$','=','-',')','-','(',
 	'_','A','B','C','D','E','F','G','H','I','*','.','+',']','|','[' };
 
-if (pulse == 001) return (int_req & INT_LPT)? IOT_SKP + AC: AC;	/* LPSF */
-if (pulse == 002) int_req = int_req & ~INT_LPT;		/* LPCF */
+if (pulse == 001) return (TST_INT (LPT))? IOT_SKP + AC: AC; /* LPSF */
+if (pulse == 002) CLR_INT (LPT);			/* LPCF */
 else if (pulse == 042) {				/* LPLD */
 	if (bptr < BPTR_MAX) {				/* limit test ptr */
 		i = bptr * 3;				/* cvt to chr ptr */
@@ -100,17 +101,17 @@ else if (pulse == 042) {				/* LPLD */
 		lpt_buf[i++] = lpt_trans[AC & 077];  }
 	bptr = (bptr + 1) & BPTR_MASK;  }
 else if (pulse == 006) {				/* LPSE */
-	int_req = int_req & ~INT_LPT;			/* clear flag */
+	CLR_INT (LPT);					/* clear flag */
 	sim_activate (&lpt_unit, lpt_unit.wait);  }	/* activate */
 return AC;
 }
 
 int32 lpt66 (int32 pulse, int32 AC)
 {
-if (pulse == 001) return (int_req & INT_LPTSPC)? IOT_SKP + AC: AC; /* LSSF */
-if (pulse & 002) int_req = int_req & ~INT_LPTSPC;	/* LSCF */
+if (pulse == 001) return (TST_INT (LPTSPC))? IOT_SKP + AC: AC; /* LSSF */
+if (pulse & 002) CLR_INT (LPTSPC);			/* LSCF */
 if (pulse & 004) {					/* LSPR */
-	int_req = int_req & ~INT_LPTSPC;		/* clear flag */
+	CLR_INT (LPTSPC);				/* clear flag */
 	lpt_iot = 020 | (AC & 07);			/* space, no print */
 	sim_activate (&lpt_unit, lpt_unit.wait);  }	/* activate */
 return AC;
@@ -137,7 +138,7 @@ static const char *lpt_cc[] = {
 	"\f" };
 
 if (lpt_iot & 020) {					/* space? */
-	int_req = int_req | INT_LPTSPC;			/* set flag */
+	SET_INT (LPTSPC);				/* set flag */
 	if ((lpt_unit.flags & UNIT_ATT) == 0)		/* attached? */
 		return IORETURN (lpt_stopioe, SCPE_UNATT);
 	fputs (lpt_cc[lpt_iot & 07], lpt_unit.fileref);	/* print cctl */
@@ -146,7 +147,7 @@ if (lpt_iot & 020) {					/* space? */
 		clearerr (lpt_unit.fileref);
 		return SCPE_IOERR;  }
 	lpt_iot = 0;  }					/* clear state */
-else {	int_req = int_req | INT_LPT;			/* print */
+else {	SET_INT (LPT);					/* print */
 	if ((lpt_unit.flags & UNIT_ATT) == 0)		/* attached? */
 		return IORETURN (lpt_stopioe, SCPE_UNATT);
 	if (lpt_iot & 010) fputc ('\r', lpt_unit.fileref);
@@ -168,7 +169,8 @@ t_stat lpt_reset (DEVICE *dptr)
 {
 int32 i;
 
-int_req = int_req & ~(INT_LPT + INT_LPTSPC);		/* clear flag, space */
+CLR_INT (LPT);						/* clear intrs */
+CLR_INT (LPTSPC);
 sim_cancel (&lpt_unit);					/* deactivate unit */
 bptr = 0;						/* clear buffer ptr */
 for (i = 0; i <= LPT_BSIZE; i++) lpt_buf[i] = 0;	/* clear buffer */
@@ -180,14 +182,14 @@ return SCPE_OK;
 
 int32 lpt_iors (void)
 {
-return	((int_req & INT_LPT)? IOS_LPT: 0) |
-	((int_req & INT_LPTSPC)? IOS_LPT1: 0);
+return	(TST_INT (LPT)? IOS_LPT: 0) |
+	(TST_INT (LPTSPC)? IOS_LPT1: 0);
 }
 
 #elif defined (TYPE647)
 
 #define LPT_BSIZE	120				/* line size */
-extern int32 int_req;
+extern int32 int_hwre[API_HLVL+1];
 int32 lpt_done = 0, lpt_ie = 1, lpt_err = 0;
 int32 lpt_iot = 0, lpt_stopioe = 0, bptr = 0;
 char lpt_buf[LPT_BSIZE] = { 0 };
@@ -209,7 +211,7 @@ UNIT lpt_unit = {
 
 REG lpt_reg[] = {
 	{ ORDATA (BUF, lpt_unit.buf, 8) },
-	{ FLDATA (INT, int_req, INT_V_LPT) },
+	{ FLDATA (INT, int_hwre[API_LPT], INT_V_LPT) },
 	{ FLDATA (DONE, lpt_done, 0) },
 #if defined (PDP9)
 	{ FLDATA (ENABLE, lpt_ie, 0) },
@@ -238,16 +240,16 @@ int32 i;
 if (pulse == 001) return (lpt_done? IOT_SKP + AC: AC);	/* LPSF */
 if (pulse & 002) {					/* pulse 02 */
 	lpt_done = 0;					/* clear done */
-	int_req = int_req & ~INT_LPT;  }		/* clear int req */
+	CLR_INT (LPT);  }				/* clear int req */
 if (pulse == 002) {					/* LPCB */
 	for (i = 0; i < LPT_BSIZE; i++) lpt_buf[i] = 0;
 	bptr = 0;					/* reset buf ptr */
 	lpt_done = 1;					/* set done */
-	if (lpt_ie) int_req = int_req | INT_LPT;  }	/* set int */
+	if (lpt_ie) SET_INT (LPT);  }			/* set int */
 #if defined (PDP9)
 if (pulse == 004) {					/* LPDI */
 	lpt_ie = 0;					/* clear int enable */
-	int_req = int_req & ~INT_LPT;  }		/* clear int req */
+	CLR_INT (LPT);  }				/* clear int req */
 #endif
 if ((pulse == 046) && (bptr < LPT_BSIZE)) {		/* LPB3 */
 		lpt_buf[bptr] = lpt_buf[bptr] | ((AC >> 12) & 077);
@@ -260,7 +262,7 @@ if ((pulse == 046) || (pulse == 026) || (pulse == 066)) {
 		lpt_buf[bptr] = lpt_buf[bptr] | (AC & 077);
 		bptr = bptr + 1;  }
 	lpt_done = 1;					/* set done */
-	if (lpt_ie) int_req = int_req | INT_LPT;  }	/* set int */
+	if (lpt_ie) SET_INT (LPT);  }			/* set int */
 return AC;
 }
 
@@ -269,14 +271,14 @@ int32 lpt66 (int32 pulse, int32 AC)
 if (pulse == 001) return (lpt_err? IOT_SKP + AC: AC);	/* LPSE */
 if (pulse & 002) {					/* LPCF */
 	lpt_done = 0;					/* clear done, int */
-	int_req = int_req & ~INT_LPT;  }
+	CLR_INT (LPT);  }
 if (((pulse & 060) < 060) && (pulse & 004)) {		/* LPLS, LPPB, LPPS */
 	lpt_iot = (pulse & 060) | (AC & 07);		/* save parameters */
 	sim_activate (&lpt_unit, lpt_unit.wait);  }	/* activate */
 #if defined (PDP9)
 if (pulse == 064) {					/* LPEI */
 	lpt_ie = 1;					/* set int enable */
-	if (lpt_done) int_req = int_req | INT_LPT;  }
+	if (lpt_done) SET_INT (LPT);  }
 #endif
 return AC;
 }
@@ -303,7 +305,7 @@ static const char *lpt_cc[] = {
 	"\f" };
 
 lpt_done = 1;
-if (lpt_ie) int_req = int_req | INT_LPT;		/* set flag */
+if (lpt_ie) SET_INT (LPT);				/* set flag */
 if ((lpt_unit.flags & UNIT_ATT) == 0) {			/* not attached? */
 	lpt_err = 1;					/* set error */
 	return IORETURN (lpt_stopioe, SCPE_UNATT);  }
@@ -338,7 +340,7 @@ int32 i;
 lpt_done = 0;						/* clear done */
 lpt_err = (lpt_unit.flags & UNIT_ATT)? 0: 1;		/* compute error */
 lpt_ie = 1;						/* set enable */
-int_req = int_req & ~INT_LPT;				/* clear int */
+CLR_INT (LPT);						/* clear int */
 sim_cancel (&lpt_unit);					/* deactivate unit */
 bptr = 0;						/* clear buffer ptr */
 lpt_iot = 0;						/* clear state */
@@ -391,7 +393,7 @@ return detach_unit (uptr);
 #define STA_CLR		0003777				/* always clear */
 
 extern int32 M[];
-extern int32 int_req;
+extern int32 int_hwre[API_HLVL+1];
 int32 lpt_sta = 0, lpt_ie = 1, lpt_stopioe = 0;
 int32 mode = 0, lcnt = 0, bptr = 0;
 char lpt_buf[LPT_BSIZE] = { 0 };
@@ -413,7 +415,7 @@ UNIT lpt_unit = {
 REG lpt_reg[] = {
 	{ ORDATA (STA, lpt_sta, 18) },
 	{ ORDATA (CA, M[LPT_CA], 18) },
-	{ FLDATA (INT, int_req, INT_V_LPT) },
+	{ FLDATA (INT, int_hwre[API_LPT], INT_V_LPT) },
 	{ FLDATA (ENABLE, lpt_ie, 0) },
 	{ DRDATA (LCNT, lcnt, 9) },
 	{ DRDATA (BPTR, bptr, 8) },
@@ -523,8 +525,8 @@ int32 lpt_updsta (int32 new)
 lpt_sta = (lpt_sta | new) & ~(STA_CLR | STA_ERR | STA_BUSY);
 if (lpt_sta & STA_EFLGS) lpt_sta = lpt_sta | STA_ERR;	/* update errors */
 if (sim_is_active (&lpt_unit)) lpt_sta = lpt_sta | STA_BUSY;
-if (lpt_ie && (lpt_sta & STA_DON)) int_req = int_req | INT_LPT;
-else int_req = int_req & ~INT_LPT;			/* update int */
+if (lpt_ie && (lpt_sta & STA_DON)) SET_INT (LPT);
+else CLR_INT (LPT);					/* update int */
 return lpt_sta;
 }
 

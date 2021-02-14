@@ -27,6 +27,7 @@
    tti1		second terminal input
    tto1		second terminal output
 
+   30-Nov-01	RMS	Added extended SET/SHOW support
    17-Sep-01	RMS	Changed to use terminal multiplexor library
    07-Sep-01	RMS	Moved function prototypes
    31-May-01	RMS	Added multiconsole support
@@ -49,10 +50,10 @@ t_stat tti1_svc (UNIT *uptr);
 t_stat tto1_svc (UNIT *uptr);
 t_stat tti1_reset (DEVICE *dptr);
 t_stat tto1_reset (DEVICE *dptr);
-t_stat ttx1_setmod (UNIT *uptr, int32 value);
+t_stat ttx1_setmod (UNIT *uptr, int32 val, char *cptr);
 t_stat tti1_attach (UNIT *uptr, char *cptr);
 t_stat tti1_detach (UNIT *uptr);
-t_stat tti1_status (UNIT *uptr, FILE *st);
+t_stat tti1_status (FILE *st, UNIT *uptr, int32 val, void *desc);
 
 /* TTI1 data structures
 
@@ -77,9 +78,11 @@ REG tti1_reg[] = {
 	{ NULL }  };
 
 MTAB ttx1_mod[] = {
-	{ UNIT_ATT, UNIT_ATT, "line status:", NULL, &tti1_status },
 	{ UNIT_DASHER, 0, "ANSI", "ANSI", &ttx1_setmod },
 	{ UNIT_DASHER, UNIT_DASHER, "Dasher", "DASHER", &ttx1_setmod },
+	{ UNIT_ATT, UNIT_ATT, "line status", NULL, NULL, &tti1_status },
+	{ MTAB_XTD | MTAB_VDV | MTAB_VUN | MTAB_NMO, 0, "LINE", NULL,
+		NULL, &tti1_status, NULL },
 	{ 0 }  };
 
 DEVICE tti1_dev = {
@@ -233,10 +236,10 @@ sim_cancel (&tto1_unit);				/* deactivate unit */
 return SCPE_OK;
 }
 
-t_stat ttx1_setmod (UNIT *uptr, int32 value)
+t_stat ttx1_setmod (UNIT *uptr, int32 val, char *cptr)
 {
-tti1_unit.flags = (tti1_unit.flags & ~UNIT_DASHER) | value;
-tto1_unit.flags = (tto1_unit.flags & ~UNIT_DASHER) | value;
+tti1_unit.flags = (tti1_unit.flags & ~UNIT_DASHER) | val;
+tto1_unit.flags = (tto1_unit.flags & ~UNIT_DASHER) | val;
 return SCPE_OK;
 }
 
@@ -266,7 +269,7 @@ return r;
 
 /* Status routine */
 
-t_stat tti1_status (UNIT *uptr, FILE *st)
+t_stat tti1_status (FILE *st, UNIT *uptr, int32 val, void *desc)
 {
 tmxr_fstatus (st, &tt1_ldsc, -1);
 return SCPE_OK;

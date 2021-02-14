@@ -25,6 +25,9 @@
 
    tc		TC11/TU56 DECtape
 
+   30-Nov-01	RMS	Added read only unit, extended SET/SHOW support
+   24-Nov-01	RMS	Converted POS, STATT, LASTT to arrays
+   09-Nov-01	RMS	Added bus map support
    15-Sep-01	RMS 	Integrated debug logging
    27-Sep-01	RMS	Fixed interrupt after stop for RSTS/E
    07-Sep-01	RMS	Revised device disable and interrupt mechanisms
@@ -86,6 +89,7 @@
 #define UNIT_W_UF	3				/* saved flag width */
 #define STATE		u3				/* unit state */
 #define LASTT		u4				/* last time update */
+#define UNIT_WPRT	(UNIT_WLK | UNIT_RO)		/* write protect */
 
 /* System independent DECtape constants */
 
@@ -241,7 +245,7 @@ extern uint16 *M;					/* memory */
 extern int32 int_req[IPL_HLVL];
 extern UNIT cpu_unit;
 extern int32 sim_switches;
-extern int32 pdp11_log;
+extern int32 cpu_log;
 extern FILE *sim_log;
 int32 tcst = 0;						/* status */
 int32 tccm = 0;						/* command */
@@ -311,46 +315,14 @@ REG dt_reg[] = {
 	{ DRDATA (DCTIME, dt_dctime, 31), REG_NZ },
 	{ ORDATA (SUBSTATE, dt_substate, 1) },
 	{ DRDATA (LBLK, dt_logblk, 12), REG_HIDDEN },
-	{ DRDATA (POS0, dt_unit[0].pos, 31), PV_LEFT + REG_RO },
-	{ DRDATA (POS1, dt_unit[1].pos, 31), PV_LEFT + REG_RO },
-	{ DRDATA (POS2, dt_unit[2].pos, 31), PV_LEFT + REG_RO },
-	{ DRDATA (POS3, dt_unit[3].pos, 31), PV_LEFT + REG_RO },
-	{ DRDATA (POS4, dt_unit[4].pos, 31), PV_LEFT + REG_RO },
-	{ DRDATA (POS5, dt_unit[5].pos, 31), PV_LEFT + REG_RO },
-	{ DRDATA (POS6, dt_unit[6].pos, 31), PV_LEFT + REG_RO },
-	{ DRDATA (POS7, dt_unit[7].pos, 31), PV_LEFT + REG_RO },
-	{ ORDATA (STATT0, dt_unit[0].STATE, 18), REG_RO },
-	{ ORDATA (STATT1, dt_unit[1].STATE, 18), REG_RO },
-	{ ORDATA (STATT2, dt_unit[2].STATE, 18), REG_RO },
-	{ ORDATA (STATT3, dt_unit[3].STATE, 18), REG_RO },
-	{ ORDATA (STATT4, dt_unit[4].STATE, 18), REG_RO },
-	{ ORDATA (STATT5, dt_unit[5].STATE, 18), REG_RO },
-	{ ORDATA (STATT6, dt_unit[6].STATE, 18), REG_RO },
-	{ ORDATA (STATT7, dt_unit[7].STATE, 18), REG_RO },
-	{ DRDATA (LASTT0, dt_unit[0].LASTT, 32), REG_HRO },
-	{ DRDATA (LASTT1, dt_unit[1].LASTT, 32), REG_HRO },
-	{ DRDATA (LASTT2, dt_unit[2].LASTT, 32), REG_HRO },
-	{ DRDATA (LASTT3, dt_unit[3].LASTT, 32), REG_HRO },
-	{ DRDATA (LASTT4, dt_unit[4].LASTT, 32), REG_HRO },
-	{ DRDATA (LASTT5, dt_unit[5].LASTT, 32), REG_HRO },
-	{ DRDATA (LASTT6, dt_unit[6].LASTT, 32), REG_HRO },
-	{ DRDATA (LASTT7, dt_unit[7].LASTT, 32), REG_HRO },
-	{ GRDATA (FLG0, dt_unit[0].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG1, dt_unit[1].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG2, dt_unit[2].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG3, dt_unit[3].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG4, dt_unit[4].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG5, dt_unit[5].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG6, dt_unit[6].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG7, dt_unit[7].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
+	{ URDATA (POS, dt_unit[0].pos, 10, 31, 0,
+		  DT_NUMDR, PV_LEFT | REG_RO) },
+	{ URDATA (STATT, dt_unit[0].STATE, 8, 18, 0,
+		  DT_NUMDR, REG_RO) },
+	{ URDATA (LASTT, dt_unit[0].LASTT, 10, 32, 0,
+		  DT_NUMDR, REG_HRO) },
+	{ URDATA (FLG, dt_unit[0].flags, 8, UNIT_W_UF, UNIT_V_UF - 1,
+		  DT_NUMDR, REG_HRO) },
 	{ FLDATA (*DEVENB, dt_enb, 0), REG_HRO },
 	{ NULL }  };
 
@@ -437,8 +409,8 @@ case 001:						/* TCCM */
 		if (uptr -> flags & UNIT_DIS)		/* disabled? */
 			dt_seterr (uptr, STA_SEL);	/* select err */
 		if ((fnc == FNC_WMRK) ||		/* write mark? */
-		   ((fnc == FNC_WALL) && (uptr -> flags & UNIT_WLK)) ||
-		   ((fnc == FNC_WRIT) && (uptr -> flags & UNIT_WLK)))
+		   ((fnc == FNC_WALL) && (uptr -> flags & UNIT_WPRT)) ||
+		   ((fnc == FNC_WRIT) && (uptr -> flags & UNIT_WPRT)))
 			dt_seterr (uptr, STA_ILO);	/* illegal op */
 		if (!(tccm & CSR_ERR)) dt_newsa (tccm);  }
 	else if ((tccm & CSR_ERR) == 0) {		/* clear err? */
@@ -712,7 +684,7 @@ int32 fnc = DTS_GETFNC (uptr -> STATE);
 int32 *bptr = uptr -> filebuf;
 int32 unum = uptr - dt_dev.units;
 int32 blk, wrd, relpos, dat;
-t_addr ma, ba;
+t_addr ma, mma, ba;
 
 /* Motion cases
 
@@ -775,11 +747,12 @@ case FNC_READ:						/* read */
 		tcwc = tcwc & DMASK;			/* incr MA, WC */
 		tcba = tcba & DMASK;
 		ma = (CSR_GETMEX (tccm) << 16) | tcba;	/* form 18b addr */
-		if (ma >= MEMSIZE) {			/* nx mem? */
+		if (!Map_Addr (ma, &mma) ||		/* map addr */
+		    !ADDR_IS_MEM (mma)) {		/* nx mem? */
 			dt_seterr (uptr, STA_NXM);
 			break;  }
 		ba = (blk * DTU_BSIZE (uptr)) + wrd;	/* buffer ptr */
-		M[ma >> 1] = tcdt = bptr[ba] & DMASK;	/* read word */
+		M[mma >> 1] = tcdt = bptr[ba] & DMASK;	/* read word */
 		tcwc = (tcwc + 1) & DMASK;		/* incr MA, WC */
 		tcba = (tcba + 2) & DMASK;
 		if (tcba <= 1) tccm = CSR_INCMEX (tccm);
@@ -806,10 +779,11 @@ case FNC_WRIT:						/* write */
 	wrd = DT_LIN2WD (uptr -> pos, uptr);		/* get word # */
 	if (dt_substate) tcdt = 0;			/* wc ovf? fill */
 	else {	ma = (CSR_GETMEX (tccm) << 16) | tcba;	/* form 18b addr */
-		if (ma >= MEMSIZE) {			/* nx mem? */
+		if (!Map_Addr (ma, &mma) ||		/* map addr */
+		    !ADDR_IS_MEM (mma)) {		/* nx mem? */
 			dt_seterr (uptr, STA_NXM);
 			break;  }
-		else tcdt = M[ma >> 1];			/* get word */
+		else tcdt = M[mma >> 1];		/* get word */
 		tcwc = (tcwc + 1) & DMASK;		/* incr MA, WC */
 		tcba = (tcba + 2) & DMASK;
 		if (tcba <= 1) tccm = CSR_INCMEX (tccm);  }
@@ -1117,7 +1091,7 @@ if (sim_is_active (uptr)) {				/* active? cancel op */
 		tccm = tccm | CSR_ERR | CSR_DONE;
 		if (tccm & CSR_IE) SET_INT (DTA);  }
 	uptr -> STATE = uptr -> pos = 0;  }
-if (uptr -> hwmark) {					/* any data? */
+if (uptr -> hwmark && ((uptr -> flags & UNIT_RO) == 0)) { /* any data? */
 	printf ("TC: writing buffer to file\n");
 	rewind (uptr -> fileref);			/* start of file */
 	if (uptr -> flags & UNIT_8FMT) {		/* PDP8? */

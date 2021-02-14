@@ -25,6 +25,9 @@
 
    rp		RP15/RP02 disk pack
 
+   29-Nov-01	RMS	Added read only unit support
+   25-Nov-01	RMS	Revised interrupt structure
+			Changed FLG to array
    26-Apr-01	RMS	Added device enable/disable support
    14-Apr-99	RMS	Changed t_addr to unsigned
    29-Jun-96	RMS	Added unit enable/disable support
@@ -43,9 +46,10 @@
 
 /* Unit specific flags */
 
-#define UNIT_V_HWLK	(UNIT_V_UF + 0)			/* hwre write lock */
+#define UNIT_V_WLK	(UNIT_V_UF + 0)			/* hwre write lock */
 #define UNIT_W_UF	2				/* user flags width */
-#define UNIT_HWLK	(1u << UNIT_V_HWLK)
+#define UNIT_WLK	(1u << UNIT_V_WLK)
+#define UNIT_WPRT	(UNIT_WLK | UNIT_RO)		/* write protect */
 
 /* Parameters in the unit descriptor */
 
@@ -124,7 +128,7 @@
 #define MAX(x,y) (((x) > (y))? (x): (y))
 
 extern int32 M[];
-extern int32 int_req, dev_enb, nexm;
+extern int32 int_hwre[API_HLVL+1], dev_enb, nexm;
 extern UNIT cpu_unit;
 int32 rp_sta = 0;					/* status A */
 int32 rp_stb = 0;					/* status B */
@@ -165,33 +169,19 @@ REG rp_reg[] = {
 	{ ORDATA (DA, rp_da, 18) },
 	{ ORDATA (MA, rp_ma, 18) },
 	{ ORDATA (WC, rp_wc, 18) },
-	{ FLDATA (INT, int_req, INT_V_RP) },
+	{ FLDATA (INT, int_hwre[API_RP], INT_V_RP) },
 	{ FLDATA (BUSY, rp_busy, 0) },
 	{ FLDATA (STOP_IOE, rp_stopioe, 0) },
 	{ DRDATA (STIME, rp_swait, 24), PV_LEFT },
 	{ DRDATA (RTIME, rp_rwait, 24), PV_LEFT },
-	{ GRDATA (FLG0, rp_unit[0].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG1, rp_unit[1].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG2, rp_unit[2].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG3, rp_unit[3].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG4, rp_unit[4].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG5, rp_unit[5].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG6, rp_unit[6].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG7, rp_unit[7].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
+	{ URDATA (FLG, rp_unit[0].flags, 8, UNIT_W_UF, UNIT_V_UF - 1,
+		  RP_NUMDR, REG_HRO) },
 	{ FLDATA (*DEVENB, dev_enb, INT_V_RP), REG_HRO },
 	{ NULL }  };
 
 MTAB rp_mod[] = {
-	{ UNIT_HWLK, 0, "write enabled", "ENABLED", NULL },
-	{ UNIT_HWLK, UNIT_HWLK, "write locked", "LOCKED", NULL },
+	{ UNIT_WLK, 0, "write enabled", "ENABLED", NULL },
+	{ UNIT_WLK, UNIT_WLK, "write locked", "LOCKED", NULL },
 	{ 0 }  };
 
 DEVICE rp_dev = {
@@ -315,6 +305,10 @@ if ((uptr -> flags & UNIT_ATT) == 0) {			/* not attached? */
 	rp_updsta (STA_DON, STB_SUFU);			/* done, unsafe */
 	return IORETURN (rp_stopioe, SCPE_UNATT);  }
 
+if ((f == FN_WRITE) && (uptr -> flags & UNIT_WPRT)) {	/* write locked? */
+	rp_updsta (STA_DON | STA_WPE, 0);		/* error */
+	return SCPE_OK;  }
+
 if (GET_SECT (rp_da) >= RP_NUMSC) rp_updsta (STA_NXS, 0);
 if (GET_SURF (rp_da) >= RP_NUMSF) rp_updsta (STA_NXF, 0);
 if (GET_CYL (rp_da) >= RP_NUMCY) rp_updsta (STA_NXC, 0);
@@ -381,7 +375,7 @@ UNIT *uptr;
 uptr = rp_dev.units + GET_UNIT (rp_sta);
 rp_sta = (rp_sta & ~(STA_DYN | STA_ERR)) | newa;
 rp_stb = (rp_stb & ~STB_DYN) | newb;
-if (uptr -> flags & UNIT_HWLK) rp_sta = rp_sta | STA_SUWP;
+if (uptr -> flags & UNIT_WPRT) rp_sta = rp_sta | STA_SUWP;
 if ((uptr -> flags & UNIT_ATT) == 0) rp_stb = rp_stb | STB_SUFU | STB_SUNR;
 else if (sim_is_active (uptr)) {
 	f = (uptr -> FUNC) & STA_M_FUNC;
@@ -390,8 +384,8 @@ else if (sim_is_active (uptr)) {
 else if (uptr -> CYL >= RP_NUMCY) rp_sta = rp_sta | STA_SUSI;
 if ((rp_sta & STA_EFLGS) || (rp_stb & STB_EFLGS)) rp_sta = rp_sta | STA_ERR;
 if (((rp_sta & (STA_ERR | STA_DON)) && (rp_sta & STA_IED)) ||
-    ((rp_stb & STB_ATTN) && (rp_sta & STA_IEA))) int_req = int_req | INT_RP;
-else int_req = int_req & ~INT_RP;
+    ((rp_stb & STB_ATTN) && (rp_sta & STA_IEA))) SET_INT (RP);
+else CLR_INT (RP);
 return;
 }
 
@@ -403,7 +397,7 @@ int32 i;
 UNIT *uptr;
 
 rp_sta = rp_stb = rp_da = rp_wc = rp_ma = rp_busy = 0;
-int_req = int_req & ~INT_RP;
+CLR_INT (RP);
 for (i = 0; i < RP_NUMDR; i++) {
 	uptr = rp_dev.units + i;
 	sim_cancel (uptr);

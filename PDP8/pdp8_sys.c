@@ -23,6 +23,7 @@
    be used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   26-Nov-01	RMS	Added RL8A support
    17-Sep-01	RMS	Removed multiconsole support
    16-Sep-01	RMS	Added TSS/8 packed char support, added KL8A support
    27-May-01	RMS	Added multiconsole support
@@ -43,7 +44,8 @@ extern UNIT cpu_unit;
 extern DEVICE ptr_dev, ptp_dev;
 extern DEVICE tti_dev, tto_dev;
 extern DEVICE clk_dev, lpt_dev;
-extern DEVICE rk_dev, rx_dev;
+extern DEVICE rk_dev, rl_dev;
+extern DEVICE rx_dev;
 extern DEVICE df_dev, rf_dev;
 extern DEVICE dt_dev, mt_dev;
 extern DEVICE tti1_dev, tto1_dev;
@@ -80,7 +82,8 @@ DEVICE *sim_devices[] = {
 	&tti3_dev, &tto3_dev,
 	&tti4_dev, &tto4_dev,
 	&clk_dev, &lpt_dev,
-	&rk_dev, &rx_dev,
+	&rk_dev, &rl_dev,
+	&rx_dev,
 	&df_dev, &rf_dev,
 	&dt_dev, &mt_dev,
 	NULL };
@@ -226,6 +229,11 @@ static const char *opcode[] = {
  "SER", "SDN", "INTR", "INIT",
  "DTRA", "DTCA", "DTXA", "DTLA",
  "DTSF", "DTRB", "DTLB",
+ "RLDC", "RLSD", "RLMA", "RLCA",
+ "RLCB", "RLSA", "RLWC",
+ "RRER", "RRWC", "RRCA", "RRCB",
+ "RRSA", "RRSI", "RLSE",
+
  "CDF", "CIF", "CIF CDF",
  "AND", "TAD", "ISZ", "DCA", "JMS", "JMP", "IOT",
  "NOP", "NOP2", "NOP3", "SWAB", "SWBA",
@@ -278,6 +286,11 @@ static const int32 opc_val[] = {
  06754+I_NPN, 06755+I_NPN, 06756+I_NPN, 06757+I_NPN,
  06761+I_NPN, 06762+I_NPN, 06764+I_NPN, 06766+I_NPN,
  06771+I_NPN, 06772+I_NPN, 06774+I_NPN,
+ 06600+I_NPN, 06601+I_NPN, 06602+I_NPN, 06603+I_NPN,
+ 06604+I_NPN, 06605+I_NPN, 06607+I_NPN,
+ 06610+I_NPN, 06611+I_NPN, 06612+I_NPN, 06613+I_NPN,
+ 06614+I_NPN, 06615+I_NPN, 06617+I_NPN,
+
  06201+I_FLD, 06202+I_FLD, 06203+I_FLD,
  00000+I_MRF, 01000+I_MRF, 02000+I_MRF, 03000+I_MRF,
  04000+I_MRF, 05000+I_MRF, 06000+I_IOT,

@@ -379,11 +379,10 @@ typedef t_int64		d10;				/* PDP-10 data (36b) */
    There are only two real contexts for selecting the AC block and
    the memory map: current and previous.  However, PXCT allows the
    choice of current versus previous to be made selectively for
-   various parts of an instruction.  The PXCT flags (and the trap
-   in progress flag) are kept in a dynamic CPU variable.
+   various parts of an instruction.  The PXCT flags are kept in a
+   dynamic CPU variable.
 */
 
-#define TRAP_CYCLE	040				/* trap in progress */
 #define EA_PXCT		010				/* eff addr calc */
 #define OPND_PXCT	004				/* operand, bdst */
 #define EABP_PXCT	002				/* bp eff addr calc */
@@ -420,6 +419,8 @@ typedef t_int64		d10;				/* PDP-10 data (36b) */
 #define UPT_T20_UEA	0426				/* T20: address */
 #define UPT_T20_CTX	0427				/* T20: context */
 #define UPT_ENPC	0430				/* MUUO new PC, exec */
+#define UPT_1PO		0432				/* ITS 1-proc: old PC */
+#define UPT_1PN		0433				/* ITS 1-proc: new PC */
 #define UPT_UNPC	0434				/* MUUO new PC, user */
 #define UPT_NPCT	1				/* PC offset if trap */
 #define UPT_T10_PAG	0500				/* T10: page fail blk */

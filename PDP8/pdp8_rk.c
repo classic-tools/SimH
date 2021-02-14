@@ -25,6 +25,8 @@
 
    rk		RK8E/RK05 cartridge disk
 
+   30-Nov-01	RMS	Added read only unit, extended SET/SHOW support
+   24-Nov-01	RMS	Converted FLG to array, made register names consistent
    25-Apr-01	RMS	Added device enable/disable support
    29-Jun-96	RMS	Added unit enable/disable support
 */
@@ -48,6 +50,7 @@
 #define UNIT_W_UF	3				/* user flags width */
 #define UNIT_HWLK	(1 << UNIT_V_HWLK)
 #define UNIT_SWLK	(1 << UNIT_V_SWLK)
+#define UNIT_WPRT	(UNIT_HWLK|UNIT_SWLK|UNIT_RO)	/* write protect */
 
 /* Parameters in the unit descriptor */
 
@@ -142,38 +145,33 @@ void rk_go (int32 function, int32 cylinder);
 */
 
 UNIT rk_unit[] = {
-	{ UDATA (&rk_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE, RK_SIZE) },
-	{ UDATA (&rk_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE, RK_SIZE) },
-	{ UDATA (&rk_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE, RK_SIZE) },
-	{ UDATA (&rk_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE, RK_SIZE) } };
+	{ UDATA (&rk_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
+		UNIT_ROABLE, RK_SIZE) },
+	{ UDATA (&rk_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
+		UNIT_ROABLE, RK_SIZE) },
+	{ UDATA (&rk_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
+		UNIT_ROABLE, RK_SIZE) },
+	{ UDATA (&rk_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
+		UNIT_ROABLE, RK_SIZE) }  };
 
 REG rk_reg[] = {
-	{ ORDATA (STA, rk_sta, 12) },
-	{ ORDATA (CMD, rk_cmd, 12) },
-	{ ORDATA (DA, rk_da, 12) },
-	{ ORDATA (MA, rk_ma, 12) },
+	{ ORDATA (RKSTA, rk_sta, 12) },
+	{ ORDATA (RKCMD, rk_cmd, 12) },
+	{ ORDATA (RKDA, rk_da, 12) },
+	{ ORDATA (RKMA, rk_ma, 12) },
 	{ FLDATA (BUSY, rk_busy, 0) },
 	{ FLDATA (INT, int_req, INT_V_RK) },
 	{ DRDATA (STIME, rk_swait, 24), PV_LEFT },
 	{ DRDATA (RTIME, rk_rwait, 24), PV_LEFT },
-	{ GRDATA (FLG0, rk_unit[0].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG1, rk_unit[1].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG2, rk_unit[2].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG3, rk_unit[3].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
+	{ URDATA (FLG, rk_unit[0].flags, 8, UNIT_W_UF, UNIT_V_UF - 1,
+		  RK_NUMDR, REG_HRO) },
 	{ FLDATA (STOP_IOE, rk_stopioe, 0) },
 	{ FLDATA (*DEVENB, dev_enb, INT_V_RK), REG_HRO },
 	{ NULL }  };
 
 MTAB rk_mod[] = {
-	{ (UNIT_HWLK+UNIT_SWLK), 0, "write enabled", "ENABLED", NULL },
-	{ (UNIT_HWLK+UNIT_SWLK), UNIT_HWLK, "write locked", "LOCKED", NULL },
-	{ (UNIT_HWLK+UNIT_SWLK), UNIT_SWLK, "write locked", NULL, NULL },
-	{ (UNIT_HWLK+UNIT_SWLK), (UNIT_HWLK+UNIT_SWLK), "write locked",
-		NULL, NULL }, 
+	{ UNIT_HWLK, 0, "write enabled", "ENABLED", NULL },
+	{ UNIT_HWLK, UNIT_HWLK, "write locked", "LOCKED", NULL },
 	{ 0 }  };
 
 DEVICE rk_dev = {
@@ -261,7 +259,7 @@ if ((uptr -> flags & UNIT_ATT) == 0) {			/* not attached? */
 if (sim_is_active (uptr) || (cyl >= RK_NUMCY)) {	/* busy or bad cyl? */
 	rk_sta = rk_sta | RKS_DONE | RKS_STAT;
 	return;  }
-if ((func == RKC_WRITE) && (uptr -> flags & (UNIT_HWLK + UNIT_SWLK))) {
+if ((func == RKC_WRITE) && (uptr -> flags & UNIT_WPRT)) {
 	rk_sta = rk_sta | RKS_DONE | RKS_WLK;		/* write and locked? */
 	return;  }
 if (func == RKC_WLK) {					/* write lock? */
@@ -308,6 +306,12 @@ if ((uptr -> flags & UNIT_ATT) == 0) {			/* not att? abort */
 	rk_busy = 0;
 	RK_INT_UPDATE;
 	return IORETURN (rk_stopioe, SCPE_UNATT);  }
+
+if ((uptr -> FUNC == RKC_WRITE) && (uptr -> flags & UNIT_WPRT)) {
+	rk_sta = rk_sta | RKS_DONE | RKS_WLK;		/* write and locked? */
+	rk_busy = 0;
+	RK_INT_UPDATE;
+	return SCPE_OK;  }
 
 pa = GET_MEX (rk_cmd) | rk_ma;				/* phys address */
 da = GET_DA (rk_cmd, rk_da) * RK_NUMWD * sizeof (int16);/* disk address */

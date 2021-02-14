@@ -25,6 +25,7 @@
 
    df		DF32 fixed head disk
 
+   28-Nov-01	RMS	Added RL8A support
    25-Apr-01	RMS	Added device enable/disable support
 
    The DF32 is a head-per-track disk.  It uses the three cycle data break
@@ -229,7 +230,8 @@ return SCPE_OK;
 
 t_stat df_reset (DEVICE *dptr)
 {
-if (dev_enb & INT_DF) dev_enb = dev_enb & ~INT_RF;	/* either DF or RF */
+if (dev_enb & INT_DF)					/* DF? no RF or RL */
+	dev_enb = dev_enb & ~(INT_RF | INT_RL);
 df_sta = df_da = 0;
 df_done = 1;
 int_req = int_req & ~INT_DF;				/* clear interrupt */

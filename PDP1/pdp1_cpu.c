@@ -25,6 +25,8 @@
 
    cpu		PDP-1 central processor
 
+   07-Dec-01	RMS	Revised to use breakpoint package
+   30-Nov-01	RMS	Added extended SET/SHOW support
    16-Dec-00	RMS	Fixed bug in XCT address calculation
    14-Apr-99	RMS	Changed t_addr to unsigned
 
@@ -212,8 +214,6 @@
 
 #include "pdp1_defs.h"
 
-#define ILL_ADR_FLAG	(1 << ASIZE)
-#define save_ibkpt	(cpu_unit.u3)
 #define UNIT_V_MDV	(UNIT_V_UF)			/* mul/div */
 #define UNIT_MDV	(1 << UNIT_V_MDV)
 #define UNIT_V_MSIZE	(UNIT_V_UF+1)			/* dummy mask */
@@ -238,15 +238,14 @@ int32 stop_inst = 0;					/* stop on rsrv inst */
 int32 xct_max = 16;					/* nested XCT limit */
 int32 ind_max = 16;					/* nested ind limit */
 int32 old_PC = 0;					/* old PC */
-int32 ibkpt_addr = ILL_ADR_FLAG | AMASK;		/* breakpoint addr */
+extern UNIT *sim_clock_queue;
+extern int32 sim_int_char;
+extern int32 sim_brk_types, sim_brk_dflt, sim_brk_summ;	/* breakpoint info */
 
 t_stat cpu_ex (t_value *vptr, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_dep (t_value val, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_reset (DEVICE *dptr);
-t_stat cpu_svc (UNIT *uptr);
-t_stat cpu_set_size (UNIT *uptr, int32 value);
-extern int32 sim_int_char;
-extern UNIT *sim_clock_queue;
+t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc);
 extern int32 ptr (int32 inst, int32 dev, int32 IO);
 extern int32 ptp (int32 inst, int32 dev, int32 IO);
 extern int32 tti (int32 inst, int32 dev, int32 IO);
@@ -297,7 +296,7 @@ int32 sc_map[512] = {
    cpu_mod	CPU modifier list
 */
 
-UNIT cpu_unit = { UDATA (&cpu_svc, UNIT_FIX + UNIT_BINK, MAXMEMSIZE) };
+UNIT cpu_unit = { UDATA (NULL, UNIT_FIX + UNIT_BINK, MAXMEMSIZE) };
 
 REG cpu_reg[] = {
 	{ ORDATA (PC, PC, ASIZE) },
@@ -321,7 +320,6 @@ REG cpu_reg[] = {
 	{ FLDATA (MDV, cpu_unit.flags, UNIT_V_MDV), REG_HRO },
 	{ DRDATA (XCT_MAX, xct_max, 8), PV_LEFT + REG_NZ },
 	{ DRDATA (IND_MAX, ind_max, 8), PV_LEFT + REG_NZ },
-	{ ORDATA (BREAK, ibkpt_addr, ASIZE + 1) },
 	{ ORDATA (WRU, sim_int_char, 8) },
 	{ NULL }  };
 
@@ -379,10 +377,7 @@ if (sbs == (SB_ON | SB_RQ)) {				/* interrupt? */
 	extm = 0;					/* extend off */
 	OV = 0;  }					/* clear overflow */
 
-if (PC == ibkpt_addr) {					/* breakpoint? */
-	save_ibkpt = ibkpt_addr;			/* save ibkpt */
-	ibkpt_addr = ibkpt_addr | ILL_ADR_FLAG;		/* disable */
-	sim_activate (&cpu_unit, 1);			/* sched re-enable */
+if (sim_brk_summ && sim_brk_test (PC, SWMASK ('E'))) {	/* breakpoint? */
 	reason = STOP_IBKPT;				/* stop simulation */
 	break;  }
 
@@ -741,7 +736,8 @@ extm = extm_init;
 ioh = ioc = 0;
 OV = 0;
 PF = 0;
-return cpu_svc (&cpu_unit);
+sim_brk_types = sim_brk_dflt = SWMASK ('E');
+return SCPE_OK;
 }
 
 /* Memory examine */
@@ -762,28 +758,19 @@ M[addr] = val & 0777777;
 return SCPE_OK;
 }
 
-/* Service breakpoint */
-
-t_stat cpu_svc (UNIT *uptr)
-{
-if ((ibkpt_addr & ~ILL_ADR_FLAG) == save_ibkpt) ibkpt_addr = save_ibkpt;
-save_ibkpt = -1;
-return SCPE_OK;
-}
-
 /* Change memory size */
 
-t_stat cpu_set_size (UNIT *uptr, int32 value)
+t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc)
 {
 int32 mc = 0;
 t_addr i;
 
-if ((value <= 0) || (value > MAXMEMSIZE) || ((value & 07777) != 0))
+if ((val <= 0) || (val > MAXMEMSIZE) || ((val & 07777) != 0))
 	return SCPE_ARG;
-for (i = value; i < MEMSIZE; i++) mc = mc | M[i];
+for (i = val; i < MEMSIZE; i++) mc = mc | M[i];
 if ((mc != 0) && (!get_yn ("Really truncate memory [N]?", FALSE)))
 	return SCPE_OK;
-MEMSIZE = value;
+MEMSIZE = val;
 for (i = MEMSIZE; i < MAXMEMSIZE; i++) M[i] = 0;
 return SCPE_OK;
 }

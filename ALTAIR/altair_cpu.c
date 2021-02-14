@@ -58,8 +58,6 @@
 
 #include "altair_defs.h"
 
-#define ILL_ADR_FLAG	0200000
-#define save_ibkpt		(cpu_unit.u3)
 #define UNIT_V_OPSTOP	(UNIT_V_UF)			/* Stop on Invalid OP? */
 #define UNIT_OPSTOP		(1 << UNIT_V_OPSTOP)
 #define UNIT_V_CHIP	 	(UNIT_V_UF+1)       /* 8080 or Z80 */
@@ -82,20 +80,19 @@ int32 saved_PC = 0;				/* program counter */
 int32 SR = 0;						/* switch register */
 int32 INTE = 0;					/* Interrupt Enable */
 int32 int_req = 0;				/* Interrupt request */
-int32 ibkpt_addr = ILL_ADR_FLAG | ADDRMASK;		/* breakpoint addr */
 int32 chip = 0;					/* 0 = 8080 chip, 1 = z80 chip */
 
 int32 PCX;           				/* External view of PC */
 
 extern int32 sim_int_char;
+extern int32 sim_brk_types, sim_brk_dflt, sim_brk_summ;	/* breakpoint info */
 
 /* function prototypes */
 
 t_stat cpu_ex (t_value *vptr, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_dep (t_value val, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_reset (DEVICE *dptr);
-t_stat cpu_svc (UNIT *uptr);
-t_stat cpu_set_size (UNIT *uptr, int32 value);
+t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc);
 void setarith(int32 reg);
 void setlogical(int32 reg);
 void setinc(int32 reg);
@@ -234,7 +231,7 @@ int32 bootrom[256] = {
    cpu_mod	CPU modifiers list
 */
 
-UNIT cpu_unit = { UDATA (&cpu_svc, UNIT_FIX + UNIT_BINK,
+UNIT cpu_unit = { UDATA (NULL, UNIT_FIX + UNIT_BINK,
 		MAXMEMSIZE) };
 
 REG cpu_reg[] = {
@@ -249,11 +246,10 @@ REG cpu_reg[] = {
 	{ FLDATA (AC, AC, 16) },
 	{ FLDATA (S, S, 16) },
 	{ FLDATA (P, P, 16) },
-    { FLDATA (INTE, INTE, 16) },
+	{ FLDATA (INTE, INTE, 16) },
 	{ FLDATA (Z80, cpu_unit.flags, UNIT_V_CHIP), REG_HRO },
 	{ FLDATA (OPSTOP, cpu_unit.flags, UNIT_V_OPSTOP), REG_HRO },
 	{ ORDATA (SR, SR, 16) },
-	{ ORDATA (BREAK, ibkpt_addr, 17) },
 	{ ORDATA (WRU, sim_int_char, 8) },
 	{ NULL }  };
 
@@ -303,10 +299,8 @@ int32 sim_instr (void)
 
     	}									/* end interrupt */
 
-    	if (PC == ibkpt_addr) {					/* breakpoint? */
-			save_ibkpt = ibkpt_addr;				/* save address */
-			ibkpt_addr = ibkpt_addr | ILL_ADR_FLAG;		/* disable */
-			sim_activate (&cpu_unit, 1);			/* sched re-enable */
+	if (sim_brk_summ &&
+	    sim_brk_test (PC, SWMASK ('E'))) {	/* breakpoint? */
 			reason = STOP_IBKPT;				/* stop simulation */
 			break;
     	}
@@ -1125,7 +1119,8 @@ C = 0;
 Z = 0;
 saved_PC = 0;
 int_req = 0;
-return cpu_svc (&cpu_unit);
+sim_brk_types = sim_brk_dflt = SWMASK ('E');
+return SCPE_OK;
 }
 
 /* Memory examine */
@@ -1146,27 +1141,17 @@ t_stat cpu_dep (t_value val, t_addr addr, UNIT *uptr, int32 sw)
 	return SCPE_OK;
 }
 
-/* Breakpoint service */
-
-t_stat cpu_svc (UNIT *uptr)
-{
-	if ((ibkpt_addr & ~ILL_ADR_FLAG) == save_ibkpt)
-		ibkpt_addr = save_ibkpt;
-	save_ibkpt = -1;
-	return SCPE_OK;
-}
-
-t_stat cpu_set_size (UNIT *uptr, int32 value)
+t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc)
 {
 int32 mc = 0;
 t_addr i;
 
-if ((value <= 0) || (value > MAXMEMSIZE) || ((value & 07777) != 0))
+if ((val <= 0) || (val > MAXMEMSIZE) || ((val & 07777) != 0))
 	return SCPE_ARG;
-for (i = value; i < MEMSIZE; i++) mc = mc | M[i];
+for (i = val; i < MEMSIZE; i++) mc = mc | M[i];
 if ((mc != 0) && (!get_yn ("Really truncate memory [N]?", FALSE)))
 	return SCPE_OK;
-MEMSIZE = value;
+MEMSIZE = val;
 for (i = MEMSIZE; i < MAXMEMSIZE; i++) M[i] = 0;
 return SCPE_OK;
 }

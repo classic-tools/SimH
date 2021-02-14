@@ -23,6 +23,7 @@
    be used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   30-Nov-01	RMS	Added extended SET/SHOW support
    10-Aug-01	RMS	Removed register in declarations
    07-Dec-00	RMS	Fixed bugs found by Charles Owen
 			-- 4,7 char NOPs are legal
@@ -105,8 +106,6 @@
 
 #include "i1401_defs.h"
 
-#define ILL_ADR_FLAG	100000				/* invalid addr flag */
-#define save_ibkpt	(cpu_unit.u3)			/* saved bkpt addr */
 #define MM(x)		x = x - 1; \
 			if (x < 0) { \
 				x = BA + MAXMEMSIZE - 1; \
@@ -135,14 +134,13 @@ int32 ind[64] = { 0 };					/* indicators */
 int32 ssa = 1;						/* sense switch A */
 int32 prchk = 0;					/* process check stop */
 int32 iochk = 0;					/* I/O check stop */
-int32 ibkpt_addr = ILL_ADR_FLAG + MAXMEMSIZE;		/* breakpoint addr */
 extern int32 sim_int_char;
+extern int32 sim_brk_types, sim_brk_dflt, sim_brk_summ;	/* breakpoint info */
 
 t_stat cpu_ex (t_value *vptr, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_dep (t_value val, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_reset (DEVICE *dptr);
-t_stat cpu_svc (UNIT *uptr);
-t_stat cpu_set_size (UNIT *uptr, int32 value);
+t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc);
 int32 store_addr_h (int32 addr);
 int32 store_addr_t (int32 addr);
 int32 store_addr_u (int32 addr);
@@ -167,7 +165,7 @@ extern t_stat sim_activate (UNIT *uptr, int32 delay);
    cpu_mod	CPU modifier list
 */
 
-UNIT cpu_unit = { UDATA (&cpu_svc, UNIT_FIX + UNIT_BCD + STDOPT,
+UNIT cpu_unit = { UDATA (NULL, UNIT_FIX + UNIT_BCD + STDOPT,
 	MAXMEMSIZE) };
 
 REG cpu_reg[] = {
@@ -191,7 +189,6 @@ REG cpu_reg[] = {
 	{ FLDATA (IOCHK, iochk, 0) },
 	{ FLDATA (PRCHK, prchk, 0) },
 	{ DRDATA (OLDIS, oldIS, 14), REG_RO + PV_LEFT },
-	{ DRDATA (BREAK, ibkpt_addr, 17), PV_LEFT },
 	{ ORDATA (WRU, sim_int_char, 8) },
 	{ NULL }  };
 
@@ -420,10 +417,7 @@ saved_IS = IS;						/* commit prev instr */
 if (sim_interval <= 0) {				/* check clock queue */
 	if (reason = sim_process_event ()) break;  }
 
-if (IS == ibkpt_addr) {					/* breakpoint? */
-	save_ibkpt = ibkpt_addr;			/* save ibkpt */
-	ibkpt_addr = ibkpt_addr + ILL_ADR_FLAG;		/* disable */
-	sim_activate (&cpu_unit, 1);			/* sched re-enable */
+if (sim_brk_summ && sim_brk_test (IS, SWMASK ('E'))) {	/* breakpoint? */
 	reason = STOP_IBKPT;				/* stop simulation */
 	break;  }
 
@@ -1061,15 +1055,7 @@ for (i = 0; i < 64; i++) ind[i] = 0;
 ind[IN_UNC] = 1;
 AS = 0; as_err = 1;
 BS = 0; bs_err = 1;
-return cpu_svc (&cpu_unit);
-}
-
-/* Breakpoint service */
-
-t_stat cpu_svc (UNIT *uptr)
-{
-if ((ibkpt_addr - ILL_ADR_FLAG) == save_ibkpt) ibkpt_addr = save_ibkpt;
-save_ibkpt = -1;
+sim_brk_types = sim_brk_dflt = SWMASK ('E');
 return SCPE_OK;
 }
 
@@ -1093,17 +1079,17 @@ return SCPE_OK;
 
 /* Memory size change */
 
-t_stat cpu_set_size (UNIT *uptr, int32 value)
+t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc)
 {
 int32 mc = 0;
 t_addr i;
 
-if ((value <= 0) || (value > MAXMEMSIZE) || ((value % 1000) != 0))
+if ((val <= 0) || (val > MAXMEMSIZE) || ((val % 1000) != 0))
 	return SCPE_ARG;
-for (i = value; i < MEMSIZE; i++) mc = mc | M[i];
+for (i = val; i < MEMSIZE; i++) mc = mc | M[i];
 if ((mc != 0) && (!get_yn ("Really truncate memory [N]?", FALSE)))
 	return SCPE_OK;
-MEMSIZE = value;
+MEMSIZE = val;
 for (i = MEMSIZE; i < MAXMEMSIZE; i++) M[i] = 0;
 if (MEMSIZE > 4000) cpu_unit.flags = cpu_unit.flags | MA;
 else cpu_unit.flags = cpu_unit.flags & ~MA;

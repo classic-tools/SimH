@@ -25,6 +25,7 @@
 
    pag		KS10 pager
 
+   02-Dec-01	RMS	Fixed bug in ITS LPMR (found by Dave Conroy)
    21-Aug-01	RMS	Fixed bug in ITS paging (found by Miriam Lennox)
 			Removed register from declarations
    19-May-01	RMS	Added workaround for TOPS-20 V4.1 boot bug
@@ -754,6 +755,7 @@ val = Read (ADDA (ea, 2), prv);
 dbr1 = (a10) (Read (ea, prv) & AMASK);
 dbr2 = (a10) (Read (ADDA (ea, 1), prv) & AMASK);
 quant = val;
+pag_reset (&pag_dev);
 return FALSE;
 }
 

@@ -23,6 +23,7 @@
    be used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   25-Nov-01	RMS	Revised interrupt structure
    27-May-01	RMS	Added second Teletype support
    21-Jan-01	RMS	Added DECtape support
    14-Apr-99	RMS	Changed t_addr to unsigned
@@ -187,65 +188,101 @@
 	35	LT15 TTI		3	PDP-15 only
 	36	-
 	37	-
-
-   Interrupt system, priority is left to right.
-
-   <30:28> =	priority 0
-   <27:20> =	priority 1
-   <19:12> =	priority 2
-   <11:8> =	priority 3
-   <7:0> =	PI only
 */
 
-#define API_L0		0xF0000000
-#define API_L1		0x0FF00000
-#define API_L2		0x000FF000
-#define API_L3		0x00000F00
+#define API_HLVL	4				/* hwre levels */
+#define ACH_SWRE	040				/* swre int vec */
 
-#define INT_V_PWRFL	30				/* powerfail */
-#define INT_V_DTA	27				/* DECtape */
-#define INT_V_MTA	26				/* magtape */
-#define INT_V_DRM	25				/* drum */
-#define INT_V_RF	24				/* fixed head disk */
-#define INT_V_RP	23				/* disk pack */
-#define INT_V_PTR	19				/* paper tape reader */
-#define INT_V_LPT	18				/* line printer */
-#define INT_V_LPTSPC	17				/* line printer spc */
-#define INT_V_CLK	11				/* clock */
-#define INT_V_TTI1	10				/* LT15 keyboard */
-#define INT_V_TTO1	9				/* LT15 output */
-#define INT_V_TTI	7				/* console keyboard */
-#define INT_V_TTO	6				/* console output */
-#define INT_V_PTP	5				/* paper tape punch */
+/* API level 0 */
+
+#define INT_V_PWRFL	0				/* powerfail */
 
 #define INT_PWRFL	(1 << INT_V_PWRFL)
+
+#define API_PWRFL	0
+
+#define ACH_PWRFL	052
+
+/*API level 1 */
+
+#define INT_V_DTA	0				/* DECtape */
+#define INT_V_MTA	1				/* magtape */
+#define INT_V_DRM	2				/* drum */
+#define INT_V_RF	3				/* fixed head disk */
+#define INT_V_RP	4				/* disk pack */
+
 #define INT_DTA		(1 << INT_V_DTA)
 #define INT_MTA		(1 << INT_V_MTA)
 #define INT_DRM		(1 << INT_V_DRM)
 #define INT_RF		(1 << INT_V_RF)
 #define INT_RP		(1 << INT_V_RP)
-#define INT_PTR		(1 << INT_V_PTR)
-#define INT_LPT		(1 << INT_V_LPT)
-#define INT_LPTSPC	(1 << INT_V_LPTSPC)
-#define INT_CLK		(1 << INT_V_CLK)
-#define INT_TTI1	(1 << INT_V_TTI1)
-#define INT_TTO1	(1 << INT_V_TTO1)
-#define INT_TTI		(1 << INT_V_TTI)
-#define INT_TTO		(1 << INT_V_TTO)
-#define INT_PTP		(1 << INT_V_PTP)
 
-#define ACH_SWRE	040				/* API channels */
-#define ACH_PWRFL	052
+#define API_DTA		1
+#define API_MTA		1
+#define API_DRM		1
+#define API_RF		1
+#define API_RP		1
+
 #define ACH_DTA		044
 #define ACH_MTA		045
 #define ACH_DRM		046
 #define ACH_RF		063
 #define ACH_RP		064
+
+/* API level 2 */
+
+#define INT_V_PTR	0				/* paper tape reader */
+#define INT_V_LPT	1				/* line printer */
+#define INT_V_LPTSPC	2				/* line printer spc */
+
+#define INT_PTR		(1 << INT_V_PTR)
+#define INT_LPT		(1 << INT_V_LPT)
+#define INT_LPTSPC	(1 << INT_V_LPTSPC)
+
+#define API_PTR		2
+#define API_LPT		2
+#define API_LPTSPC	2
+
 #define ACH_PTR		050
 #define ACH_LPT		056
+
+/* API level 3 */
+
+#define INT_V_CLK	0				/* clock */
+#define INT_V_TTI1	1				/* LT15 keyboard */
+#define INT_V_TTO1	2				/* LT15 output */
+
+#define INT_CLK		(1 << INT_V_CLK)
+#define INT_TTI1	(1 << INT_V_TTI1)
+#define INT_TTO1	(1 << INT_V_TTO1)
+
+#define API_CLK		3
+#define API_TTI1	3
+#define API_TTO1	3
+
 #define ACH_CLK		051
 #define ACH_TTI1	075
 #define ACH_TTO1	074
+
+/* PI level */
+
+#define INT_V_TTI	0				/* console keyboard */
+#define INT_V_TTO	1				/* console output */
+#define INT_V_PTP	2				/* paper tape punch */
+
+#define INT_TTI		(1 << INT_V_TTI)
+#define INT_TTO		(1 << INT_V_TTO)
+#define INT_PTP		(1 << INT_V_PTP)
+
+#define API_TTI		4				/* PI level */
+#define API_TTO		4
+#define API_PTP		4
+
+/* Interrupt macros */
+
+#define SET_INT(dv)	int_hwre[API_##dv] = int_hwre[API_##dv] | INT_##dv
+#define CLR_INT(dv)	int_hwre[API_##dv] = int_hwre[API_##dv] & ~INT_##dv
+#define TST_INT(dv)	(int_hwre[API_##dv] & INT_##dv)
 
 /* I/O status flags for the IORS instruction
 

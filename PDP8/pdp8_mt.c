@@ -25,6 +25,8 @@
 
    mt		TM8E/TU10 magtape
 
+   30-Nov-01	RMS	Added read only unit, extended SET/SHOW support
+   24-Nov-01	RMS	Changed UST, POS, FLG to arrays
    25-Apr-01	RMS	Added device enable/disable support
    04-Oct-98	RMS	V2.4 magtape format
    22-Jan-97	RMS	V2.3 magtape format
@@ -55,6 +57,7 @@
 #define UNUM		u4				/* unit number */
 #define DBSIZE		(1 << 12)			/* max data cmd */
 #define DBMASK		(SBSIZE - 1)
+#define UNIT_WPRT	(UNIT_WLK | UNIT_RO)		/* write protect */
 
 /* Command/unit - mt_cu */
 
@@ -135,7 +138,7 @@ t_stat mt_attach (UNIT *uptr, char *cptr);
 t_stat mt_detach (UNIT *uptr);
 int32 mt_updcsta (UNIT *uptr);
 int32 mt_ixma (int32 xma);
-t_stat mt_vlock (UNIT *uptr, int32 val);
+t_stat mt_vlock (UNIT *uptr, int32 val, char *cptr, void *desc);
 UNIT *mt_busy (void);
 void mt_set_done (void);
 
@@ -148,14 +151,14 @@ void mt_set_done (void);
 */
 
 UNIT mt_unit[] = {
-	{ UDATA (&mt_svc, UNIT_ATTABLE + UNIT_DISABLE, 0) },
-	{ UDATA (&mt_svc, UNIT_ATTABLE + UNIT_DISABLE, 0) },
-	{ UDATA (&mt_svc, UNIT_ATTABLE + UNIT_DISABLE, 0) },
-	{ UDATA (&mt_svc, UNIT_ATTABLE + UNIT_DISABLE, 0) },
-	{ UDATA (&mt_svc, UNIT_ATTABLE + UNIT_DISABLE, 0) },
-	{ UDATA (&mt_svc, UNIT_ATTABLE + UNIT_DISABLE, 0) },
-	{ UDATA (&mt_svc, UNIT_ATTABLE + UNIT_DISABLE, 0) },
-	{ UDATA (&mt_svc, UNIT_ATTABLE + UNIT_DISABLE, 0) }  };
+	{ UDATA (&mt_svc, UNIT_ATTABLE+UNIT_DISABLE+UNIT_ROABLE, 0) },
+	{ UDATA (&mt_svc, UNIT_ATTABLE+UNIT_DISABLE+UNIT_ROABLE, 0) },
+	{ UDATA (&mt_svc, UNIT_ATTABLE+UNIT_DISABLE+UNIT_ROABLE, 0) },
+	{ UDATA (&mt_svc, UNIT_ATTABLE+UNIT_DISABLE+UNIT_ROABLE, 0) },
+	{ UDATA (&mt_svc, UNIT_ATTABLE+UNIT_DISABLE+UNIT_ROABLE, 0) },
+	{ UDATA (&mt_svc, UNIT_ATTABLE+UNIT_DISABLE+UNIT_ROABLE, 0) },
+	{ UDATA (&mt_svc, UNIT_ATTABLE+UNIT_DISABLE+UNIT_ROABLE, 0) },
+	{ UDATA (&mt_svc, UNIT_ATTABLE+UNIT_DISABLE+UNIT_ROABLE, 0) }  };
 
 REG mt_reg[] = {
 	{ ORDATA (CMD, mt_cu, 12) },
@@ -169,38 +172,11 @@ REG mt_reg[] = {
 	{ FLDATA (INT, int_req, INT_V_MT) },
 	{ FLDATA (STOP_IOE, mt_stopioe, 0) },
 	{ DRDATA (TIME, mt_time, 24), PV_LEFT },
-	{ ORDATA (UST0, mt_unit[0].USTAT, 24) },
-	{ ORDATA (UST1, mt_unit[1].USTAT, 24) },
-	{ ORDATA (UST2, mt_unit[2].USTAT, 24) },
-	{ ORDATA (UST3, mt_unit[3].USTAT, 24) },
-	{ ORDATA (UST4, mt_unit[4].USTAT, 24) },
-	{ ORDATA (UST5, mt_unit[5].USTAT, 24) },
-	{ ORDATA (UST6, mt_unit[6].USTAT, 24) },
-	{ ORDATA (UST7, mt_unit[7].USTAT, 24) },
-	{ DRDATA (POS0, mt_unit[0].pos, 31), PV_LEFT + REG_RO },
-	{ DRDATA (POS1, mt_unit[1].pos, 31), PV_LEFT + REG_RO },
-	{ DRDATA (POS2, mt_unit[2].pos, 31), PV_LEFT + REG_RO },
-	{ DRDATA (POS3, mt_unit[3].pos, 31), PV_LEFT + REG_RO },
-	{ DRDATA (POS4, mt_unit[4].pos, 31), PV_LEFT + REG_RO },
-	{ DRDATA (POS5, mt_unit[5].pos, 31), PV_LEFT + REG_RO },
-	{ DRDATA (POS6, mt_unit[6].pos, 31), PV_LEFT + REG_RO },
-	{ DRDATA (POS7, mt_unit[7].pos, 31), PV_LEFT + REG_RO },
-	{ GRDATA (FLG0, mt_unit[0].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG1, mt_unit[1].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG2, mt_unit[2].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG3, mt_unit[3].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG4, mt_unit[4].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG5, mt_unit[5].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG6, mt_unit[6].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG7, mt_unit[7].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
+	{ URDATA (UST, mt_unit[0].USTAT, 8, 16, 0, MT_NUMDR, 0) },
+	{ URDATA (POS, mt_unit[0].pos, 10, 31, 0,
+		  MT_NUMDR, PV_LEFT | REG_RO) },
+	{ URDATA (FLG, mt_unit[0].flags, 8, UNIT_W_UF, UNIT_V_UF - 1,
+		  MT_NUMDR, REG_HRO) },
 	{ FLDATA (*DEVENB, dev_enb, INT_V_MT), REG_HRO },
 	{ NULL }  };
 
@@ -252,7 +228,7 @@ case 6:							/* LFGR */
 		return 0;  }
 	f = GET_FNC (mt_fn);				/* get function */
 	if (((uptr -> flags & UNIT_ATT) == 0) || !TUR (uptr) ||
-	   (((f == FN_WRITE) || (f == FN_WREOF)) && (uptr -> flags & UNIT_WLK))
+	   (((f == FN_WRITE) || (f == FN_WREOF)) && (uptr -> flags & UNIT_WPRT))
 	   || (((f == FN_SPACER) || (f == FN_REWIND)) && (uptr -> pos == 0))) {
 		mt_sta = mt_sta | STA_ILL;		/* illegal op error */
 		mt_set_done ();				/* set done */
@@ -363,7 +339,7 @@ if ((uptr -> flags & UNIT_ATT) == 0) {			/* if not attached */
 	return IORETURN (mt_stopioe, SCPE_UNATT);  }
 
 f = GET_FNC (mt_fn);					/* get command */
-if (((f == FN_WRITE) || (f == FN_WREOF)) && (uptr -> flags & UNIT_WLK)) {
+if (((f == FN_WRITE) || (f == FN_WREOF)) && (uptr -> flags & UNIT_WPRT)) {
 	mt_sta = mt_sta | STA_ILL;			/* illegal operation */
 	mt_set_done ();					/* set done */
 	mt_updcsta (uptr);				/* update status */
@@ -555,7 +531,7 @@ for (u = 0; u < MT_NUMDR; u++) {			/* loop thru units */
 	sim_cancel (uptr);				/* cancel activity */
 	if (uptr -> flags & UNIT_ATT) uptr -> USTAT =
 		((uptr -> pos)? 0: STA_BOT) |
-		((uptr -> flags & UNIT_WLK)? STA_WLK: 0);
+		((uptr -> flags & UNIT_WPRT)? STA_WLK: 0);
 	else uptr -> USTAT = STA_REM;  }
 return SCPE_OK;
 }
@@ -568,7 +544,7 @@ t_stat r;
 
 r = attach_unit (uptr, cptr);
 if (r != SCPE_OK) return r;
-uptr -> USTAT = STA_BOT | ((uptr -> flags & UNIT_WLK)? STA_WLK: 0);
+uptr -> USTAT = STA_BOT | ((uptr -> flags & UNIT_WPRT)? STA_WLK: 0);
 if (uptr -> UNUM == GET_UNIT (mt_cu)) mt_updcsta (uptr);
 return r;
 }
@@ -584,7 +560,7 @@ return detach_unit (uptr);
 
 /* Write lock/enable routine */
 
-t_stat mt_vlock (UNIT *uptr, int32 val)
+t_stat mt_vlock (UNIT *uptr, int32 val, char *cptr, void *desc)
 {
 if ((uptr -> flags & UNIT_ATT) && val) uptr -> USTAT = uptr -> USTAT | STA_WLK;
 else uptr -> USTAT = uptr -> USTAT & ~STA_WLK;

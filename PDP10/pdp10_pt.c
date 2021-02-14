@@ -26,6 +26,7 @@
    ptr		paper tape reader
    ptp		paper tape punch
 
+   29-Nov-01	RMS	Added read only unit support
    07-Sep-01	RMS	Revised disable mechanism
 */
 
@@ -59,7 +60,8 @@ t_stat ptp_detach (UNIT *uptr);
 */
 
 UNIT ptr_unit = {
-	UDATA (&ptr_svc, UNIT_SEQ+UNIT_ATTABLE, 0), SERIAL_IN_WAIT };
+	UDATA (&ptr_svc, UNIT_SEQ+UNIT_ATTABLE+UNIT_ROABLE, 0),
+		SERIAL_IN_WAIT };
 
 REG ptr_reg[] = {
 	{ ORDATA (CSR, ptr_csr, 16) },

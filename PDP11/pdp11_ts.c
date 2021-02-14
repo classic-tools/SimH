@@ -25,6 +25,8 @@
 
    ts		TS11/TSV05 magtape
 
+   30-Nov-01	RMS	Added read only unit, extended SET/SHOW support
+   09-Nov-01	RMS	Added bus map, VAX support
    15-Oct-01	RMS	Integrated debug logging across simulator
    27-Sep-01	RMS	Implemented extended characteristics and status
 			Fixed bug in write characteristics status return
@@ -47,14 +49,51 @@
    If the byte count is odd, the record is padded with an extra byte
    of junk.  File marks are represented by a single record length of 0.
    End of tape is two consecutive end of file marks.
+
+   The TS11 functions in three environments:
+
+   - PDP-11 Q22 systems - the I/O map is one for one, so it's safe to
+     go through the I/O map
+   - PDP-11 Unibus 22b systems - the TS11 behaves as an 18b Unibus
+     peripheral and must go through the I/O map
+   - VAX Q22 systems - the TS11 must go through the I/O map
 */
 
+#if defined (USE_INT64)					/* VAX version */
+#include "vax_defs.h"
+#define VM_VAX		1
+#define TS_RDX		16
+#define TS_DF_ENB	1				/* on by default */
+#define TS_18B		FALSE				/* always 22b */
+#define ADDRTEST	0177700
+#define DMASK		0xFFFF
+extern int32 ReadB (t_addr pa);
+extern void WriteB (t_addr pa, int32 val);
+extern int32 ReadW (t_addr pa);
+extern void WriteW (t_addr pa, int32 val);
+
+#else							/* PDP11 version */
 #include "pdp11_defs.h"
+#define VM_PDP11	1
+#define TS_RDX		8
+#define TS_DF_ENB	0				/* off by default */
+#define TS_18B		(cpu_18b || cpu_ubm)
+#define ADDRTEST	(TS_18B? 0177774: 0177700)
+extern uint16 *M;
+extern int32 cpu_18b, cpu_ubm;
+#define ReadB(p)	((M[(p) >> 1] >> (((p) & 1)? 8: 0)) & 0377)
+#define WriteB(p,v)	M[(p) >> 1] = ((p) & 1)? \
+			((M[(p) >> 1] & 0377) | ((v) << 8)): \
+			((M[(p) >> 1] & ~0377) | (v))
+#define ReadW(p)	M[(p) >> 1]
+#define WriteW(p,v)	M[(p) >> 1] = (v)
+#endif
 
 #define UNIT_V_WLK	(UNIT_V_UF + 0)			/* write locked */
 #define UNIT_WLK	(1 << UNIT_V_WLK)
-#define DBSIZE		(1 << 16)			/* data buffer */
-
+#define TS_MAXFR	(1 << 16)			/* max xfer */
+#define UNIT_WPRT	(UNIT_WLK | UNIT_RO)		/* write protect */
+
 /* TSBA/TSDB - 17772520: base address/data buffer register
 
    read:	most recent memory address
@@ -212,16 +251,11 @@
 #define WCHX_HDS	0000040				/* high density */
 
 #define MAX(a,b)	(((a) >= (b))? (a): (b))
-#define READ_BYTE(p)	((M[(p) >> 1] >> (((p) & 1)? 8: 0)) & 0377)
-#define WRITE_BYTE(d,p)	M[(p) >> 1] = (p & 1)? \
-			((M[(p) >> 1] & 0377) | ((d) << 8)): \
-			((M[(p) >> 1] & ~0377) | (d))
 
-extern uint16 *M;					/* memory */
 extern int32 int_req[IPL_HLVL];
 extern UNIT cpu_unit;
 extern FILE *sim_log;
-extern int32 pdp11_log;
+uint8 *tsxb = NULL;					/* xfer buffer */
 int32 tssr = 0;						/* status register */
 int32 tsba = 0;						/* mem addr */
 int32 tsdbx = 0;					/* data buf ext */
@@ -233,8 +267,7 @@ int32 ts_ownm = 0;					/* tape owns msg */
 int32 ts_qatn = 0;					/* queued attn */
 int32 ts_bcmd = 0;					/* boot cmd */
 int32 ts_time = 10;					/* record latency */
-int32 ts_enb = 0;					/* device enable */
-static uint8 dbuf[DBSIZE];
+int32 ts_enb = TS_DF_ENB;				/* device enable */
 
 t_stat ts_svc (UNIT *uptr);
 t_stat ts_reset (DEVICE *dptr);
@@ -257,25 +290,25 @@ void ts_endcmd (int32 ssf, int32 xs0f, int32 msg);
 UNIT ts_unit = { UDATA (&ts_svc, UNIT_ATTABLE + UNIT_DISABLE, 0) };
 
 REG ts_reg[] = {
-	{ ORDATA (TSSR, tssr, 16) },
-	{ ORDATA (TSBA, tsba, 22) },
-	{ ORDATA (TSDBX, tsdbx, 8) },
-	{ ORDATA (CHDR, cmdhdr, 16) },
-	{ ORDATA (CADL, cmdadl, 16) },
-	{ ORDATA (CADH, cmdadh, 16) },
-	{ ORDATA (CLNT, cmdlnt, 16) },
-	{ ORDATA (MHDR, msghdr, 16) },
-	{ ORDATA (MRFC, msgrfc, 16) },
-	{ ORDATA (MXS0, msgxs0, 16) },
-	{ ORDATA (MXS1, msgxs1, 16) },
-	{ ORDATA (MXS2, msgxs2, 16) },
-	{ ORDATA (MXS3, msgxs3, 16) },
-	{ ORDATA (MSX4, msgxs4, 16) },
-	{ ORDATA (WADL, wchadl, 16) },
-	{ ORDATA (WADH, wchadh, 16) },
-	{ ORDATA (WLNT, wchlnt, 16) },
-	{ ORDATA (WOPT, wchopt, 16) },
-	{ ORDATA (WXOPT, wchxopt, 16) },
+	{ GRDATA (TSSR, tssr, TS_RDX, 16, 0) },
+	{ GRDATA (TSBA, tsba, TS_RDX, 22, 0) },
+	{ GRDATA (TSDBX, tsdbx, TS_RDX, 8, 0) },
+	{ GRDATA (CHDR, cmdhdr, TS_RDX, 16, 0) },
+	{ GRDATA (CADL, cmdadl, TS_RDX, 16, 0) },
+	{ GRDATA (CADH, cmdadh, TS_RDX, 16, 0) },
+	{ GRDATA (CLNT, cmdlnt, TS_RDX, 16, 0) },
+	{ GRDATA (MHDR, msghdr, TS_RDX, 16, 0) },
+	{ GRDATA (MRFC, msgrfc, TS_RDX, 16, 0) },
+	{ GRDATA (MXS0, msgxs0, TS_RDX, 16, 0) },
+	{ GRDATA (MXS1, msgxs1, TS_RDX, 16, 0) },
+	{ GRDATA (MXS2, msgxs2, TS_RDX, 16, 0) },
+	{ GRDATA (MXS3, msgxs3, TS_RDX, 16, 0) },
+	{ GRDATA (MSX4, msgxs4, TS_RDX, 16, 0) },
+	{ GRDATA (WADL, wchadl, TS_RDX, 16, 0) },
+	{ GRDATA (WADH, wchadh, TS_RDX, 16, 0) },
+	{ GRDATA (WLNT, wchlnt, TS_RDX, 16, 0) },
+	{ GRDATA (WOPT, wchopt, TS_RDX, 16, 0) },
+	{ GRDATA (WXOPT, wchxopt, TS_RDX, 16, 0) },
 	{ FLDATA (INT, IREQ (TS), INT_V_TS) },
 	{ FLDATA (ATTN, ts_qatn, 0) },
 	{ FLDATA (BOOT, ts_bcmd, 0) },
@@ -294,7 +327,7 @@ MTAB ts_mod[] = {
 
 DEVICE ts_dev = {
 	"TS", &ts_unit, ts_reg, ts_mod,
-	1, 10, 31, 1, 8, 8,
+	1, 10, 31, 1, TS_RDX, 8,
 	NULL, NULL, &ts_reset,
 	&ts_boot, &ts_attach, &ts_detach };
 
@@ -319,6 +352,7 @@ return SCPE_OK;
 t_stat ts_wr (int32 data, int32 PA, int32 access)
 {
 int32 i;
+t_addr pa;
 
 switch ((PA >> 1) & 01) {				/* decode PA<1> */
 case 0:							/* TSDB */
@@ -333,7 +367,8 @@ case 0:							/* TSDB */
 	msgrfc = msgxs1 = msgxs2 = msgxs3 = msgxs4 = 0;	/* clr status */
 	CLR_INT (TS);					/* clr int req */
 	for (i = 0; i < CMD_PLNT; i++) {		/* get cmd pkt */
-		if (ADDR_IS_MEM (tsba)) tscmdp[i] = M[(tsba >> 1)];
+		if (Map_Addr (tsba, &pa) && ADDR_IS_MEM (pa))
+			tscmdp[i] = ReadW (pa);
 		else {	ts_endcmd (TSSR_NXM + TC5, 0, MSG_ACK|MSG_MNEF|MSG_CFAIL);
 			return SCPE_OK;  }
 		tsba = tsba + 2;  }			/* incr tsba */
@@ -342,6 +377,7 @@ case 0:							/* TSDB */
 	break;
 case 1:							/* TSSR */
 	if (PA & 1) {					/* TSDBX */
+		if (TS_18B) return SCPE_OK;		/* not in TS11 */
 		if (tssr & TSSR_SSR) {			/* ready? */
 			tsdbx = data;			/* save */
 			if (data & TSDBX_BOOT) {
@@ -463,7 +499,7 @@ int32 ts_readf (UNIT *uptr, int32 fc)
 {
 int32 i, st;
 t_mtrlnt tbc, wbc;
-t_addr wa;
+t_addr wa, pa;
 
 msgrfc = fc;
 if (st = ts_rdlntf (uptr, &tbc)) return st;		/* read rec lnt */
@@ -473,15 +509,16 @@ if (tbc == 0) {						/* tape mark? */
 if (fc == 0) fc = 0200000;				/* byte count */
 tsba = (cmdadh << 16) | cmdadl;				/* buf addr */
 tbc = MTRL (tbc);					/* ignore err flag */
-wbc = (tbc > DBSIZE)? DBSIZE: tbc;			/* cap rec size */
+wbc = (tbc > TS_MAXFR)? TS_MAXFR: tbc;			/* cap rec size */
 wbc = (wbc > fc)? fc: wbc;				/* cap buf size */
-i = fxread (dbuf, sizeof (uint8), wbc, uptr -> fileref); /* read record */
+i = fxread (tsxb, sizeof (uint8), wbc, uptr -> fileref); /* read record */
 if (ferror (uptr -> fileref)) return XTC (XS0_EOT | XS0_RLS, TC2);
-for ( ; i < wbc; i++) dbuf[i] = 0;			/* fill with 0's */
+for ( ; i < wbc; i++) tsxb[i] = 0;			/* fill with 0's */
 uptr -> pos = uptr -> pos + ((tbc + 1) & ~1) + (2 * sizeof (t_mtrlnt));
 for (i = 0; i < wbc; i++) {				/* copy buffer */
 	wa = (cmdhdr & CMD_SWP)? tsba ^ 1: tsba;	/* apply OPP */
-	if (ADDR_IS_MEM (wa)) WRITE_BYTE (dbuf[i], wa);	/* nxm? */
+	if (Map_Addr (wa, &pa) && ADDR_IS_MEM (pa))	/* map addr, nxm? */
+		WriteB (pa, tsxb[i]);			/* no, store */
 	else {	tssr = ts_updtssr (tssr | TSSR_NXM);	/* set error */
 		return (XTC (XS0_RLS, TC4));  }
 	tsba = tsba + 1;
@@ -495,7 +532,7 @@ int32 ts_readr (UNIT *uptr, int32 fc)
 {
 int32 i, st;
 t_mtrlnt tbc, wbc;
-t_addr wa;
+t_addr wa, pa;
 
 msgrfc = fc;
 if (uptr -> pos == 0) {					/* BOT? */
@@ -508,19 +545,20 @@ if (tbc == 0) {						/* tape mark? */
 if (fc == 0) fc = 0200000;				/* byte count */
 tsba = (cmdadh << 16) | cmdadl + fc;			/* buf addr */
 tbc = MTRL (tbc);					/* ignore err flag */
-wbc = (tbc > DBSIZE)? DBSIZE: tbc;			/* cap rec size */
+wbc = (tbc > TS_MAXFR)? TS_MAXFR: tbc;			/* cap rec size */
 wbc = (wbc > fc)? fc: wbc;				/* cap buf size */
 fseek (uptr -> fileref, uptr -> pos - sizeof (t_mtrlnt) - wbc, SEEK_SET);
-i = fxread (dbuf, sizeof (uint8), wbc, uptr -> fileref);
-for ( ; i < wbc; i++) dbuf[i] = 0;			/* fill with 0's */
+i = fxread (tsxb, sizeof (uint8), wbc, uptr -> fileref);
+for ( ; i < wbc; i++) tsxb[i] = 0;			/* fill with 0's */
 if (ferror (uptr -> fileref)) {				/* error? */
 	msgxs3 = msgxs3 | XS3_OPI;
 	return XTC (XS0_RLS, TC6);  }
 uptr -> pos = uptr -> pos - ((tbc + 1) & ~1) - (2 * sizeof (t_mtrlnt));
 for (i = wbc; i > 0; i--) {				/* copy buffer */
 	tsba = tsba - 1;
-	wa = (cmdhdr & CMD_SWP)? tsba ^ 1: tsba;
-	if (ADDR_IS_MEM (wa)) WRITE_BYTE (dbuf[i - 1], wa);
+	wa = (cmdhdr & CMD_SWP)? tsba ^ 1: tsba;	/* apply OPP */
+	if (Map_Addr (wa, &pa) && ADDR_IS_MEM (pa))	/* map addr, nxm? */
+		WriteB (pa, tsxb[i - 1]);		/* no, store */
 	else {	tssr = ts_updtssr (tssr | TSSR_NXM);
 		return (XTC (XS0_RLS, TC4));  }
 	msgrfc = (msgrfc - 1) & DMASK;  }
@@ -532,20 +570,21 @@ return 0;
 int32 ts_write (UNIT *uptr, int32 fc)
 {
 int32 i;
-t_addr wa;
+t_addr wa, pa;
 
 msgrfc = fc;
 if (fc == 0) fc = 0200000;				/* byte count */
 tsba = (cmdadh << 16) | cmdadl;				/* buf addr */
 for (i = 0; i < fc; i++) {				/* copy mem to buf */
-	wa = (cmdhdr & CMD_SWP)? tsba ^ 1: tsba;	/* apply opp */
-	if (ADDR_IS_MEM (wa)) dbuf[i] = READ_BYTE (wa);	/* nxm? */
+	wa = (cmdhdr & CMD_SWP)? tsba ^ 1: tsba;	/* apply OPP */
+	if (Map_Addr (wa, &pa) && ADDR_IS_MEM (pa))	/* map addr, nxm? */
+		tsxb[i] = ReadB (pa);			/* no, store */
 	else {	tssr = ts_updtssr (tssr | TSSR_NXM);
 		return TC5;  }
 	tsba = tsba + 1;  }
 fseek (uptr -> fileref, uptr -> pos, SEEK_SET);		/* position */
 fxwrite (&fc, sizeof (t_mtrlnt), 1, uptr -> fileref);
-fxwrite (dbuf, sizeof (uint8), fc, uptr -> fileref);
+fxwrite (tsxb, sizeof (uint8), fc, uptr -> fileref);
 fxwrite (&fc, sizeof (t_mtrlnt), 1, uptr -> fileref);
 uptr -> pos = uptr -> pos + ((fc + 1) & ~1) + (2 * sizeof (t_mtrlnt));
 msgrfc = 0;
@@ -571,6 +610,8 @@ return XTC (XS0_TMK, TC0);
 t_stat ts_svc (UNIT *uptr)
 {
 int32 i, fnc, mod, st0, st1;
+t_addr pa;
+
 static const int32 fnc_mod[CMD_N_FNC] = {		/* max mod+1 0 ill */
  0, 4, 0, 0, 1, 2, 1, 0,				/* 00 - 07 */
  5, 3, 5, 1, 0, 0, 0, 1,				/* 10 - 17 */
@@ -619,7 +660,7 @@ if ((fnc_flg[fnc] & FLG_MO) &&				/* mot+(vck|!att)? */
 	ts_endcmd (TC3, XS0_NEF, MSG_ACK | MSG_MNEF | MSG_CFAIL);
 	return SCPE_OK;  }
 if ((fnc_flg[fnc] & FLG_WR) &&				/* write? */
-    (uptr -> flags & UNIT_WLK)) {			/* write lck? */
+    (uptr -> flags & UNIT_WPRT)) {			/* write lck? */
 	ts_endcmd (TC3, XS0_WLE | XS0_NEF, MSG_ACK | MSG_MNEF | MSG_CFAIL);
 	return SCPE_OK;  }
 if ((((fnc == FNC_READ) && (mod == 1)) ||		/* read rev */
@@ -627,7 +668,7 @@ if ((((fnc == FNC_READ) && (mod == 1)) ||		/* read rev */
      (uptr -> pos == 0)) {				/* BOT? */
 	ts_endcmd (TC3, XS0_NEF, MSG_ACK | MSG_MNEF | MSG_CFAIL);
 	return SCPE_OK;  }
-if ((fnc_flg[fnc] & FLG_AD) && (cmdadh & 0177700)) {	/* buf addr > 22b? */
+if ((fnc_flg[fnc] & FLG_AD) && (cmdadh & ADDRTEST)) {	/* buf addr > 22b? */
 	ts_endcmd (TC3, XS0_ILA, MSG_ACK | MSG_MILL | MSG_CFAIL);
 	return SCPE_OK;  }
 
@@ -640,12 +681,13 @@ case FNC_GSTA:						/* get status */
 	ts_endcmd (TC0, 0, MSG_ACK | MSG_CEND);		/* send end packet */
 	return SCPE_OK;
 case FNC_WCHR:						/* write char */
-	if ((cmdadh & 0177700) || (cmdadl & 1) || (cmdlnt < 6)) {
+	if ((cmdadh & ADDRTEST) || (cmdadl & 1) || (cmdlnt < 6)) {
 		ts_endcmd (TSSR_NBA | TC3, XS0_ILA, 0);
 		break;  }
 	tsba = (cmdadh << 16) | cmdadl;
 	for (i = 0; (i < WCH_PLNT) && (i < (cmdlnt / 2)); i++) {
-		if (ADDR_IS_MEM (tsba)) tswchp[i] = M[tsba >> 1];
+		if (Map_Addr (tsba, &pa) && ADDR_IS_MEM (pa))
+			tswchp[i] = ReadW (pa);
 		else {	ts_endcmd (TSSR_NBA | TSSR_NXM | TC5, 0, 0);
 			return SCPE_OK;  }
 		tsba = tsba + 2;  }
@@ -745,9 +787,6 @@ case FNC_POS:
 		break;  }
 	ts_cmpendcmd (st0, 0);
 	break;  }
-if (DBG_LOG (LOG_TS))
-	fprintf (sim_log, ">>TS: cmd=%o, mod=%o, buf=%o, lnt=%o, sta = %o, tc=%o, pos=%d\n",
-	fnc, mod, cmdadl, cmdlnt, msgxs0, (tssr & TSSR_TC) >> 1, ts_unit.pos);
 return SCPE_OK;
 }
 
@@ -766,7 +805,7 @@ int32 ts_updxs0 (int32 t)
 t = (t & ~(XS0_ONL | XS0_WLK | XS0_BOT | XS0_IE)) | XS0_PET;
 if (ts_unit.flags & UNIT_ATT) {
 	t = t | XS0_ONL;
-	if (ts_unit.flags & UNIT_WLK) t = t | XS0_WLK;
+	if (ts_unit.flags & UNIT_WPRT) t = t | XS0_WLK;
 	if (ts_unit.pos == 0) t = (t | XS0_BOT) & ~XS0_EOT;  }
 else t = t & ~XS0_EOT;
 if (cmdhdr & CMD_IE) t = t | XS0_IE;
@@ -792,6 +831,7 @@ return;
 void ts_endcmd (int32 tc, int32 xs0, int32 msg)
 {
 int32 i;
+t_addr pa;
 
 msgxs0 = ts_updxs0 (msgxs0 | xs0);			/* update XS0 */
 if (wchxopt & WCHX_HDS) msgxs4 = msgxs4 | XS4_HDS;	/* update XS4 */
@@ -800,7 +840,8 @@ if (msg && !(tssr & TSSR_NBA)) {			/* send end pkt */
 	msglnt = wchlnt - 4;				/* exclude hdr, bc */
 	tsba = (wchadh << 16) | wchadl;
 	for (i = 0; (i < MSG_PLNT) && (i < (wchlnt / 2)); i++) {
-		if (ADDR_IS_MEM (tsba)) M[tsba >> 1] = tsmsgp[i];
+		if (Map_Addr (tsba, &pa) && ADDR_IS_MEM (pa))
+			WriteW (pa, tsmsgp[i]);
 		else {	tssr = tssr | TSSR_NXM;
 			tc = (tc & ~TSSR_TC) | TC4;
 			break;  }  
@@ -816,9 +857,11 @@ return;
 t_stat ts_reset (DEVICE *dptr)
 {
 int32 i;
+#if defined (VM_PDP11)
 extern int32 tm_enb;
 
 if (ts_enb) tm_enb = 0;					/* TM or TS */
+#endif
 ts_unit.pos = 0;
 tsba = tsdbx = 0;
 ts_ownc = ts_ownm = 0;
@@ -830,6 +873,8 @@ for (i = 0; i < WCH_PLNT; i++) tswchp[i] = 0;
 for (i = 0; i < MSG_PLNT; i++) tsmsgp[i] = 0;
 msgxs0 = ts_updxs0 (XS0_VCK);
 CLR_INT (TS);
+if (tsxb == NULL) tsxb = calloc (TS_MAXFR, sizeof (unsigned int8));
+if (tsxb == NULL) return SCPE_MEM;
 return SCPE_OK;
 }
 
@@ -871,6 +916,7 @@ return r;
 
 /* Boot */
 
+#if defined (VM_PDP11)
 #define BOOT_START 01000
 #define BOOT_LEN (sizeof (boot_rom) / sizeof (int32))
 
@@ -923,3 +969,10 @@ for (i = 0; i < BOOT_LEN; i++)
 saved_PC = BOOT_START;
 return SCPE_OK;
 } 
+#else
+
+t_stat ts_boot (int32 unitno)
+{
+return SCPE_NOFNC;
+}
+#endif

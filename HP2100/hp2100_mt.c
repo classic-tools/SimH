@@ -25,6 +25,7 @@
 
    mt		12559A nine track magnetic tape
 
+   03-Dec-01	RMS	Added read only unit, extended SET/SHOW support
    07-Sep-01	RMS	Moved function prototypes
    30-Nov-00	RMS	Made variable names unique
    04-Oct-98	RMS	V2.4 magtape format
@@ -54,6 +55,7 @@
 #define DB_V_SIZE	16				/* max data buf */
 #define DBSIZE		(1 << DB_V_SIZE)		/* max data cmd */
 #define DBMASK		(DBSIZE - 1)
+#define UNIT_WPRT	(UNIT_WLK | UNIT_RO)		/* write protect */
 
 /* Command - mtc_fnc */
 
@@ -97,7 +99,7 @@ static const int32 mtc_cmd[] = {
 
 t_stat mtc_svc (UNIT *uptr);
 t_stat mtc_reset (DEVICE *dptr);
-t_stat mtc_vlock (UNIT *uptr, int32 val);
+t_stat mtc_vlock (UNIT *uptr, int32 val, char *cptr, void *desc);
 t_stat mtc_attach (UNIT *uptr, char *cptr);
 t_stat mtc_detach (UNIT *uptr);
 t_stat mtd_ex (t_value *vptr, t_addr addr, UNIT *uptr, int32 sw);
@@ -136,7 +138,7 @@ DEVICE mtd_dev = {
    mtc_mod	MTC modifier list
 */
 
-UNIT mtc_unit = { UDATA (&mtc_svc, UNIT_ATTABLE, 0) };
+UNIT mtc_unit = { UDATA (&mtc_svc, UNIT_ATTABLE + UNIT_ROABLE, 0) };
 
 REG mtc_reg[] = {
 	{ ORDATA (FNC, mtc_fnc, 8) },
@@ -159,7 +161,8 @@ REG mtc_reg[] = {
 MTAB mtc_mod[] = {
 	{ UNIT_WLK, 0, "write enabled", "ENABLED", &mtc_vlock },
 	{ UNIT_WLK, UNIT_WLK, "write locked", "LOCKED", &mtc_vlock }, 
-	{ UNIT_DEVNO, inMTD, NULL, "DEVNO", &hp_setdev2 },
+	{ MTAB_XTD | MTAB_VDV, inMTD, "DEVNO", "DEVNO",
+		&hp_setdev2, &hp_showdev2, NULL },
 	{ 0 }  };
 
 DEVICE mtc_dev = {
@@ -236,7 +239,7 @@ case ioOTX:						/* output */
           ((mtc_unit.flags & UNIT_ATT) == 0) ||
 	    ((mtc_sta & STA_BOT) &&
 		((dat == FNC_BSR) || (dat == FNC_REW) || (dat == FNC_RWS))) ||
-	    ((mtc_unit.flags & UNIT_WLK) && 
+	    ((mtc_unit.flags & UNIT_WPRT) && 
 		((dat == FNC_WC) || (dat == FNC_GAP) || (dat == FNC_WFM))))
 		mtc_sta = mtc_sta | STA_REJ;
 	else {	sim_activate (&mtc_unit, mtc_ctime);	/* start tape */
@@ -254,7 +257,7 @@ case ioMIX:						/* merge */
 	if (mtc_unit.flags & UNIT_ATT) {		/* construct status */
 		mtc_sta = mtc_sta & ~(STA_LOCAL | STA_WLK | STA_BUSY);
 		if (sim_is_active (&mtc_unit)) mtc_sta = mtc_sta | STA_BUSY;
-		if (mtc_unit.flags & UNIT_WLK) mtc_sta = mtc_sta | STA_WLK;  }
+		if (mtc_unit.flags & UNIT_WPRT) mtc_sta = mtc_sta | STA_WLK;  }
 	else mtc_sta = STA_BUSY | STA_LOCAL;	
 	dat = dat | mtc_sta;		
 	break;
@@ -419,7 +422,7 @@ infotab[inMTC].flg = infotab[inMTD].flg = 0;		/* clear flg */
 infotab[inMTC].fbf = infotab[inMTD].fbf = 0;		/* clear fbf */
 sim_cancel (&mtc_unit);					/* cancel activity */
 if (mtc_unit.flags & UNIT_ATT) mtc_sta = ((mtc_unit.pos)? 0: STA_BOT) |
-	((mtc_unit.flags & UNIT_WLK)? STA_WLK: 0);
+	((mtc_unit.flags & UNIT_WPRT)? STA_WLK: 0);
 else mtc_sta = STA_LOCAL | STA_BUSY;
 return SCPE_OK;
 }
@@ -432,7 +435,7 @@ t_stat r;
 
 r = attach_unit (uptr, cptr);				/* attach unit */
 if (r != SCPE_OK) return r;				/* update status */
-mtc_sta = STA_BOT | ((uptr -> flags & UNIT_WLK)? STA_WLK: 0);
+mtc_sta = STA_BOT | ((uptr -> flags & UNIT_WPRT)? STA_WLK: 0);
 return r;
 }
 
@@ -446,9 +449,9 @@ return detach_unit (uptr);				/* detach unit */
 
 /* Write lock/enable routine */
 
-t_stat mtc_vlock (UNIT *uptr, int32 val)
+t_stat mtc_vlock (UNIT *uptr, int32 val, char *cptr, void *desc)
 {
-if (uptr -> flags & UNIT_ATT) return SCPE_ARG;
+if (val && (uptr -> flags & UNIT_ATT)) return SCPE_ARG;
 return SCPE_OK;
 }
 

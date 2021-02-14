@@ -29,6 +29,8 @@
    tto		teleprinter
    clk		clock
 
+   29-Nov-01	RMS	Added read only unit support
+   25-Nov-01	RMS	Revised interrupt structure
    17-Sep-01	RMS	Removed multiconsole support
    07-Sep-01	RMS	Added terminal multiplexor support
    17-Jul-01	RMS	Moved function prototype
@@ -47,7 +49,7 @@
 #include <ctype.h>
 
 extern int32 M[];
-extern int32 int_req, saved_PC;
+extern int32 int_hwre[API_HLVL+1], saved_PC;
 extern UNIT cpu_unit;
 int32 clk_state = 0;
 int32 ptr_err = 0, ptr_stopioe = 0, ptr_state = 0;
@@ -83,8 +85,8 @@ t_stat ptr_boot (int32 unitno);
 UNIT clk_unit = { UDATA (&clk_svc, 0, 0), 16000 };
 
 REG clk_reg[] = {
-	{ FLDATA (INT, int_req, INT_V_CLK) },
-	{ FLDATA (DONE, int_req, INT_V_CLK) },
+	{ FLDATA (INT, int_hwre[API_CLK], INT_V_CLK) },
+	{ FLDATA (DONE, int_hwre[API_CLK], INT_V_CLK) },
 	{ FLDATA (ENABLE, clk_state, 0) },
 	{ DRDATA (TIME, clk_unit.wait, 24), REG_NZ + PV_LEFT },
 	{ DRDATA (TPS, clk_tps, 8), REG_NZ + PV_LEFT },
@@ -104,12 +106,13 @@ DEVICE clk_dev = {
 */
 
 UNIT ptr_unit = {
-	UDATA (&ptr_svc, UNIT_SEQ+UNIT_ATTABLE, 0), SERIAL_IN_WAIT };
+	UDATA (&ptr_svc, UNIT_SEQ+UNIT_ATTABLE+UNIT_ROABLE, 0),
+		SERIAL_IN_WAIT };
 
 REG ptr_reg[] = {
 	{ ORDATA (BUF, ptr_unit.buf, 18) },
-	{ FLDATA (INT, int_req, INT_V_PTR) },
-	{ FLDATA (DONE, int_req, INT_V_PTR) },
+	{ FLDATA (INT, int_hwre[API_PTR], INT_V_PTR) },
+	{ FLDATA (DONE, int_hwre[API_PTR], INT_V_PTR) },
 #if defined (IOS_PTRERR)
 	{ FLDATA (ERR, ptr_err, 0) },
 #endif
@@ -137,8 +140,8 @@ UNIT ptp_unit = {
 
 REG ptp_reg[] = {
 	{ ORDATA (BUF, ptp_unit.buf, 8) },
-	{ FLDATA (INT, int_req, INT_V_PTP) },
-	{ FLDATA (DONE, int_req, INT_V_PTP) },
+	{ FLDATA (INT, int_hwre[API_PTP], INT_V_PTP) },
+	{ FLDATA (DONE, int_hwre[API_PTP], INT_V_PTP) },
 #if defined (IOS_PTPERR)
 	{ FLDATA (ERR, ptp_err, 0) },
 #endif
@@ -205,8 +208,8 @@ UNIT tti_unit = { UDATA (&tti_svc, UNIT_UC+UNIT_HDX, 0), KBD_POLL_WAIT };
 
 REG tti_reg[] = {
 	{ ORDATA (BUF, tti_unit.buf, TTI_WIDTH) },
-	{ FLDATA (INT, int_req, INT_V_TTI) },
-	{ FLDATA (DONE, int_req, INT_V_TTI) },
+	{ FLDATA (INT, int_hwre[API_TTI], INT_V_TTI) },
+	{ FLDATA (DONE, int_hwre[API_TTI], INT_V_TTI) },
 #if defined (KSR28)
 	{ ORDATA (TTI_STATE, tti_state, (TTI_WIDTH + 3)), REG_HRO },
 #else
@@ -264,8 +267,8 @@ UNIT tto_unit = { UDATA (&tto_svc, UNIT_UC, 0), SERIAL_OUT_WAIT };
 
 REG tto_reg[] = {
 	{ ORDATA (BUF, tto_unit.buf, TTO_WIDTH) },
-	{ FLDATA (INT, int_req, INT_V_TTO) },
-	{ FLDATA (DONE, int_req, INT_V_TTO) },
+	{ FLDATA (INT, int_hwre[API_TTO], INT_V_TTO) },
+	{ FLDATA (DONE, int_hwre[API_TTO], INT_V_TTO) },
 #if defined (KSR28)
 	{ FLDATA (TTO_STATE, tto_state, 0), REG_HRO },
 #endif
@@ -291,10 +294,10 @@ DEVICE tto_dev = {
 int32 clk (int32 pulse, int32 AC)
 {
 if (pulse & 001) {					/* CLSF */
-	if (int_req & INT_CLK) AC = AC | IOT_SKP;  }
+	if (TST_INT (CLK)) AC = AC | IOT_SKP;  }
 if (pulse & 004) {					/* CLON/CLOF */
 	if (pulse & 040) {				/* CLON */
-		int_req = int_req & ~INT_CLK;		/* clear flag */
+		CLR_INT (CLK);				/* clear flag */
 		clk_state = 1;				/* clock on */
 		if (!sim_is_active (&clk_unit))		/* already on? */
 			sim_activate (&clk_unit,	/* start, calibr */
@@ -311,7 +314,7 @@ int32 t;
 
 if (clk_state) {					/* clock on? */
 	M[7] = (M[7] + 1) & 0777777;			/* incr counter */
-	if (M[7] == 0) int_req = int_req | INT_CLK;	/* ovrflo? set flag */
+	if (M[7] == 0) SET_INT (CLK);			/* ovrflo? set flag */
 	t = sim_rtc_calb (clk_tps);			/* calibrate clock */
 	sim_activate (&clk_unit, t);			/* reactivate unit */
 	tmxr_poll = t;  }				/* set mux poll */
@@ -322,7 +325,7 @@ return SCPE_OK;
 
 t_stat clk_reset (DEVICE *dptr)
 {
-int_req = int_req & ~INT_CLK;				/* clear flag */
+CLR_INT (CLK);						/* clear flag */
 clk_state = 0;						/* clock off */
 sim_cancel (&clk_unit);					/* stop clock */
 tmxr_poll = clk_unit.wait;				/* set mux poll */
@@ -333,18 +336,18 @@ return SCPE_OK;
 
 int32 std_iors (void)
 {
-return ((int_req & INT_CLK)? IOS_CLK: 0) |
-	((int_req & INT_PTR)? IOS_PTR: 0) |
-	((int_req & INT_PTP)? IOS_PTP: 0) |
-	((int_req & INT_TTI)? IOS_TTI: 0) |
-	((int_req & INT_TTO)? IOS_TTO: 0) |
+return	((TST_INT (CLK)? IOS_CLK: 0) |
+	 (TST_INT (PTR)? IOS_PTR: 0) |
+	 (TST_INT (PTP)? IOS_PTP: 0) |
+	 (TST_INT (TTI)? IOS_TTI: 0) |
+	 (TST_INT (TTO)? IOS_TTO: 0) |
 #if defined (IOS_PTRERR)
 	(ptr_err? IOS_PTRERR: 0) |
 #endif
 #if defined (IOS_PTPERR)
 	(ptp_err? IOS_PTPERR: 0) |
 #endif
-	(clk_state? IOS_CLKON: 0);
+	(clk_state? IOS_CLKON: 0));
 }
 
 /* Paper tape reader: IOT routine */
@@ -352,13 +355,13 @@ return ((int_req & INT_CLK)? IOS_CLK: 0) |
 int32 ptr (int32 pulse, int32 AC)
 {
 if (pulse & 001) {					/* RSF */
-	if (int_req & INT_PTR) AC = AC | IOT_SKP;  }
+	if (TST_INT (PTR)) AC = AC | IOT_SKP;  }
 if (pulse & 002) {					/* RRB, RCF */
-	int_req = int_req & ~INT_PTR;			/* clear done */
+	CLR_INT (PTR);					/* clear done */
 	AC = AC | ptr_unit.buf;  }			/* return buffer */
 if (pulse & 004) {					/* RSA, RSB */
 	ptr_state = (pulse & 040)? 18: 0;		/* set mode */
-	int_req = int_req & ~INT_PTR;			/* clear done */
+	CLR_INT (PTR);					/* clear done */
 	ptr_unit.buf = 0;				/* clear buffer */
 	sim_activate (&ptr_unit, ptr_unit.wait);  }
 return AC;
@@ -372,13 +375,13 @@ int32 temp;
 
 if ((ptr_unit.flags & UNIT_ATT) == 0) {			/* attached? */
 #if defined (IOS_PTRERR)
-	int_req = int_req | INT_PTR;			/* if err, set int */
+	SET_INT (PTR);					/* if err, set int */
 	ptr_err = 1;
 #endif
 	return IORETURN (ptr_stopioe, SCPE_UNATT);  }
 if ((temp = getc (ptr_unit.fileref)) == EOF) {		/* end of file? */
 #if defined (IOS_PTRERR)
-	int_req = int_req | INT_PTR;			/* if err, set done */
+	SET_INT (PTR);					/* if err, set done */
 	ptr_err = 1;
 #endif
 	if (feof (ptr_unit.fileref)) {
@@ -391,7 +394,7 @@ if (ptr_state == 0) ptr_unit.buf = temp & 0377;		/* alpha */
 else if (temp & 0200) {					/* binary */
 	ptr_state = ptr_state - 6;
 	ptr_unit.buf = ptr_unit.buf | ((temp & 077) << ptr_state);  }
-if (ptr_state == 0) int_req = int_req | INT_PTR;	/* if done, set flag */
+if (ptr_state == 0) SET_INT (PTR);			/* if done, set flag */
 else sim_activate (&ptr_unit, ptr_unit.wait);		/* else restart */
 ptr_unit.pos = ptr_unit.pos + 1;
 return SCPE_OK;
@@ -403,7 +406,7 @@ t_stat ptr_reset (DEVICE *dptr)
 {
 ptr_state = 0;						/* clear state */
 ptr_unit.buf = 0;
-int_req = int_req & ~INT_PTR;				/* clear flag */
+CLR_INT (PTR);						/* clear flag */
 ptr_err = (ptr_unit.flags & UNIT_ATT)? 0: 1;
 sim_cancel (&ptr_unit);					/* deactivate unit */
 return SCPE_OK;
@@ -605,10 +608,10 @@ return SCPE_ARG;
 int32 ptp (int32 pulse, int32 AC)
 {
 if (pulse & 001) {					/* PSF */
-	if (int_req & INT_PTP) AC = AC | IOT_SKP;  }
-if (pulse & 002) int_req = int_req & ~INT_PTP;		/* PCF */
+	if (TST_INT (PTP)) AC = AC | IOT_SKP;  }
+if (pulse & 002) CLR_INT (PTP);				/* PCF */
 if (pulse & 004) {					/* PSA, PSB, PLS */
-	int_req = int_req & ~INT_PTP;			/* clear flag */
+	CLR_INT (PTP);					/* clear flag */
 	ptp_unit.buf = (pulse & 040)?			/* load punch buf */
 		(AC & 077) | 0200: AC & 0377;		/* bin or alpha */
 	sim_activate (&ptp_unit, ptp_unit.wait);  }	/* activate unit */
@@ -619,7 +622,7 @@ return AC;
 
 t_stat ptp_svc (UNIT *uptr)
 {
-int_req = int_req | INT_PTP;				/* set done flag */
+SET_INT (PTP);						/* set done flag */
 if ((ptp_unit.flags & UNIT_ATT) == 0) {			/* not attached? */
 	ptp_err = 1;					/* set error */
 	return IORETURN (ptp_stopioe, SCPE_UNATT);  }
@@ -637,7 +640,7 @@ return SCPE_OK;
 t_stat ptp_reset (DEVICE *dptr)
 {
 ptp_unit.buf = 0;
-int_req = int_req & ~INT_PTP;				/* clear flag */
+CLR_INT (PTP);						/* clear flag */
 ptp_err = (ptp_unit.flags & UNIT_ATT)? 0: 1;
 sim_cancel (&ptp_unit);					/* deactivate unit */
 return SCPE_OK;
@@ -667,9 +670,9 @@ return detach_unit (uptr);
 int32 tti (int32 pulse, int32 AC)
 {
 if (pulse & 001) {					/* KSF */
-	if (int_req & INT_TTI) AC = AC | IOT_SKP;  }
+	if (TST_INT (TTI)) AC = AC | IOT_SKP;  }
 if (pulse & 002) {					/* KRB */
-	int_req = int_req & ~INT_TTI;			/* clear flag */
+	CLR_INT (TTI);					/* clear flag */
 	AC = AC | tti_unit.buf & TTI_MASK;  }		/* return buffer */
 return AC;
 }
@@ -705,7 +708,7 @@ if ((tti_unit.flags & UNIT_HDX) &&
 	tto_unit.pos = tto_unit.pos + 1;  }
 tti_unit.buf = temp | 0200;				/* got char */
 #endif
-int_req = int_req | INT_TTI;				/* set flag */
+SET_INT (TTI);						/* set flag */
 tti_unit.pos = tti_unit.pos + 1;
 return SCPE_OK;
 }
@@ -716,7 +719,7 @@ t_stat tti_reset (DEVICE *dptr)
 {
 tti_unit.buf = 0;					/* clear buffer */
 tti_state = 0;						/* clear state */
-int_req = int_req & ~INT_TTI;				/* clear flag */
+CLR_INT (TTI);						/* clear flag */
 sim_activate (&tti_unit, tti_unit.wait);		/* activate unit */
 return SCPE_OK;
 }
@@ -726,8 +729,8 @@ return SCPE_OK;
 int32 tto (int32 pulse, int32 AC)
 {
 if (pulse & 001) {					/* TSF */
-	if (int_req & INT_TTO) AC = AC | IOT_SKP;  }
-if (pulse & 002) int_req = int_req & ~INT_TTO;		/* clear flag */
+	if (TST_INT (TTO)) AC = AC | IOT_SKP;  }
+if (pulse & 002) CLR_INT (TTO);				/* clear flag */
 if (pulse & 004) {					/* load buffer */
 	sim_activate (&tto_unit, tto_unit.wait);	/* activate unit */
 	tto_unit.buf = AC & TTO_MASK;  }		/* load buffer */
@@ -740,7 +743,7 @@ t_stat tto_svc (UNIT *uptr)
 {
 int32 out, temp;
 
-int_req = int_req | INT_TTO;				/* set flag */
+SET_INT (TTO);						/* set flag */
 #if defined (KSR28)					/* Baudot... */
 if (tto_unit.buf == BAUDOT_FIGURES) {			/* set figures? */
 	tto_state = TTO_FIGURES;
@@ -766,7 +769,7 @@ t_stat tto_reset (DEVICE *dptr)
 {
 tto_unit.buf = 0;					/* clear buffer */
 tto_state = 0;						/* clear state */
-int_req = int_req & ~INT_TTO;				/* clear flag */
+CLR_INT (TTO);						/* clear flag */
 sim_cancel (&tto_unit);					/* deactivate unit */
 return SCPE_OK;
 }

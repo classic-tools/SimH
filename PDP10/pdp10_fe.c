@@ -25,6 +25,7 @@
 
    fe		KS10 console front end
 
+   30-Nov-01	RMS	Added extended SET/SHOW support
    23-Oct-01	RMS	New IO page address constants
    07-Sep-01	RMS	Moved function prototypes
 */
@@ -37,8 +38,8 @@ extern int32 apr_flg;
 t_stat fei_svc (UNIT *uptr);
 t_stat feo_svc (UNIT *uptr);
 t_stat fe_reset (DEVICE *dptr);
-t_stat fe_stop_os (UNIT *uptr, int32 val);
-t_stat fe_ctrl_c (UNIT *uptr, int32 val);
+t_stat fe_stop_os (UNIT *uptr, int32 val, char *cptr, void *desc);
+t_stat fe_ctrl_c (UNIT *uptr, int32 val, char *cptr, void *desc);
 
 /* FE data structures
 
@@ -146,7 +147,7 @@ return SCPE_OK;
 
 /* Stop operating system */
 
-t_stat fe_stop_os (UNIT *uptr, int32 val)
+t_stat fe_stop_os (UNIT *uptr, int32 val, char *cptr, void *desc)
 {
 M[FE_SWITCH] = IOBA_RP;					/* tell OS to stop */
 return SCPE_OK;
@@ -154,7 +155,7 @@ return SCPE_OK;
 
 /* Enter control-C for Windoze */
 
-t_stat fe_ctrl_c (UNIT *uptr, int32 val)
+t_stat fe_ctrl_c (UNIT *uptr, int32 val, char *cptr, void *desc)
 {
 fei_unit.buf = 003;					/* control-C */
 M[FE_CTYIN] = fei_unit.buf | FE_CVALID;			/* put char in mem */

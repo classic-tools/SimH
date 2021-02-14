@@ -23,6 +23,7 @@
    be used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   25-Nov-01	RMS	Added RL8A support
    16-Sep-01	RMS	Added multiple KL support
    18-Mar-01	RMS	Added DF32 support
    15-Feb-01	RMS	Added DECtape support
@@ -101,9 +102,10 @@
 #define INT_V_DF	(INT_V_DIRECT+3)		/* DF32 */
 #define INT_V_MT	(INT_V_DIRECT+4)		/* TM8E */
 #define INT_V_DTA	(INT_V_DIRECT+5)		/* TC08 */
-#define INT_V_PWR	(INT_V_DIRECT+6)		/* power int */
-#define INT_V_UF	(INT_V_DIRECT+7)		/* user int */
-#define INT_V_OVHD	(INT_V_DIRECT+8)		/* overhead start */
+#define INT_V_RL	(INT_V_DIRECT+6)		/* RL8A */
+#define INT_V_PWR	(INT_V_DIRECT+7)		/* power int */
+#define INT_V_UF	(INT_V_DIRECT+8)		/* user int */
+#define INT_V_OVHD	(INT_V_DIRECT+9)		/* overhead start */
 #define INT_V_NO_ION_PENDING (INT_V_OVHD+0)		/* ion pending */
 #define INT_V_NO_CIF_PENDING (INT_V_OVHD+1)		/* cif pending */
 #define INT_V_ION	(INT_V_OVHD+2)			/* interrupts on */
@@ -128,6 +130,7 @@
 #define INT_DF		(1 << INT_V_DF)
 #define INT_MT		(1 << INT_V_MT)
 #define INT_DTA		(1 << INT_V_DTA)
+#define INT_RL		(1 << INT_V_RL)
 #define INT_PWR		(1 << INT_V_PWR)
 #define INT_UF		(1 << INT_V_UF)
 #define INT_NO_ION_PENDING (1 << INT_V_NO_ION_PENDING)

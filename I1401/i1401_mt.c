@@ -1,4 +1,4 @@
-/* IBM 1401 magnetic tape simulator
+/* i1401_mt.c: IBM 1401 magnetic tape simulator
 
    Copyright (c) 1993-2001, Robert M. Supnik
 
@@ -23,6 +23,9 @@
    be used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   mt		7-track magtape
+
+   29-Nov-01	RMS	Added read only unit support
    18-Apr-01	RMS	Changed to rewind tape before boot
    07-Dec-00	RMS	Widened display width from 6 to 8 bits to see record lnt
 		CEO	Added tape bootstrap
@@ -50,6 +53,7 @@
 #define UNIT_V_WLK	(UNIT_V_UF + 0)			/* write locked */
 #define UNIT_WLK	(1 << UNIT_V_WLK)
 #define UNIT_W_UF	2				/* #save flags */
+#define UNIT_WPRT	(UNIT_WLK | UNIT_RO)		/* write protect */
 
 extern uint8 M[];					/* memory */
 extern int32 ind[64];
@@ -70,12 +74,18 @@ UNIT *get_unit (int32 unit);
 
 UNIT mt_unit[] = {
 	{ UDATA (NULL, UNIT_DIS, 0) },			/* doesn't exist */
-	{ UDATA (NULL, UNIT_DISABLE + UNIT_ATTABLE + UNIT_BCD, 0) },
-	{ UDATA (NULL, UNIT_DISABLE + UNIT_ATTABLE + UNIT_BCD, 0) },
-	{ UDATA (NULL, UNIT_DISABLE + UNIT_ATTABLE + UNIT_BCD, 0) },
-	{ UDATA (NULL, UNIT_DISABLE + UNIT_ATTABLE + UNIT_BCD, 0) },
-	{ UDATA (NULL, UNIT_DISABLE + UNIT_ATTABLE + UNIT_BCD, 0) },
-	{ UDATA (NULL, UNIT_DISABLE + UNIT_ATTABLE + UNIT_BCD, 0) }  };
+	{ UDATA (NULL, UNIT_DISABLE + UNIT_ATTABLE +
+		UNIT_ROABLE + UNIT_BCD, 0) },
+	{ UDATA (NULL, UNIT_DISABLE + UNIT_ATTABLE +
+		UNIT_ROABLE + UNIT_BCD, 0) },
+	{ UDATA (NULL, UNIT_DISABLE + UNIT_ATTABLE +
+		UNIT_ROABLE + UNIT_BCD, 0) },
+	{ UDATA (NULL, UNIT_DISABLE + UNIT_ATTABLE +
+		UNIT_ROABLE + UNIT_BCD, 0) },
+	{ UDATA (NULL, UNIT_DISABLE + UNIT_ATTABLE +
+		UNIT_ROABLE + UNIT_BCD, 0) },
+	{ UDATA (NULL, UNIT_DISABLE + UNIT_ATTABLE +
+		UNIT_ROABLE + UNIT_BCD, 0) }  };
 
 REG mt_reg[] = {
 	{ FLDATA (END, ind[IN_END], 0) },
@@ -145,10 +155,10 @@ case BCD_B:						/* backspace */
 		(2 * sizeof (t_mtrlnt));
 	break;  					/* end case */
 case BCD_E:						/* erase = nop */
-	if (uptr -> flags & UNIT_WLK) return STOP_MTL;
+	if (uptr -> flags & UNIT_WPRT) return STOP_MTL;
 	return SCPE_OK;
 case BCD_M:						/* write tapemark */
-	if (uptr -> flags & UNIT_WLK) return STOP_MTL;
+	if (uptr -> flags & UNIT_WPRT) return STOP_MTL;
 	fseek (uptr -> fileref, uptr -> pos, SEEK_SET);
 	fxwrite (&bceof, sizeof (t_mtrlnt), 1, uptr -> fileref);
 	err = ferror (uptr -> fileref);
@@ -223,7 +233,7 @@ case BCD_R:						/* read */
 	break;
 
 case BCD_W:
-	if (uptr -> flags & UNIT_WLK) return STOP_MTL;	/* locked? */
+	if (uptr -> flags & UNIT_WPRT) return STOP_MTL;	/* locked? */
 	if (M[BS] == (BCD_GRPMRK + WM)) return STOP_MTZ;	/* eor? */
 	ind[IN_TAP] = ind[IN_END] = 0;			/* clear error */
 	for (tbc = 0; (t = M[BS++]) != (BCD_GRPMRK + WM); ) {

@@ -25,6 +25,7 @@
 
    ptr,ptp	PC8E paper tape reader/punch
 
+   30-Nov-01	RMS	Added read only unit support
    30-Mar-98	RMS	Added RIM loader as PTR bootstrap
 */
 
@@ -46,7 +47,8 @@ t_stat ptr_boot (int32 unitno);
 */
 
 UNIT ptr_unit = {
-	UDATA (&ptr_svc, UNIT_SEQ+UNIT_ATTABLE, 0), SERIAL_IN_WAIT };
+	UDATA (&ptr_svc, UNIT_SEQ+UNIT_ATTABLE+UNIT_ROABLE, 0),
+		SERIAL_IN_WAIT };
 
 REG ptr_reg[] = {
 	{ ORDATA (BUF, ptr_unit.buf, 8) },

@@ -23,6 +23,8 @@
    be used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   inq		1407 inquiry terminal
+
    07-Sep-01	RMS	Moved function prototypes
    14-Apr-99	RMS	Changed t_addr to unsigned
 */

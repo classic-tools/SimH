@@ -25,6 +25,9 @@
 
    rk		RK11/RK05 cartridge disk
 
+   30-Nov-01	RMS	Added read only unit, extended SET/SHOW support
+   24-Nov-01	RMS	Converted FLG to array
+   09-Nov-01	RMS	Added bus map support
    07-Sep-01	RMS	Revised device disable and interrupt mechanisms
    26-Apr-01	RMS	Added device enable/disable support
    25-Mar-01	RMS	Fixed block fill calculation
@@ -62,9 +65,9 @@
 #define RK_NUMDR	8				/* drives/controller */
 #define RK_M_NUMDR	07
 #define RK_SIZE (RK_NUMCY * RK_NUMSF * RK_NUMSC * RK_NUMWD)  /* words/drive */
-#define RK_MAXMEM	((int32) (MEMSIZE / sizeof (int16)))	/* words/memory */
 #define RK_CTLI		1				/* controller int */
 #define RK_SCPI(x)	(2u << (x))			/* drive int */
+#define RK_MAXFR	(1 << 16)			/* max transfer */
 
 /* Flags in the unit flags word */
 
@@ -73,6 +76,7 @@
 #define UNIT_W_UF	3				/* user flags width */
 #define UNIT_HWLK	(1u << UNIT_V_HWLK)
 #define UNIT_SWLK	(1u << UNIT_V_SWLK)
+#define UNIT_WPRT	(UNIT_HWLK|UNIT_SWLK|UNIT_RO)	/* write prot */
 
 /* Parameters in the unit descriptor */
 
@@ -163,7 +167,7 @@
 
 extern uint16 *M;					/* memory */
 extern int32 int_req[IPL_HLVL];
-extern UNIT cpu_unit;
+uint16 *rkxb = NULL;					/* xfer buffer */
 int32 rkcs = 0;						/* control/status */
 int32 rkds = 0;						/* drive status */
 int32 rkba = 0;						/* memory address */
@@ -192,14 +196,22 @@ t_stat rk_boot (int32 unitno);
 */
 
 UNIT rk_unit[] = {
-	{ UDATA (&rk_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE, RK_SIZE) },
-	{ UDATA (&rk_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE, RK_SIZE) },
-	{ UDATA (&rk_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE, RK_SIZE) },
-	{ UDATA (&rk_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE, RK_SIZE) },
-	{ UDATA (&rk_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE, RK_SIZE) },
-	{ UDATA (&rk_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE, RK_SIZE) },
-	{ UDATA (&rk_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE, RK_SIZE) },
-	{ UDATA (&rk_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE, RK_SIZE) } };
+	{ UDATA (&rk_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
+		UNIT_ROABLE, RK_SIZE) },
+	{ UDATA (&rk_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
+		UNIT_ROABLE, RK_SIZE) },
+	{ UDATA (&rk_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
+		UNIT_ROABLE, RK_SIZE) },
+	{ UDATA (&rk_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
+		UNIT_ROABLE, RK_SIZE) },
+	{ UDATA (&rk_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
+		UNIT_ROABLE, RK_SIZE) },
+	{ UDATA (&rk_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
+		UNIT_ROABLE, RK_SIZE) },
+	{ UDATA (&rk_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
+		UNIT_ROABLE, RK_SIZE) },
+	{ UDATA (&rk_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
+		UNIT_ROABLE, RK_SIZE) }  };
 
 REG rk_reg[] = {
 	{ ORDATA (RKCS, rkcs, 16) },
@@ -216,32 +228,15 @@ REG rk_reg[] = {
 	{ FLDATA (IE, rkcs, CSR_V_IE) },
 	{ DRDATA (STIME, rk_swait, 24), PV_LEFT },
 	{ DRDATA (RTIME, rk_rwait, 24), PV_LEFT },
-	{ GRDATA (FLG0, rk_unit[0].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG1, rk_unit[1].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG2, rk_unit[2].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG3, rk_unit[3].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG4, rk_unit[4].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG5, rk_unit[5].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG6, rk_unit[6].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG7, rk_unit[7].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
+	{ URDATA (FLG, rk_unit[0].flags, 8, UNIT_W_UF, UNIT_V_UF - 1,
+		  RK_NUMDR, REG_HRO) },
 	{ FLDATA (STOP_IOE, rk_stopioe, 0) },
 	{ FLDATA (*DEVENB, rk_enb, 0), REG_HRO },
 	{ NULL }  };
 
 MTAB rk_mod[] = {
-	{ (UNIT_HWLK+UNIT_SWLK), 0, "write enabled", "ENABLED", NULL },
-	{ (UNIT_HWLK+UNIT_SWLK), UNIT_HWLK, "write locked", "LOCKED", NULL },
-	{ (UNIT_HWLK+UNIT_SWLK), UNIT_SWLK, "write locked", NULL, NULL },
-	{ (UNIT_HWLK+UNIT_SWLK), (UNIT_HWLK+UNIT_SWLK), "write locked",
-		NULL, NULL }, 
+	{ UNIT_HWLK, 0, "write enabled", "ENABLED", NULL },
+	{ UNIT_HWLK, UNIT_HWLK, "write locked", "LOCKED", NULL },
 	{ 0 }  };
 
 DEVICE rk_dev = {
@@ -275,7 +270,7 @@ case 0:							/* RKDS: read only */
 	uptr = rk_dev.units + GET_DRIVE (rkda);		/* selected unit */
 	if (uptr -> flags & UNIT_ATT) rkds = rkds | RKDS_RDY;	/* attached? */
 	if (!sim_is_active (uptr)) rkds = rkds | RKDS_RWS;	/* idle? */
-	if (uptr -> flags & (UNIT_HWLK + UNIT_SWLK)) rkds = rkds | RKDS_WLK;
+	if (uptr -> flags & UNIT_WPRT) rkds = rkds | RKDS_WLK;
 	if (GET_SECT (rkda) == (rkds & RKDS_SC)) rkds = rkds | RKDS_ON_SC;
 	*data = rkds;
 	return SCPE_OK;
@@ -373,7 +368,7 @@ if (((uptr -> flags & UNIT_ATT) == 0) || sim_is_active (uptr)) {
 if (rkcs & (RKCS_INH + RKCS_FMT)) {			/* format? */
 	rk_set_done (RKER_PGE);
 	return;  }
-if ((func == RKCS_WRITE) && (uptr -> flags & (UNIT_HWLK + UNIT_SWLK))) {
+if ((func == RKCS_WRITE) && (uptr -> flags & UNIT_WPRT)) {
 	rk_set_done (RKER_WLK);				/* write and locked? */
 	return;  }
 if (func == RKCS_WLK) {					/* write lock? */
@@ -413,9 +408,10 @@ return;
 
 t_stat rk_svc (UNIT *uptr)
 {
-int32 comp, drv, err, awc, twc, wc;
-int32 pa, da, remc, track, sect;
-static uint16 fill[RK_NUMWD] = { 0 };
+int32 i, drv, err, awc, wc, t;
+int32 da, track, sect;
+t_addr ma;
+uint16 comp;
 
 drv = uptr - rk_dev.units;				/* get drv number */
 if (uptr -> FUNC == RKCS_SEEK) {			/* seek */
@@ -424,54 +420,56 @@ if (uptr -> FUNC == RKCS_SEEK) {			/* seek */
 		rkintq = rkintq | RK_SCPI (drv);	/* queue request */
 		if (rkcs & CSR_DONE) SET_INT (RK);  }
 	else {	rkintq = 0;				/* clear queue */
-		CLR_INT (RK);  }		/* clear interrupt */
+		CLR_INT (RK);  }			/* clear interrupt */
 	return SCPE_OK;  }
 
 if ((uptr -> flags & UNIT_ATT) == 0) {			/* attached? */
 	rk_set_done (RKER_DRE);
 	return IORETURN (rk_stopioe, SCPE_UNATT);  }
-pa = (((rkcs & RKCS_MEX) << (16 - RKCS_V_MEX)) | rkba) >> 1;
+ma = ((rkcs & RKCS_MEX) << (16 - RKCS_V_MEX)) | rkba;	/* get mem addr */
 da = GET_DA (rkda) * RK_NUMWD;				/* get disk addr */
-twc = 0200000 - rkwc;					/* get true wc */
-if ((pa + twc) > RK_MAXMEM) {				/* mem overrun? */
-	rker = rker | RKER_NXM;
-	wc = (RK_MAXMEM - pa);  }
-else wc = twc;
-if (wc < 0) {						/* abort transfer? */
-	rk_set_done (0);
-	return SCPE_OK;  }
-if ((da + twc) > RK_SIZE) {				/* disk overrun? */
-	rker = rker | RKER_OVR;
-	if (wc > (RK_SIZE - da)) wc = RK_SIZE - da;  }
+wc = 0200000 - rkwc;					/* get wd cnt */
 
 err = fseek (uptr -> fileref, da * sizeof (int16), SEEK_SET);
 
 if ((uptr -> FUNC == RKCS_READ) && (err == 0)) {	/* read? */
-	awc = fxread (&M[pa], sizeof (int16), wc, uptr -> fileref);
-	for ( ; awc < wc; awc++) M[pa + awc] = 0;
-	err = ferror (uptr -> fileref);  }
+	i = fxread (rkxb, sizeof (int16), wc, uptr -> fileref);
+	err = ferror (uptr -> fileref);
+	for ( ; i < wc; i++) rkxb[i] = 0;		/* fill buf */
+	if (t = Map_WriteW (ma, wc << 1, rkxb, UB)) {	/* store buf */
+		rker = rker | RKER_NXM;			/* NXM? set flg */
+	  	wc = wc - t;  }				/* adj wd cnt */
+	}						/* end read */
 
 if ((uptr -> FUNC == RKCS_WRITE) && (err == 0)) {	/* write? */
-	fxwrite (&M[pa], sizeof (int16), wc, uptr -> fileref);
-	err = ferror (uptr -> fileref);
-	if ((err == 0) && (remc = (wc & (RK_NUMWD - 1)))) {
-		fxwrite (fill, sizeof (int16), RK_NUMWD - remc, uptr -> fileref);
-		err = ferror (uptr -> fileref);  }  }
+	if (t = Map_ReadW (ma, wc << 1, rkxb, UB)) {	/* get buf */
+		rker = rker | RKER_NXM;			/* NXM? set flg */
+	  	wc = wc - t;  }				/* adj wd cnt */
+	if (wc) {					/* any xfer? */
+		awc = (wc + (RK_NUMWD - 1)) & ~(RK_NUMWD - 1);	/* clr to */
+		for (i = wc; i < awc; i++) rkxb[i] = 0;	/* end of blk */
+		fxwrite (rkxb, sizeof (int16), awc, uptr -> fileref);
+		err = ferror (uptr -> fileref);  }
+	}						/* end write */
 
 if ((uptr -> FUNC == RKCS_WCHK) && (err == 0)) {	/* write check? */
-	twc = wc;					/* xfer length */
-	for (wc = 0; (err == 0) && (wc < twc); wc++)  {
-		awc = fxread (&comp, sizeof (int16), 1, uptr -> fileref);
-		if (awc == 0) comp = 0;
-		if (comp != M[pa + wc])  {
-			rker = rker | RKER_WCE;
+	i = fxread (rkxb, sizeof (int16), wc, uptr -> fileref);
+	err = ferror (uptr -> fileref);
+	for ( ; i < wc; i++) rkxb[i] = 0;		/* fill buf */
+	awc = wc;					/* save wc */
+	for (wc = 0; (err == 0) && (wc < awc); wc++)  {	/* loop thru buf */
+		if (Map_ReadW (ma + (wc << 1), 2, &comp, UB)) {	/* mem wd */
+			rker = rker | RKER_NXM;		/* NXM? set flg */
+			break;  }
+		if (comp != rkxb[wc])  {		/* match to disk? */
+			rker = rker | RKER_WCE;		/* no, err */
 			if (rkcs & RKCS_SSE) break;  }  }
-	err = ferror (uptr -> fileref);  }
+	}						/* end wcheck */
 
 rkwc = (rkwc + wc) & 0177777;				/* final word count */
-pa = (pa + wc) << 1;					/* final byte addr */
-rkba = pa & RKBA_IMP;					/* lower 16b */
-rkcs = (rkcs & ~RKCS_MEX) | ((pa >> (16 - RKCS_V_MEX)) & RKCS_MEX);
+ma = ma + (wc << 1);					/* final byte addr */
+rkba = ma & RKBA_IMP;					/* lower 16b */
+rkcs = (rkcs & ~RKCS_MEX) | ((ma >> (16 - RKCS_V_MEX)) & RKCS_MEX);
 da = da + wc + (RK_NUMWD - 1);
 track = (da / RK_NUMWD) / RK_NUMSC;
 sect = (da / RK_NUMWD) % RK_NUMSC;
@@ -546,6 +544,8 @@ for (i = 0; i < RK_NUMDR; i++) {
 	sim_cancel (uptr);
 	uptr -> CYL = uptr -> FUNC = 0;
 	uptr -> flags = uptr -> flags & ~UNIT_SWLK;  }
+if (rkxb == NULL) rkxb = calloc (RK_MAXFR, sizeof (unsigned int16));
+if (rkxb == NULL) return SCPE_MEM;
 return SCPE_OK;
 }
 

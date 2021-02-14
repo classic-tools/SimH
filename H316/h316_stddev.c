@@ -28,6 +28,8 @@
    tty		316/516-33 teleprinter
    clk/options	316/516-12 real time clocks/internal options
 
+   03-Nov-01	RMS	Implemented upper case for console output
+   29-Nov-01	RMS	Added read only unit support
    07-Sep-01	RMS	Moved function prototypes
 */
 
@@ -66,7 +68,8 @@ t_stat clk_reset (DEVICE *dptr);
 */
 
 UNIT ptr_unit = {
-	UDATA (&ptr_svc, UNIT_SEQ+UNIT_ATTABLE, 0), SERIAL_IN_WAIT };
+	UDATA (&ptr_svc, UNIT_SEQ+UNIT_ATTABLE+UNIT_ROABLE, 0),
+		SERIAL_IN_WAIT };
 
 REG ptr_reg[] = {
 	{ ORDATA (BUF, ptr_unit.buf, 8) },
@@ -125,7 +128,7 @@ DEVICE ptp_dev = {
 
 UNIT tty_unit[] = {
 	{ UDATA (&tti_svc, UNIT_UC, 0), KBD_POLL_WAIT },
-	{ UDATA (&tto_svc, UNIT_UC, 0), SERIAL_OUT_WAIT }  };
+	{ UDATA (&tto_svc, 0, 0), SERIAL_OUT_WAIT }  };
 
 REG tty_reg[] = {
 	{ ORDATA (BUF, tty_buf, 8) },
@@ -397,10 +400,13 @@ return SCPE_OK;
 
 t_stat tto_svc (UNIT *uptr)
 {
-int32 temp;
+int32 ch, temp;
 
 SET_READY (INT_TTY);					/* set done flag */
-if ((temp = sim_putchar (tty_buf & 0177)) != SCPE_OK) return temp;
+ch = tty_buf & 0177;					/* get char */
+if ((tty_unit[TTO].flags & UNIT_UC) && islower (ch))	/* force upper case? */
+	 ch = toupper (ch);
+if ((temp = sim_putchar (ch)) != SCPE_OK) return temp;	/* output char */
 tty_unit[TTO].pos = tty_unit[TTO].pos + 1;
 return SCPE_OK;
 }

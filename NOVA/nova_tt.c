@@ -26,6 +26,7 @@
    tti		terminal input
    tto		terminal output
 
+   30-Nov-01	RMS	Added extended SET/SHOW support
    17-Sep-01	RMS	Removed multiconsole support
    07-Sep-01	RMS	Moved function prototypes
    31-May-01	RMS	Added multiconsole support
@@ -40,7 +41,7 @@ t_stat tti_svc (UNIT *uptr);
 t_stat tto_svc (UNIT *uptr);
 t_stat tti_reset (DEVICE *dptr);
 t_stat tto_reset (DEVICE *dptr);
-t_stat ttx_setmod (UNIT *uptr, int32 value);
+t_stat ttx_setmod (UNIT *uptr, int32 val, char *cptr);
 
 /* TTI data structures
 
@@ -200,9 +201,9 @@ sim_cancel (&tto_unit);					/* deactivate unit */
 return SCPE_OK;
 }
 
-t_stat ttx_setmod (UNIT *uptr, int32 value)
+t_stat ttx_setmod (UNIT *uptr, int32 val, char *cptr)
 {
-tti_unit.flags = (tti_unit.flags & ~UNIT_DASHER) | value;
-tto_unit.flags = (tto_unit.flags & ~UNIT_DASHER) | value;
+tti_unit.flags = (tti_unit.flags & ~UNIT_DASHER) | val;
+tto_unit.flags = (tto_unit.flags & ~UNIT_DASHER) | val;
 return SCPE_OK;
 }

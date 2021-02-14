@@ -25,6 +25,9 @@
 
    cpu		central processor
 
+   16-Dec-01	RMS	Fixed bugs in EAE
+   07-Dec-01	RMS	Revised to use new breakpoint package
+   30-Nov-01	RMS	Added RL8A, extended SET/SHOW support
    16-Sep-01	RMS	Fixed bug in reset routine, added KL8A support
    10-Aug-01	RMS	Removed register from declarations
    17-Jul-01	RMS	Moved function prototype
@@ -176,8 +179,6 @@
 
 #include "pdp8_defs.h"
 
-#define ILL_ADR_FLAG	0100000				/* invalid addr flag */
-#define save_ibkpt	(cpu_unit.u3)			/* saved bkpt addr */
 #define UNIT_V_NOEAE	(UNIT_V_UF)			/* EAE absent */
 #define UNIT_NOEAE	(1 << UNIT_V_NOEAE)
 #define UNIT_V_MSIZE	(UNIT_V_UF+1)			/* dummy mask */
@@ -200,16 +201,15 @@ int32 old_PC = 0;					/* old PC */
 int32 dev_done = 0;					/* dev done flags */
 int32 int_enable = INT_INIT_ENABLE;			/* intr enables */
 int32 int_req = 0;					/* intr requests */
-int32 dev_enb = -1 & ~INT_DF;				/* device enables */
-int32 ibkpt_addr = ILL_ADR_FLAG | ADDRMASK;		/* breakpoint addr */
+int32 dev_enb = -1 & ~INT_DF & ~INT_RL;			/* device enables */
 int32 stop_inst = 0;					/* trap on ill inst */
 extern int32 sim_int_char;
+extern int32 sim_brk_types, sim_brk_dflt, sim_brk_summ;	/* breakpoint info */
 
 t_stat cpu_ex (t_value *vptr, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_dep (t_value val, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_reset (DEVICE *dptr);
-t_stat cpu_svc (UNIT *uptr);
-t_stat cpu_set_size (UNIT *uptr, int32 value);
+t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc);
 
 /* CPU data structures
 
@@ -219,7 +219,7 @@ t_stat cpu_set_size (UNIT *uptr, int32 value);
    cpu_mod	CPU modifier list
 */
 
-UNIT cpu_unit = { UDATA (&cpu_svc, UNIT_FIX + UNIT_BINK, MAXMEMSIZE) };
+UNIT cpu_unit = { UDATA (NULL, UNIT_FIX + UNIT_BINK, MAXMEMSIZE) };
 
 REG cpu_reg[] = {
 	{ ORDATA (PC, saved_PC, 15) },
@@ -247,7 +247,6 @@ REG cpu_reg[] = {
 	{ FLDATA (NOEAE, cpu_unit.flags, UNIT_V_NOEAE), REG_HRO },
 	{ ORDATA (OLDPC, old_PC, 15), REG_RO },
 	{ FLDATA (STOP_INST, stop_inst, 0) },
-	{ ORDATA (BREAK, ibkpt_addr, 16) },
 	{ ORDATA (WRU, sim_int_char, 8) },
 	{ ORDATA (DEVENB, dev_enb, 32), REG_HRO },
 	{ NULL }  };
@@ -296,6 +295,8 @@ extern int32 rf60 (int32 pulse, int32 AC);
 extern int32 rf61 (int32 pulse, int32 AC);
 extern int32 rf62 (int32 pulse, int32 AC);
 extern int32 rf64 (int32 pulse, int32 AC);
+extern int32 rl60 (int32 pulse, int32 AC);
+extern int32 rl61 (int32 pulse, int32 AC);
 extern int32 mt70 (int32 pulse, int32 AC);
 extern int32 mt71 (int32 pulse, int32 AC);
 extern int32 mt72 (int32 pulse, int32 AC);
@@ -327,10 +328,7 @@ if (int_req > INT_PENDING) {				/* interrupt? */
 	PC = 1;  }					/* fetch next from 1 */
 
 MA = IF | PC;						/* form PC */
-if (MA == ((t_addr) ibkpt_addr)) {			/* breakpoint? */
-	save_ibkpt = ibkpt_addr;			/* save ibkpt */
-	ibkpt_addr = ibkpt_addr | ILL_ADR_FLAG;		/* disable */
-	sim_activate (&cpu_unit, 1);			/* sched re-enable */
+if (sim_brk_summ && sim_brk_test (MA, SWMASK ('E'))) {	/* breakpoint? */
 	reason = STOP_IBKPT;				/* stop simulation */
 	break;  }
 
@@ -745,6 +743,7 @@ case 036:case 037:					/* OPR, groups 2, 3 */
 
 /* EAE continued */
 
+	if (emode == 0) gtf = 0;			/* mode A? clr gtf */
 	switch ((IR >> 1) & 027) {			/* decode IR<6,8:10> */
 	case 020:					/* mode A, B: SCA */
 		LAC = LAC | SC;
@@ -832,7 +831,8 @@ case 036:case 037:					/* OPR, groups 2, 3 */
 		LAC = LAC | SC;				/* mode A: SCA then */
 	case 5:						/* SHL */
 		SC = (M[IF | PC] & 037) + (emode ^ 1);	/* shift+1 if mode A */
-		temp = ((LAC << 12) | MQ) << SC;	/* preserve link */
+		if (SC > 25) temp = 0;			/* >25? result = 0 */
+		else temp = ((LAC << 12) | MQ) << SC;	/* <=25? shift LAC:MQ */
 		LAC = (temp >> 12) & 017777;
 		MQ = temp & 07777;
 		PC = (PC + 1) & 07777;
@@ -851,10 +851,10 @@ case 036:case 037:					/* OPR, groups 2, 3 */
 	case 6:						/* ASR */
 		SC = (M[IF | PC] & 037) + (emode ^ 1);	/* shift+1 if mode A */
 		temp = ((LAC & 07777) << 12) | MQ;	/* sext from AC0 */
+		if (LAC & 04000) temp = temp | ~037777777;
 		if (emode && (SC != 0)) gtf = (temp >> (SC - 1)) & 1;
-		temp = temp >> SC;
-		if (LAC & 04000) temp = temp | ((SC > 24)? -1:
-			(-1 << (24 - SC)));
+		if (SC > 25) temp = (LAC & 04000)? -1: 0;
+		else temp = temp >> SC;
 		LAC = (temp >> 12) & 017777;
 		MQ = temp & 07777;
 		PC = (PC + 1) & 07777;
@@ -871,7 +871,8 @@ case 036:case 037:					/* OPR, groups 2, 3 */
 		SC = (M[IF | PC] & 037) + (emode ^ 1);	/* shift+1 if mode A */
 		temp = ((LAC & 07777) << 12) | MQ;	/* clear link */
 		if (emode && (SC != 0)) gtf = (temp >> (SC - 1)) & 1;
-		temp = temp >> SC;
+		if (SC > 24) temp = 0;			/* >24? result = 0 */
+		else temp = temp >> SC;			/* <=24? shift AC:MQ */
 		LAC = (temp >> 12) & 07777;
 		MQ = temp & 07777;
 		PC = (PC + 1) & 07777;
@@ -1030,11 +1031,13 @@ case 030:case 031:case 032:case 033:			/* IOT */
 	case 060:					/* DF32/RF08 */
 		if (dev_enb & INT_DF) iot_data = df60 (pulse, iot_data);
 		else if (dev_enb & INT_RF) iot_data = rf60 (pulse, iot_data);
+		else if (dev_enb & INT_RL) iot_data = rl60 (pulse, iot_data);
 		else reason = stop_inst;
 		break;
 	case 061:
 		if (dev_enb & INT_DF) iot_data = df61 (pulse, iot_data);
 		else if (dev_enb & INT_RF) iot_data = rf61 (pulse, iot_data);
+		else if (dev_enb & INT_RL) iot_data = rl61 (pulse, iot_data);
 		else reason = stop_inst;
 		break;
 	case 062:
@@ -1098,15 +1101,7 @@ t_stat cpu_reset (DEVICE *dptr)
 int_req = (int_req & ~INT_ION) | INT_NO_CIF_PENDING;
 saved_DF = IB = saved_PC & 070000;
 UF = UB = gtf = emode = 0;
-return cpu_svc (&cpu_unit);
-}
-
-/* Breakpoint service */
-
-t_stat cpu_svc (UNIT *uptr)
-{
-if ((ibkpt_addr & ~ILL_ADR_FLAG) == save_ibkpt) ibkpt_addr = save_ibkpt;
-save_ibkpt = -1;
+sim_brk_types = sim_brk_dflt = SWMASK ('E');
 return SCPE_OK;
 }
 
@@ -1130,17 +1125,17 @@ return SCPE_OK;
 
 /* Memory size change */
 
-t_stat cpu_set_size (UNIT *uptr, int32 value)
+t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc)
 {
 int32 mc = 0;
 t_addr i;
 
-if ((value <= 0) || (value > MAXMEMSIZE) || ((value & 07777) != 0))
+if ((val <= 0) || (val > MAXMEMSIZE) || ((val & 07777) != 0))
 	return SCPE_ARG;
-for (i = value; i < MEMSIZE; i++) mc = mc | M[i];
+for (i = val; i < MEMSIZE; i++) mc = mc | M[i];
 if ((mc != 0) && (!get_yn ("Really truncate memory [N]?", FALSE)))
 	return SCPE_OK;
-MEMSIZE = value;
+MEMSIZE = val;
 for (i = MEMSIZE; i < MAXMEMSIZE; i++) M[i] = 0;
 return SCPE_OK;
 }

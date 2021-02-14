@@ -25,6 +25,9 @@
 
    cpu		KS10 central processor
 
+   25-Dec-01	RMS	Cleaned up sim_inst declarations
+   07-Dec-01	RMS	Revised to use new breakpoint package
+   21-Nov-01	RMS	Implemented ITS 1-proceed hack
    31-Aug-01	RMS	Changed int64 to t_int64 for Windoze
    10-Aug-01	RMS	Removed register in declarations
    17-Jul-01	RMS	Moved function prototype
@@ -112,13 +115,19 @@
 	pdp10_defs.h	add interrupt request definition
 	pdp10_ksio.c	add I/O page linkages
 	pdp10_sys.c	add pointer to data structures to sim_devices
+
+   A note on ITS 1-proceed.  The simulator follows the implementation
+   on the KS10, keeping 1-proceed as a side flag (its_1pr) rather than
+   as flags<8>.  This simplifies the flag saving instructions, which
+   don't have to clear flags<8> before saving it.  Instead, the page
+   fail and interrupt code must restore flags<8> from its_1pr.  Unlike
+   the KS10, the simulator will not lose the 1-proceed trap if the
+   1-proceeded instructions clears 1-proceed.
 */
 
 #include "pdp10_defs.h"
 #include <setjmp.h>
 
-#define ILL_ADR_FLAG	(1 << VASIZE)
-#define save_ibkpt	(cpu_unit.u3)
 #define UNIT_V_MSIZE	(UNIT_V_T20V41 + 1)		/* dummy mask */
 #define UNIT_MSIZE	(1 << UNIT_V_MSIZE)
 
@@ -126,9 +135,12 @@ d10 *M = NULL;						/* memory */
 d10 acs[AC_NBLK * AC_NUM] = { 0 };			/* AC blocks */
 d10 *ac_cur, *ac_prv;					/* AC cur, prv (dyn) */
 a10 epta, upta;						/* proc tbl addr (dyn) */
-d10 last_inst = 0;					/* most recent inst */
 a10 saved_PC = 0;					/* scp: saved PC */
+d10 pager_word = 0;					/* pager: error word */
 a10 pager_PC = 0;					/* pager: saved PC */
+int32 pager_flags = 0;					/* pager: trap flags */
+t_bool pager_pi = FALSE;				/* pager: in pi seq */
+t_bool pager_tc = FALSE;				/* pager: trap cycle */
 d10 ebr = 0;						/* exec base reg */
 d10 ubr = 0;						/* user base reg */
 d10 hsb = 0;						/* halt status block */
@@ -152,22 +164,60 @@ int32 apr_flg = 0;					/* apr flags */
 int32 apr_lvl = 0;					/* apr level */
 int32 qintr = 0;					/* interrupt pending */
 int32 flags = 0;					/* flags */
+int32 its_1pr = 0;					/* ITS 1-proceed */
 int32 stop_op0 = 0;					/* stop on 0 */
-d10 pager_word = 0;					/* pager error word */
 int32 rlog = 0;						/* extend fixup log */
 int32 ind_max = 32;					/* nested ind limit */
 int32 xct_max = 32;					/* nested XCT limit */
-int32 astop_cpu = 0;					/* address stop */
 a10 old_PC = 0;						/* old PC */
-a10 ibkpt_addr = ILL_ADR_FLAG | AMASK;			/* breakpoint addr */
 jmp_buf save_env;
+
+extern int32 sim_int_char;
+extern int32 sim_interval;
+extern int32 sim_brk_types, sim_brk_dflt, sim_brk_summ;	/* breakpoint info */
+extern UNIT tim_unit;
+
+/* Forward and external declarations */
 
 t_stat cpu_ex (t_value *vptr, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_dep (t_value val, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_reset (DEVICE *dptr);
-t_stat cpu_svc (UNIT *uptr);
-extern int32 sim_int_char;
-extern int32 sim_interval;
+d10 adjsp (d10 val, a10 ea);
+void ibp (a10 ea, int32 pflgs);
+d10 ldb (a10 ea, int32 pflgs);
+void dpb (d10 val, a10 ea, int32 pflgs);
+void adjbp (int32 ac, a10 ea, int32 pflgs);
+d10 add (d10 val, d10 mb);
+d10 sub (d10 val, d10 mb);
+void dadd (int32 ac, d10 *rs);
+void dsub (int32 ac, d10 *rs);
+int32 jffo (d10 val);
+d10 lsh (d10 val, a10 ea);
+d10 rot (d10 val, a10 ea);
+d10 ash (d10 val, a10 ea);
+void lshc (int32 ac, a10 ea);
+void rotc (int32 ac, a10 ea);
+void ashc (int32 ac, a10 ea);
+void circ (int32 ac, a10 ea);
+void blt (int32 ac, a10 ea, int32 pflgs);
+void bltu (int32 ac, a10 ea, int32 pflgs, int dir);
+a10 calc_ea (d10 inst, int32 prv);
+a10 calc_ioea (d10 inst, int32 prv);
+d10 calc_jrstfea (d10 inst, int32 pflgs);
+void pi_dismiss (void);
+void set_newflags (d10 fl, t_bool jrst);
+extern t_bool aprid (a10 ea, int32 prv);
+t_bool wrpi (a10 ea, int32 prv);
+t_bool rdpi (a10 ea, int32 prv);
+t_bool czpi (a10 ea, int32 prv);
+t_bool copi (a10 ea, int32 prv);
+t_bool wrapr (a10 ea, int32 prv);
+t_bool rdapr (a10 ea, int32 prv);
+t_bool czapr (a10 ea, int32 prv);
+t_bool coapr (a10 ea, int32 prv);
+int32 pi_eval (void);
+int32 test_int (void);
+void set_ac_display (d10 *acbase);
 
 extern d10 Read (a10 ea, int32 prv);			/* read, read check */
 extern d10 ReadM (a10 ea, int32 prv);			/* read, write check */
@@ -180,9 +230,69 @@ extern t_bool AccViol (a10 ea, int32 prv, int32 mode);	/* access check */
 extern void set_dyn_ptrs (void);
 extern a10 conmap (a10 ea, int32 mode, int32 sw);
 extern void fe_intr ();
-int32 pi_eval (void);
-int32 test_int (void);
-void set_ac_display (d10 *acbase);
+extern void dfad (int32 ac, d10 *rs, int32 inv);
+extern void dfmp (int32 ac, d10 *rs);
+extern void dfdv (int32 ac, d10 *rs);
+extern void dmul (int32 ac, d10 *rs);
+extern void ddiv (int32 ac, d10 *rs);
+extern void fix (int32 ac, d10 mb, t_bool rnd);
+extern d10 fad (d10 val, d10 mb, t_bool rnd, int32 inv);
+extern d10 fmp (d10 val, d10 mb, t_bool rnd);
+extern t_bool fdv (d10 val, d10 mb, d10 *rs, t_bool rnd);
+extern d10 fsc (d10 val, a10 ea);
+extern d10 fltr (d10 mb);
+extern int xtend (int32 ac, a10 ea, int32 pflgs);
+extern void xtcln (int32 rlog);
+extern d10 map (a10 ea, int32 prv);
+extern d10 imul (d10 val, d10 mb);
+extern t_bool idiv (d10 val, d10 mb, d10 *rs);
+extern void mul (d10 val, d10 mb, d10 *rs);
+extern t_bool divi (int32 ac, d10 mb, d10 *rs);
+extern t_bool io710 (int32 ac, a10 ea);
+extern t_bool io711 (int32 ac, a10 ea);
+extern d10 io712 (a10 ea);
+extern void io713 (d10 val, a10 ea);
+extern void io714 (d10 val, a10 ea);
+extern void io715 (d10 val, a10 ea);
+extern t_bool io720 (int32 ac, a10 ea);
+extern t_bool io721 (int32 ac, a10 ea);
+extern d10 io722 (a10 ea);
+extern void io723 (d10 val, a10 ea);
+extern void io724 (d10 val, a10 ea);
+extern void io725 (d10 val, a10 ea);
+extern t_bool clrcsh (a10 ea, int32 prv);
+extern t_bool clrpt (a10 ea, int32 prv);
+extern t_bool wrubr (a10 ea, int32 prv);
+extern t_bool wrebr (a10 ea, int32 prv);
+extern t_bool wrhsb (a10 ea, int32 prv);
+extern t_bool wrspb (a10 ea, int32 prv);
+extern t_bool wrcsb (a10 ea, int32 prv);
+extern t_bool wrpur (a10 ea, int32 prv);
+extern t_bool wrcstm (a10 ea, int32 prv);
+extern t_bool ldbr1 (a10 ea, int32 prv);
+extern t_bool ldbr2 (a10 ea, int32 prv);
+extern t_bool ldbr3 (a10 ea, int32 prv);
+extern t_bool ldbr4 (a10 ea, int32 prv);
+extern t_bool rdubr (a10 ea, int32 prv);
+extern t_bool rdebr (a10 ea, int32 prv);
+extern t_bool rdhsb (a10 ea, int32 prv);
+extern t_bool rdspb (a10 ea, int32 prv);
+extern t_bool rdcsb (a10 ea, int32 prv);
+extern t_bool rdpur (a10 ea, int32 prv);
+extern t_bool rdcstm (a10 ea, int32 prv);
+extern t_bool sdbr1 (a10 ea, int32 prv);
+extern t_bool sdbr2 (a10 ea, int32 prv);
+extern t_bool sdbr3 (a10 ea, int32 prv);
+extern t_bool sdbr4 (a10 ea, int32 prv);
+extern t_bool rdtim (a10 ea, int32 prv);
+extern t_bool rdint (a10 ea, int32 prv);
+extern t_bool wrtim (a10 ea, int32 prv);
+extern t_bool wrint (a10 ea, int32 prv);
+extern t_bool rdpcst (a10 ea, int32 prv);
+extern t_bool wrpcst (a10 ea, int32 prv);
+extern t_bool spm (a10 ea, int32 prv);
+extern t_bool lpmr (a10 ea, int32 prv);
+extern int32 pi_ub_vec (int32 lvl, int32 *uba);
 
 /* CPU data structures
 
@@ -192,7 +302,7 @@ void set_ac_display (d10 *acbase);
    cpu_mod	CPU modifier list
 */
 
-UNIT cpu_unit = { UDATA (&cpu_svc, UNIT_FIX, MAXMEMSIZE) };
+UNIT cpu_unit = { UDATA (NULL, UNIT_FIX, MAXMEMSIZE) };
 
 REG cpu_reg[] = {
 	{ ORDATA (PC, saved_PC, VASIZE) },
@@ -213,7 +323,6 @@ REG cpu_reg[] = {
 	{ ORDATA (AC15, acs[15], 36) },
 	{ ORDATA (AC16, acs[16], 36) },
 	{ ORDATA (AC17, acs[17], 36) },
-	{ ORDATA (IR, last_inst, 36), REG_RO },
 	{ ORDATA (PFW, pager_word, 36) },
 	{ ORDATA (EBR, ebr, EBR_N_EBR) },
 	{ FLDATA (PGON, ebr, EBR_V_PGON) },
@@ -241,12 +350,12 @@ REG cpu_reg[] = {
 	{ ORDATA (APRFLG, apr_flg, 8) },
 	{ ORDATA (APRLVL, apr_lvl, 3) },
 	{ ORDATA (RLOG, rlog, 10) },
+	{ FLDATA (F1PR, its_1pr, 0) },
 	{ ORDATA (OLDPC, old_PC, VASIZE), REG_RO },
 	{ DRDATA (INDMAX, ind_max, 8), PV_LEFT + REG_NZ },
 	{ DRDATA (XCTMAX, xct_max, 8), PV_LEFT + REG_NZ },
 	{ FLDATA (ITS, cpu_unit.flags, UNIT_V_ITS), REG_HRO },
 	{ FLDATA (T20V41, cpu_unit.flags, UNIT_V_T20V41), REG_HRO },
-	{ ORDATA (BREAK, ibkpt_addr, VASIZE + 1) },
 	{ ORDATA (WRU, sim_int_char, 8) },
 	{ FLDATA (STOP_ILL, stop_op0, 0) },
 	{ BRDATA (REG, acs, 8, 36, AC_NUM * AC_NBLK) },
@@ -294,12 +403,32 @@ const d10 bytemask[64] = { 0,
  ONES, ONES, ONES, ONES, ONES, ONES, ONES, ONES, ONES,
  ONES, ONES, ONES, ONES, ONES, ONES, ONES, ONES, ONES };
 
-/* JRST classes */
+static t_bool (*io700d[16])() = {
+	&aprid, NULL, NULL, NULL, &wrapr, &rdapr, &czapr, &coapr,
+	NULL, NULL, NULL, NULL, &wrpi, &rdpi, &czpi, &copi };
+static t_bool (*io701d[16])() = {
+	NULL, &rdubr, &clrpt, &wrubr, &wrebr, &rdebr, NULL, NULL,
+	NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
+static t_bool (*io702d[16])() = {
+	&rdspb, &rdcsb, &rdpur, &rdcstm, &rdtim, &rdint, &rdhsb, NULL,
+	&wrspb, &wrcsb, &wrpur, &wrcstm, &wrtim, &wrint, &wrhsb, NULL };
+#define io700i io700d
+static t_bool (*io701i[16])() = {
+	&clrcsh, &rdubr, &clrpt, &wrubr, &wrebr, &rdebr, NULL, NULL,
+	NULL, &rdpcst, NULL, &wrpcst, NULL, NULL, NULL, NULL };
+static t_bool (*io702i[16])() = {
+	&sdbr1, &sdbr2, &sdbr3, &sdbr4, &rdtim, &rdint, &rdhsb, &spm,
+	&ldbr1, &ldbr2, &ldbr3, &ldbr4, &wrtim, &wrint, &wrhsb, &lpmr };
+
+/* JRST classes and validation table */
 
 #define JRST_U		1				/* ok anywhere */
 #define JRST_E		2				/* ok exec mode */
 #define JRST_UIO	3				/* ok user I/O mode */
-
+	
+static t_stat jrst_tab[16] = {
+	JRST_U, JRST_U, JRST_U, 0, JRST_E, JRST_U, JRST_E, JRST_E,
+	JRST_UIO, 0, JRST_UIO, 0, JRST_E, JRST_U, 0, 0 };
 
 /* Address operations */
 
@@ -443,148 +572,19 @@ const d10 bytemask[64] = { 0,
 
 t_stat sim_instr (void)
 {
-
-/* External and forward declarations */
-
-extern void dfad (int32 ac, d10 *rs, int32 inv);
-extern void dfmp (int32 ac, d10 *rs);
-extern void dfdv (int32 ac, d10 *rs);
-extern void dmul (int32 ac, d10 *rs);
-extern void ddiv (int32 ac, d10 *rs);
-extern void fix (int32 ac, d10 mb, t_bool rnd);
-extern d10 fad (d10 val, d10 mb, t_bool rnd, int32 inv);
-extern d10 fmp (d10 val, d10 mb, t_bool rnd);
-extern t_bool fdv (d10 val, d10 mb, d10 *rs, t_bool rnd);
-extern d10 fsc (d10 val, a10 ea);
-extern d10 fltr (d10 mb);
-extern int xtend (int32 ac, a10 ea, int32 pflgs);
-extern void xtcln (int32 rlog);
-extern d10 map (a10 ea, int32 prv);
-extern d10 imul (d10 val, d10 mb);
-extern t_bool idiv (d10 val, d10 mb, d10 *rs);
-extern void mul (d10 val, d10 mb, d10 *rs);
-extern t_bool divi (int32 ac, d10 mb, d10 *rs);
-extern t_bool io710 (int32 ac, a10 ea);
-extern t_bool io711 (int32 ac, a10 ea);
-extern d10 io712 (a10 ea);
-extern void io713 (d10 val, a10 ea);
-extern void io714 (d10 val, a10 ea);
-extern void io715 (d10 val, a10 ea);
-extern t_bool io720 (int32 ac, a10 ea);
-extern t_bool io721 (int32 ac, a10 ea);
-extern d10 io722 (a10 ea);
-extern void io723 (d10 val, a10 ea);
-extern void io724 (d10 val, a10 ea);
-extern void io725 (d10 val, a10 ea);
-
-extern t_bool clrcsh (a10 ea, int32 prv);
-extern t_bool clrpt (a10 ea, int32 prv);
-extern t_bool wrubr (a10 ea, int32 prv);
-extern t_bool wrebr (a10 ea, int32 prv);
-extern t_bool wrhsb (a10 ea, int32 prv);
-extern t_bool wrspb (a10 ea, int32 prv);
-extern t_bool wrcsb (a10 ea, int32 prv);
-extern t_bool wrpur (a10 ea, int32 prv);
-extern t_bool wrcstm (a10 ea, int32 prv);
-extern t_bool ldbr1 (a10 ea, int32 prv);
-extern t_bool ldbr2 (a10 ea, int32 prv);
-extern t_bool ldbr3 (a10 ea, int32 prv);
-extern t_bool ldbr4 (a10 ea, int32 prv);
-extern t_bool rdubr (a10 ea, int32 prv);
-extern t_bool rdebr (a10 ea, int32 prv);
-extern t_bool rdhsb (a10 ea, int32 prv);
-extern t_bool rdspb (a10 ea, int32 prv);
-extern t_bool rdcsb (a10 ea, int32 prv);
-extern t_bool rdpur (a10 ea, int32 prv);
-extern t_bool rdcstm (a10 ea, int32 prv);
-extern t_bool sdbr1 (a10 ea, int32 prv);
-extern t_bool sdbr2 (a10 ea, int32 prv);
-extern t_bool sdbr3 (a10 ea, int32 prv);
-extern t_bool sdbr4 (a10 ea, int32 prv);
-extern t_bool rdtim (a10 ea, int32 prv);
-extern t_bool rdint (a10 ea, int32 prv);
-extern t_bool wrtim (a10 ea, int32 prv);
-extern t_bool wrint (a10 ea, int32 prv);
-extern t_bool rdpcst (a10 ea, int32 prv);
-extern t_bool wrpcst (a10 ea, int32 prv);
-extern t_bool spm (a10 ea, int32 prv);
-extern t_bool lpmr (a10 ea, int32 prv);
-
-extern int32 pi_ub_vec (int32 lvl, int32 *uba);
-extern UNIT tim_unit;
-
-d10 adjsp (d10 val, a10 ea);
-void ibp (a10 ea, int32 pflgs);
-d10 ldb (a10 ea, int32 pflgs);
-void dpb (d10 val, a10 ea, int32 pflgs);
-void adjbp (int32 ac, a10 ea, int32 pflgs);
-d10 add (d10 val, d10 mb);
-d10 sub (d10 val, d10 mb);
-void dadd (int32 ac, d10 *rs);
-void dsub (int32 ac, d10 *rs);
-int32 jffo (d10 val);
-d10 lsh (d10 val, a10 ea);
-d10 rot (d10 val, a10 ea);
-d10 ash (d10 val, a10 ea);
-void lshc (int32 ac, a10 ea);
-void rotc (int32 ac, a10 ea);
-void ashc (int32 ac, a10 ea);
-void circ (int32 ac, a10 ea);
-void blt (int32 ac, a10 ea, int32 pflgs);
-void bltu (int32 ac, a10 ea, int32 pflgs, int dir);
-a10 calc_ea (d10 inst, int32 prv);
-a10 calc_ioea (d10 inst, int32 prv);
-d10 calc_jrstfea (d10 inst, int32 pflgs);
-void pi_dismiss (void);
-void set_newflags (d10 fl, t_bool jrst);
-extern t_bool aprid (a10 ea, int32 prv);
-t_bool wrpi (a10 ea, int32 prv);
-t_bool rdpi (a10 ea, int32 prv);
-t_bool czpi (a10 ea, int32 prv);
-t_bool copi (a10 ea, int32 prv);
-t_bool wrapr (a10 ea, int32 prv);
-t_bool rdapr (a10 ea, int32 prv);
-t_bool czapr (a10 ea, int32 prv);
-t_bool coapr (a10 ea, int32 prv);
-
-static t_bool (*io700d[16])() = {
-	&aprid, NULL, NULL, NULL, &wrapr, &rdapr, &czapr, &coapr,
-	NULL, NULL, NULL, NULL, &wrpi, &rdpi, &czpi, &copi };
-static t_bool (*io701d[16])() = {
-	NULL, &rdubr, &clrpt, &wrubr, &wrebr, &rdebr, NULL, NULL,
-	NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
-static t_bool (*io702d[16])() = {
-	&rdspb, &rdcsb, &rdpur, &rdcstm, &rdtim, &rdint, &rdhsb, NULL,
-	&wrspb, &wrcsb, &wrpur, &wrcstm, &wrtim, &wrint, &wrhsb, NULL };
-#define io700i io700d
-static t_bool (*io701i[16])() = {
-	&clrcsh, &rdubr, &clrpt, &wrubr, &wrebr, &rdebr, NULL, NULL,
-	NULL, &rdpcst, NULL, &wrpcst, NULL, NULL, NULL, NULL };
-static t_bool (*io702i[16])() = {
-	&sdbr1, &sdbr2, &sdbr3, &sdbr4, &rdtim, &rdint, &rdhsb, &spm,
-	&ldbr1, &ldbr2, &ldbr3, &ldbr4, &wrtim, &wrint, &wrhsb, &lpmr };
-static t_stat jrst_tab[16] = {
-	JRST_U, JRST_U, JRST_U, 0, JRST_E, JRST_U, JRST_E, JRST_E,
-	JRST_UIO, 0, JRST_UIO, 0, JRST_E, JRST_U, 0, 0 };
-
-d10 inst;
 a10 PC;
-int32 pflgs;
-int32 pager_flags = 0;					/* pager: trap flags */
-t_bool pager_pi = FALSE;				/* pager: in pi seq */
 int abortval = 0;					/* abort value */
-t_bool (*fptr)();
 
 /* Restore register state */
 
 pager_PC = PC = saved_PC & AMASK;			/* load local PC */
 set_dyn_ptrs ();					/* set up local ptrs */
-pflgs = 0;						/* not trap or PXCT */
+pager_tc = FALSE;					/* not in trap cycle */
 pager_pi = FALSE;					/* not in pi sequence */
 rlog = 0;						/* not in extend */
 pi_eval ();						/* eval pi system */
-astop_cpu = 0;						/* no addr stop */
 sim_rtc_init (tim_unit.wait);				/* init calibration */
+if (!ITS) its_1pr = 0;					/* ~ITS, clr 1-proc */
 
 /* Abort handling
 
@@ -597,28 +597,32 @@ if ((abortval > 0) || pager_pi) {			/* stop or pi err? */
 	if (pager_pi && (abortval == PAGE_FAIL))
 		abortval = STOP_PAGINT;			/* stop for pi err */
 	saved_PC = pager_PC & AMASK;			/* failing instr PC */
-	last_inst = inst;				/* last instr decoded */
 	set_ac_display (ac_cur);			/* set up AC display */
 	return abortval;  }				/* return to SCP */
 
-/* Page fail - checked against KS10 ucode */
+/* Page fail - checked against KS10 ucode
+   All state variables MUST be declared global for GCC optimization to work
+*/
 
 else if (abortval == PAGE_FAIL) {			/* page fail */
 	d10 mb;
 	if (rlog) xtcln (rlog);				/* clean up extend */
 	rlog = 0;					/* clear log */
-	if (pflgs & TRAP_CYCLE) flags = pager_flags;	/* trap? get flags */
-	if (!T20 || ITS) {				/* TOPS-10 or ITS */
-		a10 ea;
-		if (ITS) ea = epta + EPT_ITS_PAG + (pi_m2lvl[pi_act] * 3);
+	if (pager_tc) flags = pager_flags;		/* trap? get flags */
+	if (T20) {					/* TOPS-20 */
+		WriteP (upta + UPT_T20_PFL, pager_word);/* write page fail wd */
+		WriteP (upta + UPT_T20_OFL, XWD (flags, 0));
+		WriteP (upta + UPT_T20_OPC, pager_PC);
+		mb = ReadP (upta + UPT_T20_NPC);  }
+	else {	a10 ea;					/* TOPS-10 or ITS */
+		if (ITS) {				/* ITS? */
+		    ea = epta + EPT_ITS_PAG + (pi_m2lvl[pi_act] * 3);
+		    if (its_1pr) flags = flags | F_1PR;	/* store 1-proc */
+		    its_1pr = 0;  }			/* clear 1-proc */
 		else ea = upta + UPT_T10_PAG;
 		WriteP (ea, pager_word); 		/* write page fail wd */
 		WriteP (ADDA (ea, 1), XWD (flags, pager_PC));
 		mb = ReadP (ADDA (ea, 2));  }
-	else {	WriteP (upta + UPT_T20_PFL, pager_word);/* write page fail wd */
-		WriteP (upta + UPT_T20_OFL, XWD (flags, 0));
-		WriteP (upta + UPT_T20_OPC, pager_PC);
-		mb = ReadP (upta + UPT_T20_NPC);  }
 	JUMP (mb);					/* set new PC */
 	set_newflags (mb, FALSE);			/* set new flags */
 	pi_eval ();  }					/* eval pi system */
@@ -627,14 +631,15 @@ else PC = pager_PC;					/* intr, restore PC */
 /* Main instruction fetch/decode loop: check clock queue, intr, trap, bkpt */
 
 for ( ;; ) {						/* loop until ABORT */
-int32 op, ac, i, st, xr, xct_cnt;
+int32 op, ac, i, st, xr, xct_cnt, its_2pr, pflgs;
 a10 ea;
-d10 mb, indrct, rs[2];
+d10 inst, mb, indrct, rs[2];
+t_bool (*fptr)();
 
 pager_PC = PC;						/* update pager PC */
-pflgs = 0;						/* not in PXCT or trap */
+pager_tc = FALSE;					/* not in trap cycle */
+pflgs = 0;						/* not in PXCT */
 xct_cnt = 0;						/* count XCT's */
-if (astop_cpu) ABORT (STOP_ASTOP);			/* address stop? */
 if (sim_interval <= 0) {				/* check clock queue */
 	if (i = sim_process_event ()) ABORT (i);	/* error?  stop sim */
 	pi_eval ();  }					/* eval pi system */
@@ -657,6 +662,9 @@ if (qintr) {
 	else inst = ReadP (epta + EPT_PIIT + (2 * qintr));
 	op = GET_OP (inst);				/* get opcode */
 	ac = GET_AC (inst);				/* get ac */
+	if (its_1pr && ITS) {				/* 1-proc set? */
+		flags = flags | F_1PR;			/* store 1-proc */
+		its_1pr = 0;  }				/* clear 1-proc */
 	if (op == OP_JSR) {				/* JSR? */
 		ea = calc_ea (inst, MM_CUR);		/* calc ea, cur mode */
 		WriteE (ea, FLPC);			/* save flags+PC, exec */
@@ -688,7 +696,7 @@ if (qintr) {
 
 if (TSTF (F_T1 | F_T2) && PAGING) {
 	Read (pager_PC = PC, MM_CUR);			/* test fetch */
-	pflgs = TRAP_CYCLE;				/* in a trap sequence */
+	pager_tc = TRUE;				/* in a trap sequence */
 	pager_flags = flags;				/* save flags */
 	ea = (TSTF (F_USR)? upta + UPT_TRBASE: epta + EPT_TRBASE)
 		+ GET_TRAPS (flags);
@@ -697,10 +705,8 @@ if (TSTF (F_T1 | F_T2) && PAGING) {
 
 /* Test for instruction breakpoint */
 
-else {	if (PC == ibkpt_addr) {				/* breakpoint? */
-		save_ibkpt = ibkpt_addr;		/* save bkpt */
-		ibkpt_addr = ibkpt_addr | ILL_ADR_FLAG;	/* disable */
-		sim_activate (&cpu_unit, 1);		/* sched re-enable */
+else {	if (sim_brk_summ &&
+	    sim_brk_test (PC, SWMASK ('E'))) {		/* breakpoint? */
 		ABORT (STOP_IBKPT);  }			/* stop simulation */
 
 /* Ready (at last) to get an instruction */
@@ -708,6 +714,8 @@ else {	if (PC == ibkpt_addr) {				/* breakpoint? */
 	inst = Read (pager_PC = PC, MM_CUR);		/* get instruction */
 	INCPC;  
 	sim_interval = sim_interval - 1;  }
+
+its_2pr = its_1pr;					/* save 1-proc flag */
 
 /* Execute instruction.  XCT and PXCT also return here. */
 
@@ -1240,7 +1248,8 @@ case 0725:	IOA; io725 (AC(ac), ea); break;		/* BCIOB, IOWRBQ */
 */
 
 default:
-MUUO:	if (T20) {					/* TOPS20? */
+MUUO:	its_2pr = 0;					/* clear trap */
+	if (T20) {					/* TOPS20? */
 		int32 tf = (op << (INST_V_OP - 18)) | (ac << (INST_V_AC - 18));
 		WriteP (upta + UPT_MUUO, XWD (		/* store flags,,op+ac */
 			flags & ~(F_T2 | F_T1), tf));	/* traps clear */
@@ -1252,7 +1261,7 @@ MUUO:	if (T20) {					/* TOPS20? */
 			flags & ~(F_T2 | F_T1), PC));	/* traps clear */
 		WriteP (upta + UPT_T10_CTX, UBRWORD); }	/* store context */
 	ea = upta + (TSTF (F_USR)? UPT_UNPC: UPT_ENPC) +
-		(pflgs & TRAP_CYCLE? UPT_NPCT: 0);	/* calculate vector */
+		(pager_tc? UPT_NPCT: 0);		/* calculate vector */
 	mb = ReadP (ea);				/* new flags, PC */
 	JUMP (mb);					/* set new PC */
 	if (TSTF (F_USR)) mb = mb | XWD (F_UIO, 0);	/* set PCU */
@@ -1325,6 +1334,15 @@ case 0254:						/* JRST */
 		JUMP (Read (ea, MM_OPND));		/* jump to M[ea] */
 		break;  }				/* end case subop */
 	break;  }					/* end case op */
+
+if (its_2pr) {						/* 1-proc trap? */
+	its_1pr = its_2pr = 0;				/* clear trap */
+	if (ITS) {					/* better be ITS */
+		WriteP (upta + UPT_1PO, FLPC);		/* wr old flgs, PC */
+		mb = ReadP (upta + UPT_1PN);		/* rd new flgs, PC */
+		JUMP (mb);				/* set PC */
+		set_newflags (mb, TRUE);  }		/* set new flags */
+	}						/* end if 2-proc */
 }							/* end for */
 
 /* Should never get here */
@@ -1905,6 +1923,9 @@ int32 fl = (int32) LRZ (newf);
 if (jrst && TSTF (F_USR)) {				/* if in user now */
 	fl = fl | F_USR;				/* can't clear user */
 	if (!TSTF (F_UIO)) fl = fl & ~F_UIO;  }		/* if !UIO, can't set */
+if (ITS && (fl & F_1PR)) {				/* ITS 1-proceed? */
+	its_1pr = 1;					/* set flag */
+	fl = fl & ~F_1PR;  }				/* vanish bit */
 flags = fl & F_MASK;					/* set new flags */
 set_dyn_ptrs ();					/* set new ptrs */
 return;
@@ -2002,6 +2023,7 @@ return;
 t_stat cpu_reset (DEVICE *dptr)
 {
 flags = 0;						/* clear flags */
+its_1pr = 0;						/* clear 1-proceed */
 ebr = ubr = 0;						/* clear paging */
 pi_enb = pi_act = pi_prq = 0;				/* clear PI */
 apr_enb = apr_flg = apr_lvl = 0;			/* clear APR */
@@ -2013,7 +2035,8 @@ set_ac_display (ac_cur);
 pi_eval ();
 if (M == NULL) M = calloc (MAXMEMSIZE, sizeof (d10));
 if (M == NULL) return SCPE_MEM;
-return cpu_svc (&cpu_unit);
+sim_brk_types = sim_brk_dflt = SWMASK ('E');
+return SCPE_OK;
 }
 
 /* Memory examine */
@@ -2040,15 +2063,6 @@ else {	if (sw & SWMASK ('V')) {
 		if (ea >= MAXMEMSIZE) return SCPE_REL;  }
 	if (ea >= MEMSIZE) return SCPE_NXM;
 	M[ea] = val & DMASK;  }
-return SCPE_OK;
-}
-
-/* Service breakpoint */
-
-t_stat cpu_svc (UNIT *uptr)
-{
-if ((ibkpt_addr & ~ILL_ADR_FLAG) == save_ibkpt) ibkpt_addr = save_ibkpt;
-save_ibkpt = -1;
 return SCPE_OK;
 }
 

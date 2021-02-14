@@ -25,6 +25,7 @@
 
    tim		timer subsystem
 
+   02-Dec-01	RMS	Fixed bug in ITS PC sampling (found by Dave Conroy)
    31-Aug-01	RMS	Changed int64 to t_int64 for Windoze
    17-Jul-01	RMS	Moved function prototype
    04-Jul-01	RMS	Added DZ11 support
@@ -142,8 +143,8 @@ if (ttg <= 0) {						/* timeout? */
 if (ITS) {						/* ITS? */
 	if (pi_act == 0) quant = (quant + TIM_HWRE) & DMASK;
 	if (TSTS (pcst)) {				/* PC sampling? */
-		pcst = AOB (pcst);			/* add 1,,1 */
-		WriteP ((a10) pcst & AMASK, pager_PC);  }
+		WriteP ((a10) pcst & AMASK, pager_PC);	/* store sample */
+		pcst = AOB (pcst);  }			/* add 1,,1 */
 	}						/* end ITS */
 return SCPE_OK;
 }

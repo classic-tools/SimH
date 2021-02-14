@@ -25,6 +25,8 @@
 
    rp		RH/RP/RM moving head disks
 
+   30-Nov-01	RMS	Added read only unit, extended SET/SHOW support support
+   24-Nov-01	RMS	Changed RPER, RPDS, FNC, FLG to arrays
    23-Oct-01	RMS	Fixed bug in error interrupts
 			New IO page address constants
    05-Oct-01	RMS	Rewrote interrupt handling from schematics
@@ -75,9 +77,10 @@
 #define UNIT_DTYPE	(UNIT_M_DTYPE << UNIT_V_DTYPE)
 #define UNIT_AUTO	(1 << UNIT_V_AUTO)
 #define UNIT_W_UF	6				/* user flags width */
-#define UNIT_V_DUMMY	(UNIT_V_UF + UNIT_W_UF)	/* dummy flag */
+#define UNIT_V_DUMMY	(UNIT_V_UF + UNIT_W_UF)		/* dummy flag */
 #define UNIT_DUMMY	(1 << UNIT_V_DUMMY)
 #define GET_DTYPE(x)	(((x) >> UNIT_V_DTYPE) & UNIT_M_DTYPE)
+#define UNIT_WPRT	(UNIT_WLK | UNIT_RO)		/* write protect */
 
 /* Parameters in the unit descriptor */
 
@@ -338,7 +341,7 @@ int reg_in_drive[32] = {
 
 void update_rpcs (int32 flags, int32 drv);
 void rp_go (int32 drv, int32 fnc);
-t_stat rp_set_size (UNIT *uptr, int32 value);
+t_stat rp_set_size (UNIT *uptr, int32 val, char *cptr, void *desc);
 t_stat rp_svc (UNIT *uptr);
 t_stat rp_reset (DEVICE *dptr);
 t_stat rp_boot (int32 unitno);
@@ -355,21 +358,21 @@ t_stat rp_detach (UNIT *uptr);
 
 UNIT rp_unit[] = {
 	{ UDATA (&rp_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
-		(RP06_DTYPE << UNIT_V_DTYPE), RP06_SIZE) },
+		UNIT_ROABLE+(RP06_DTYPE << UNIT_V_DTYPE), RP06_SIZE) },
 	{ UDATA (&rp_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
-		(RP06_DTYPE << UNIT_V_DTYPE), RP06_SIZE) },
+		UNIT_ROABLE+(RP06_DTYPE << UNIT_V_DTYPE), RP06_SIZE) },
 	{ UDATA (&rp_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
-		(RP06_DTYPE << UNIT_V_DTYPE), RP06_SIZE) },
+		UNIT_ROABLE+(RP06_DTYPE << UNIT_V_DTYPE), RP06_SIZE) },
 	{ UDATA (&rp_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
-		(RP06_DTYPE << UNIT_V_DTYPE), RP06_SIZE) },
+		UNIT_ROABLE+(RP06_DTYPE << UNIT_V_DTYPE), RP06_SIZE) },
 	{ UDATA (&rp_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
-		(RP06_DTYPE << UNIT_V_DTYPE), RP06_SIZE) },
+		UNIT_ROABLE+(RP06_DTYPE << UNIT_V_DTYPE), RP06_SIZE) },
 	{ UDATA (&rp_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
-		(RP06_DTYPE << UNIT_V_DTYPE), RP06_SIZE) },
+		UNIT_ROABLE+(RP06_DTYPE << UNIT_V_DTYPE), RP06_SIZE) },
 	{ UDATA (&rp_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
-		(RP06_DTYPE << UNIT_V_DTYPE), RP06_SIZE) },
+		UNIT_ROABLE+(RP06_DTYPE << UNIT_V_DTYPE), RP06_SIZE) },
 	{ UDATA (&rp_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
-		(RP06_DTYPE << UNIT_V_DTYPE), RP06_SIZE) }  };
+		UNIT_ROABLE+(RP06_DTYPE << UNIT_V_DTYPE), RP06_SIZE) }  };
 
 REG rp_reg[] = {
 	{ ORDATA (RPCS1, rpcs1, 16) },
@@ -377,6 +380,8 @@ REG rp_reg[] = {
 	{ ORDATA (RPBA, rpba, 16) },
 	{ ORDATA (RPDA, rpda, 16) },
 	{ ORDATA (RPCS2, rpcs2, 16) },
+	{ BRDATA (RPDS, rpds, 8, 16, RP_NUMDR) },
+	{ BRDATA (RPER1, rper1, 8, 16, RP_NUMDR) },
 	{ ORDATA (RPOF, rpof, 16) },
 	{ ORDATA (RPDC, rpdc, 16) },
 	{ ORDATA (RPER2, rper2, 16) },
@@ -392,46 +397,11 @@ REG rp_reg[] = {
 	{ FLDATA (IE, rpcs1, CSR_V_IE) },
 	{ DRDATA (STIME, rp_swait, 24), REG_NZ + PV_LEFT },
 	{ DRDATA (RTIME, rp_rwait, 24), REG_NZ + PV_LEFT },
-	{ ORDATA (RPDS0, rpds[0], 16) },
-	{ ORDATA (RPDS1, rpds[1], 16) },
-	{ ORDATA (RPDS2, rpds[2], 16) },
-	{ ORDATA (RPDS3, rpds[3], 16) },
-	{ ORDATA (RPDS4, rpds[4], 16) },
-	{ ORDATA (RPDS5, rpds[5], 16) },
-	{ ORDATA (RPDS6, rpds[6], 16) },
-	{ ORDATA (RPDS7, rpds[7], 16) },
-	{ ORDATA (RPDE0, rper1[0], 16) },
-	{ ORDATA (RPDE1, rper1[1], 16) },
-	{ ORDATA (RPDE2, rper1[2], 16) },
-	{ ORDATA (RPDE3, rper1[3], 16) },
-	{ ORDATA (RPDE4, rper1[4], 16) },
-	{ ORDATA (RPDE5, rper1[5], 16) },
-	{ ORDATA (RPDE6, rper1[6], 16) },
-	{ ORDATA (RPDE7, rper1[7], 16) },
-	{ ORDATA (RPFN0, rp_unit[0].FUNC, 5), REG_HRO },
-	{ ORDATA (RPFN1, rp_unit[1].FUNC, 5), REG_HRO },
-	{ ORDATA (RPFN2, rp_unit[2].FUNC, 5), REG_HRO },
-	{ ORDATA (RPFN3, rp_unit[3].FUNC, 5), REG_HRO },
-	{ ORDATA (RPFN4, rp_unit[4].FUNC, 5), REG_HRO },
-	{ ORDATA (RPFN5, rp_unit[5].FUNC, 5), REG_HRO },
-	{ ORDATA (RPFN6, rp_unit[6].FUNC, 5), REG_HRO },
-	{ ORDATA (RPFN7, rp_unit[7].FUNC, 5), REG_HRO },
-	{ GRDATA (FLG0, rp_unit[0].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG1, rp_unit[1].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG2, rp_unit[2].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG3, rp_unit[3].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG4, rp_unit[4].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG5, rp_unit[5].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG6, rp_unit[6].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG7, rp_unit[7].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
+	{ URDATA (FNC, rp_unit[0].FUNC, 8, 5, 0, RP_NUMDR, REG_HRO) },
+	{ URDATA (FLG, rp_unit[0].flags, 8, UNIT_W_UF, UNIT_V_UF - 1,
+		  RP_NUMDR, REG_HRO) },
+	{ URDATA (CAPAC, rp_unit[0].capac, 10, 31, 0,
+		  RP_NUMDR, PV_LEFT | REG_HRO) },
 	{ FLDATA (STOP_IOE, rp_stopioe, 0) },
 	{ NULL }  };
 
@@ -828,7 +798,7 @@ case FNC_SEEK:						/* seek */
 #define XBA_MBZ		0000003				/* addr<1:0> must be 0 */
 
 case FNC_WRITE:						/* write */
-	if (uptr -> flags & UNIT_WLK) {			/* write locked? */
+	if (uptr -> flags & UNIT_WPRT) {		/* write locked? */
 		rper1[drv] = rper1[drv] | ER1_WLE;	/* set drive error */
 		update_rpcs (CS1_DONE | CS1_TRE, drv);	/* set done, err */
 		break;  }
@@ -978,7 +948,7 @@ for (i = 0; i < RP_NUMDR; i++) {
 	sim_cancel (uptr);
 	uptr -> CYL = uptr -> FUNC = 0;
 	if (uptr -> flags & UNIT_ATT) rpds[i] = (rpds[i] & DS_VV) |
-		DS_DPR | DS_RDY | DS_MOL | ((uptr -> flags & UNIT_WLK)? DS_WRL: 0);
+		DS_DPR | DS_RDY | DS_MOL | ((uptr -> flags & UNIT_WPRT)? DS_WRL: 0);
 	else if (uptr -> flags & UNIT_DIS) rpds[i] = 0;
 	else rpds[i] = DS_DPR;
 	rper1[i] = 0;  }
@@ -997,7 +967,7 @@ r = attach_unit (uptr, cptr);
 if (r != SCPE_OK) return r;
 drv = uptr - rp_dev.units;				/* get drv number */
 rpds[drv] = DS_ATA | DS_MOL | DS_RDY | DS_DPR |
-	((uptr -> flags & UNIT_WLK)? DS_WRL: 0);
+	((uptr -> flags & UNIT_WPRT)? DS_WRL: 0);
 rper1[drv] = 0;
 update_rpcs (CS1_SC, drv);
 
@@ -1032,10 +1002,10 @@ return detach_unit (uptr);
 
 /* Set size command validation routine */
 
-t_stat rp_set_size (UNIT *uptr, int32 value)
+t_stat rp_set_size (UNIT *uptr, int32 val, char *cptr, void *desc)
 {
 if (uptr -> flags & UNIT_ATT) return SCPE_ALATT;
-uptr -> capac = drv_tab[GET_DTYPE (value)].size;
+uptr -> capac = drv_tab[GET_DTYPE (val)].size;
 return SCPE_OK;
 }
 

@@ -25,6 +25,8 @@
 
    tu		RH11/TM03/TU45 magtape
 
+   30-Nov-01	RMS	Added read only unit, extended SET/SHOW support
+   24-Nov-01	RMS	Changed POS, FLG, UST to arrays
    23-Oct-01	RMS	Fixed bug in error interrupts
 			New IO page address constants
    05-Oct-01	RMS	Rewrote interrupt handling from schematics
@@ -74,6 +76,7 @@
 #define UDENS		u4				/* unit density */
 #define  UD_UNK		0				/* unknown */
 #define XBUFLNT		(1 << 16)			/* max data buf */
+#define UNIT_WPRT	(UNIT_WLK | UNIT_RO)		/* write protect */
 
 /* MTCS1 - 172440 - control/status 1 */
 
@@ -300,7 +303,7 @@ t_stat tu_detach (UNIT *uptr);
 t_stat tu_boot (int32 unitno);
 void tu_go (int32 drv);
 void update_tucs (int32 flag, int32 drv);
-t_stat tu_vlock (UNIT *uptr, int32 val);
+t_stat tu_vlock (UNIT *uptr, int32 val, char *cptr, void *desc);
 
 /* TU data structures
 
@@ -311,14 +314,14 @@ t_stat tu_vlock (UNIT *uptr, int32 val);
 */
 
 UNIT tu_unit[] = {
-	{ UDATA (&tu_svc, UNIT_ATTABLE + UNIT_DISABLE, 0) },
-	{ UDATA (&tu_svc, UNIT_ATTABLE + UNIT_DISABLE, 0) },
-	{ UDATA (&tu_svc, UNIT_ATTABLE + UNIT_DISABLE, 0) },
-	{ UDATA (&tu_svc, UNIT_ATTABLE + UNIT_DISABLE, 0) },
-	{ UDATA (&tu_svc, UNIT_ATTABLE + UNIT_DISABLE, 0) },
-	{ UDATA (&tu_svc, UNIT_ATTABLE + UNIT_DISABLE, 0) },
-	{ UDATA (&tu_svc, UNIT_ATTABLE + UNIT_DISABLE, 0) },
-	{ UDATA (&tu_svc, UNIT_ATTABLE + UNIT_DISABLE, 0) }  };
+	{ UDATA (&tu_svc, UNIT_ATTABLE+UNIT_DISABLE+UNIT_ROABLE, 0) },
+	{ UDATA (&tu_svc, UNIT_ATTABLE+UNIT_DISABLE+UNIT_ROABLE, 0) },
+	{ UDATA (&tu_svc, UNIT_ATTABLE+UNIT_DISABLE+UNIT_ROABLE, 0) },
+	{ UDATA (&tu_svc, UNIT_ATTABLE+UNIT_DISABLE+UNIT_ROABLE, 0) },
+	{ UDATA (&tu_svc, UNIT_ATTABLE+UNIT_DISABLE+UNIT_ROABLE, 0) },
+	{ UDATA (&tu_svc, UNIT_ATTABLE+UNIT_DISABLE+UNIT_ROABLE, 0) },
+	{ UDATA (&tu_svc, UNIT_ATTABLE+UNIT_DISABLE+UNIT_ROABLE, 0) },
+	{ UDATA (&tu_svc, UNIT_ATTABLE+UNIT_DISABLE+UNIT_ROABLE, 0) }  };
 
 REG tu_reg[] = {
 	{ ORDATA (MTCS1, tucs1, 16) },
@@ -338,38 +341,11 @@ REG tu_reg[] = {
 	{ FLDATA (IE, tucs1, CSR_V_IE) },
 	{ FLDATA (STOP_IOE, tu_stopioe, 0) },
 	{ DRDATA (TIME, tu_time, 24), PV_LEFT },
-	{ ORDATA (UST0, tu_unit[0].USTAT, 17) },
-	{ ORDATA (UST1, tu_unit[1].USTAT, 17) },
-	{ ORDATA (UST2, tu_unit[2].USTAT, 17) },
-	{ ORDATA (UST3, tu_unit[3].USTAT, 17) },
-	{ ORDATA (UST4, tu_unit[4].USTAT, 17) },
-	{ ORDATA (UST5, tu_unit[5].USTAT, 17) },
-	{ ORDATA (UST6, tu_unit[6].USTAT, 17) },
-	{ ORDATA (UST7, tu_unit[7].USTAT, 17) },
-	{ DRDATA (POS0, tu_unit[0].pos, 31), PV_LEFT + REG_RO },
-	{ DRDATA (POS1, tu_unit[1].pos, 31), PV_LEFT + REG_RO },
-	{ DRDATA (POS2, tu_unit[2].pos, 31), PV_LEFT + REG_RO },
-	{ DRDATA (POS3, tu_unit[3].pos, 31), PV_LEFT + REG_RO },
-	{ DRDATA (POS4, tu_unit[4].pos, 31), PV_LEFT + REG_RO },
-	{ DRDATA (POS5, tu_unit[5].pos, 31), PV_LEFT + REG_RO },
-	{ DRDATA (POS6, tu_unit[6].pos, 31), PV_LEFT + REG_RO },
-	{ DRDATA (POS7, tu_unit[7].pos, 31), PV_LEFT + REG_RO },
-	{ GRDATA (FLG0, tu_unit[0].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG1, tu_unit[1].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG2, tu_unit[2].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG3, tu_unit[3].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG4, tu_unit[4].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG5, tu_unit[5].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG6, tu_unit[6].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG7, tu_unit[7].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
+	{ URDATA (UST, tu_unit[0].USTAT, 8, 17, 0, TU_NUMDR, 0) },
+	{ URDATA (POS, tu_unit[0].pos, 8, 31, 0,
+		  TU_NUMDR, PV_LEFT | REG_RO) },
+	{ URDATA (FLG, tu_unit[0].flags, 8, UNIT_W_UF, UNIT_V_UF - 1,
+		  TU_NUMDR, REG_HRO) },
 	{ ORDATA (LOG, tu_log, 8), REG_HIDDEN },
 	{ NULL }  };
 
@@ -630,7 +606,7 @@ case FNC_WRITE:						/* write */
 		break;  }
 case FNC_WREOF:						/* write tape mark */
 case FNC_ERASE:						/* erase */
-	if (uptr -> flags & UNIT_WLK) {			/* write locked? */
+	if (uptr -> flags & UNIT_WPRT) {		/* write locked? */
 		tuer = tuer | ER_NXF;
 		break;  }
 case FNC_WCHKF:						/* wchk = read */
@@ -902,7 +878,7 @@ if (GET_FMTR (tucs2) == 0) {				/* formatter present? */
 	if (tu_unit[drv].flags & UNIT_ATT) {
 		tufs = tufs | FS_MOL | tu_unit[drv].USTAT;
 		if (tu_unit[drv].UDENS == TC_1600) tufs = tufs | FS_PE;
-		if (tu_unit[drv].flags & UNIT_WLK) tufs = tufs | FS_WRL;
+		if (tu_unit[drv].flags & UNIT_WPRT) tufs = tufs | FS_WRL;
 		if ((tu_unit[drv].pos == 0) && !act) tufs = tufs | FS_BOT;  }
 	if (tuer) tufs = tufs | FS_ERR;  }
 else tufs = 0;
@@ -984,7 +960,7 @@ return detach_unit (uptr);
 
 /* Write lock/enable routine */
 
-t_stat tu_vlock (UNIT *uptr, int32 val)
+t_stat tu_vlock (UNIT *uptr, int32 val, char *cptr, void *desc)
 {
 if (sim_is_active (uptr)) return SCPE_ARG;
 return SCPE_OK;

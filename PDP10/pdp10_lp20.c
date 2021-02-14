@@ -24,6 +24,8 @@
    in this Software without prior written authorization from Robert M Supnik.
 
    lp20		line printer
+
+   30-Nov-01	RMS	Added extended SET/SHOW support
 */
 
 #include "pdp10_defs.h"
@@ -152,7 +154,7 @@ t_stat lp20_svc (UNIT *uptr);
 t_stat lp20_reset (DEVICE *dptr);
 t_stat lp20_attach (UNIT *uptr, char *ptr);
 t_stat lp20_detach (UNIT *uptr);
-t_stat lp20_clear_vfu (UNIT *uptr, int32 arg);
+t_stat lp20_clear_vfu (UNIT *uptr, int32 val, char *cptr, void *desc);
 t_bool lp20_print (int32 c);
 t_bool lp20_adv (int32 c, t_bool advdvu);
 t_bool lp20_davfu (int32 c);
@@ -570,7 +572,7 @@ update_lpcs (CSA_MBZ);
 return reason;
 }
 
-t_stat lp20_clear_vfu (UNIT *uptr, int32 arg)
+t_stat lp20_clear_vfu (UNIT *uptr, int32 val, char *cptr, void *desc)
 {
 int i;
 

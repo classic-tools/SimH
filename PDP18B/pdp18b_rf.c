@@ -26,6 +26,8 @@
    rf		(PDP-9) RF09/RF09
 		(PDP-15) RF15/RS09
 
+   25-Nov-01	RMS	Revised interrupt structure
+   24-Nov-01	RMS	Changed WLK to array
    26-Apr-01	RMS	Added device enable/disable support
    15-Feb-01	RMS	Fixed 3 cycle data break sequencing
    30-Nov-99	RMS	Added non-zero requirement to rf_time
@@ -85,7 +87,7 @@
 #define RF_BUSY		(sim_is_active (&rf_unit))
 
 extern int32 M[];
-extern int32 int_req, dev_enb;
+extern int32 int_hwre[API_HLVL+1], dev_enb;
 extern UNIT cpu_unit;
 int32 rf_sta = 0;					/* status register */
 int32 rf_da = 0;					/* disk address */
@@ -115,15 +117,8 @@ REG rf_reg[] = {
 	{ ORDATA (WC, M[RF_WC], 18) },
 	{ ORDATA (CA, M[RF_CA], 18) },
 	{ ORDATA (BUF, rf_dbuf, 18) },
-	{ FLDATA (INT, int_req, INT_V_RF) },
-	{ ORDATA (WLK0, rf_wlk[0], 16) },
-	{ ORDATA (WLK1, rf_wlk[1], 16) },
-	{ ORDATA (WLK2, rf_wlk[2], 16) },
-	{ ORDATA (WLK3, rf_wlk[3], 16) },
-	{ ORDATA (WLK4, rf_wlk[4], 16) },
-	{ ORDATA (WLK5, rf_wlk[5], 16) },
-	{ ORDATA (WLK6, rf_wlk[6], 16) },
-	{ ORDATA (WLK7, rf_wlk[7], 16) },
+	{ FLDATA (INT, int_hwre[API_RF], INT_V_RF) },
+	{ BRDATA (WLK, rf_wlk, 8, 16, RF_NUMDK) },
 	{ DRDATA (TIME, rf_time, 24), PV_LEFT + REG_NZ },
 	{ FLDATA (BURST, rf_burst, 0) },
 	{ FLDATA (STOP_IOE, rf_stopioe, 0) },
@@ -244,8 +239,8 @@ int32 rf_updsta (int32 new)
 rf_sta = (rf_sta | new) & ~(RFS_ERR | RFS_CLR);
 if (rf_sta & RFS_EFLGS) rf_sta = rf_sta | RFS_ERR;
 if ((rf_sta & (RFS_ERR | RFS_DON)) && (rf_sta & RFS_IE))
-	 int_req = int_req | INT_RF;
-else int_req = int_req & ~INT_RF;
+	 SET_INT (RF);
+else CLR_INT (RF);
 return rf_sta;
 }
 

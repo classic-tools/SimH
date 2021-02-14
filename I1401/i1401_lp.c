@@ -23,7 +23,7 @@
    be used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
-	lpt		1403 line printer
+   lpt		1403 line printer
 
    13-Apr-01	RMS	Revised for register arrays
 */

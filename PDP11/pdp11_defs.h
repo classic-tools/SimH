@@ -26,6 +26,9 @@
    The author gratefully acknowledges the help of Max Burnet, Megan Gentry,
    and John Wilson in resolving questions about the PDP-11
 
+   09-Nov-01	RMS	Added bus map support
+   07-Nov-01	RMS	Added RQDX3 support
+   26-Oct-01	RMS	Added symbolic definitions for IO page
    19-Oct-01	RMS	Added DZ definitions
    15-Oct-01	RMS	Added logging capabilities
    07-Sep-01	RMS	Revised for multilevel interrupts
@@ -46,6 +49,7 @@
 #define INIMEMSIZE 	001000000			/* 2**18 */
 #define IOPAGEBASE	017760000			/* 2**22 - 2**13 */
 #define MAXMEMSIZE	020000000			/* 2**22 */
+#define PAMASK		(MAXMEMSIZE - 1)		/* 2**22 - 1 */
 #define MEMSIZE		(cpu_unit.capac)
 #define ADDR_IS_MEM(x)	(((t_addr) (x)) < MEMSIZE)
 #define DMASK		0177777
@@ -146,6 +150,16 @@
 #define VA_V_MODE	17				/* offset to mode */
 #define VA_DS		(1u << VA_V_DS)			/* data space flag */
 
+/* Unibus map (if present) */
+
+#define UBM_LNT_LW	32				/* size in LW */
+#define UBM_V_PN	13				/* page number */
+#define UBM_M_PN	037
+#define UBM_V_OFF	0				/* offset */
+#define UBM_M_OFF	017777
+#define UBM_GETPN(x)	(((x) >> UBM_V_PN) & UBM_M_PN)
+#define UBM_GETOFF(x)	((x) & UBM_M_OFF)
+
 /* CPUERR */
 
 #define CPUE_RED	0004				/* red stack */
@@ -155,6 +169,17 @@
 #define CPUE_ODD	0100				/* odd address */
 #define CPUE_HALT	0200				/* HALT not kernel */
 #define CPUE_IMP	0374				/* implemented bits */
+
+/* Maintenance register */
+
+#define MAINT_V_UQ	9				/* Q/U flag */
+#define MAINT_Q		(0 << MAINT_V_UQ)		/* Qbus */
+#define MAINT_U		(1 << MAINT_V_UQ)
+#define MAINT_V_FPA	8				/* FPA flag */
+#define MAINT_NOFPA	(0 << MAINT_V_FPA)
+#define MAINT_FPA	(1 << MAINT_V_FPA)
+#define MAINT_V_TYP	4				/* system type */
+#define MAINT_KDJ	(4 << MAINT_V_TYP)
 
 /* Floating point accumulators */
 
@@ -233,17 +258,57 @@ typedef struct fpac fpac_t;
 
 /* Simulator stop codes; codes 1:TRAP_V_MAX correspond to traps 0:TRAPMAX-1 */
 
-#define STOP_HALT	TRAP_V_MAX + 1			/* HALT instruction */
-#define STOP_IBKPT	TRAP_V_MAX + 2			/* instruction bkpt */
-#define STOP_WAIT	TRAP_V_MAX + 3			/* wait, no events */
-#define STOP_VECABORT	TRAP_V_MAX + 4			/* abort vector read */
-#define STOP_SPABORT	TRAP_V_MAX + 5			/* abort trap push */
+#define STOP_HALT	(TRAP_V_MAX + 1)		/* HALT instruction */
+#define STOP_IBKPT	(TRAP_V_MAX + 2)		/* instruction bkpt */
+#define STOP_WAIT	(TRAP_V_MAX + 3)		/* wait, no events */
+#define STOP_VECABORT	(TRAP_V_MAX + 4)		/* abort vector read */
+#define STOP_SPABORT	(TRAP_V_MAX + 5)		/* abort trap push */
+#define STOP_RQ		(TRAP_V_MAX + 6)		/* RQDX3 panic */
 #define IORETURN(f,v)	((f)? (v): SCPE_OK)		/* cond error return */
 
 /* DZ11 parameters */
 
 #define DZ_MUXES	1				/* # of muxes */
 #define DZ_LINES	8				/* lines per mux */
+
+/* I/O page layout */
+
+#define IOBA_DZ		(IOPAGEBASE + 000100)		/* DZ11 */
+#define IOLN_DZ		(010 * DZ_MUXES)
+#define IOBA_UBM	(IOPAGEBASE + 010200)		/* Unibus map */
+#define IOLN_UBM	(UBM_LNT_LW * sizeof (int32))
+#define IOBA_RQ		(IOPAGEBASE + 012150)		/* RQDX3 */
+#define IOLN_RQ		004
+#define IOBA_APR	(IOPAGEBASE + 012200)		/* APRs */
+#define IOLN_APR	0200
+#define IOBA_MMR3	(IOPAGEBASE + 012516)		/* MMR3 */
+#define IOLN_MMR3	002
+#define IOBA_TM		(IOPAGEBASE + 012520)		/* TM11 */
+#define IOLN_TM		014
+#define IOBA_TS		(IOPAGEBASE + 012520)		/* TS11 */
+#define IOLN_TS		004
+#define IOBA_RL		(IOPAGEBASE + 014400)		/* RL11 */
+#define IOLN_RL		012
+#define IOBA_RP		(IOPAGEBASE + 016700)		/* RP/RM */
+#define IOLN_RP		054
+#define IOBA_RX		(IOPAGEBASE + 017170)		/* RX11 */
+#define IOLN_RX		004
+#define IOBA_TC		(IOPAGEBASE + 017340)		/* TC11 */
+#define IOLN_TC		012
+#define IOBA_RK		(IOPAGEBASE + 017400)		/* RK11 */
+#define IOLN_RK		020
+#define IOBA_RK6	(IOPAGEBASE + 017440)		/* RK611 */
+#define IOLN_RK6	040
+#define IOBA_LPT	(IOPAGEBASE + 017514)		/* LP11 */
+#define IOLN_LPT	004
+#define IOBA_STD	(IOPAGEBASE + 017546)		/* KW11L, DL11, PC11 */
+#define IOLN_STD	022
+#define IOBA_SRMM	(IOPAGEBASE + 017570)		/* SR, MMR0-2 */
+#define IOLN_SRMM	010
+#define IOBA_APR1	(IOPAGEBASE + 017600)		/* APRs */
+#define IOLN_APR1	0100
+#define IOBA_CPU	(IOPAGEBASE + 017740)		/* CPU reg */
+#define IOLN_CPU	040
 
 /* Interrupt assignments; within each level, priority is right to left */
 
@@ -262,9 +327,10 @@ typedef struct fpac fpac_t;
 #define INT_V_RP	4
 #define INT_V_TS	5
 #define INT_V_HK	6
-#define INT_V_DZRX	7
-#define INT_V_DZTX	8
-#define INT_V_PIR5	9
+#define INT_V_RQ	7
+#define INT_V_DZRX	8
+#define INT_V_DZTX	9
+#define INT_V_PIR5	10
 
 #define INT_V_TTI	0				/* BR4 */
 #define INT_V_TTO	1
@@ -287,7 +353,8 @@ typedef struct fpac fpac_t;
 #define INT_TM		(1u << INT_V_TM)
 #define INT_RP		(1u << INT_V_RP)
 #define INT_TS		(1u << INT_V_TS)
-#define INT_HK		(1u << INT_V_HK)
+#define INT_RK6		(1u << INT_V_HK)
+#define INT_RQ		(1u << INT_V_RQ)
 #define INT_DZRX	(1u << INT_V_DZRX)
 #define INT_DZTX	(1u << INT_V_DZTX)
 #define INT_PIR5	(1u << INT_V_PIR5)
@@ -309,7 +376,8 @@ typedef struct fpac fpac_t;
 #define IPL_TM		5
 #define IPL_RP		5
 #define IPL_TS		5
-#define IPL_HK		5
+#define IPL_RK6		5
+#define IPL_RQ		5
 #define IPL_DZRX	5
 #define IPL_DZTX	5
 #define IPL_PTR		4
@@ -326,16 +394,18 @@ typedef struct fpac fpac_t;
 #define IPL_PIR2	2
 #define IPL_PIR1	1
 
-#define VEC_PIRQ	0240				/* interrupt vectors */
+#define VEC_Q		0000				/* vector base */
+#define VEC_PIRQ	0240
 #define VEC_TTI		0060
 #define VEC_TTO		0064
 #define VEC_PTR		0070
 #define VEC_PTP		0074
 #define VEC_CLK		0100
-#define VEC_LPT		0200
-#define VEC_HK		0210
-#define VEC_RK		0220
+#define VEC_RQ		0154
 #define VEC_RL		0160
+#define VEC_LPT		0200
+#define VEC_RK6		0210
+#define VEC_RK		0220
 #define VEC_DTA		0214
 #define VEC_TM		0224
 #define VEC_TS		0224
@@ -347,15 +417,15 @@ typedef struct fpac fpac_t;
 /* Interrupt macros */
 
 #define IREQ(dv)	int_req[IPL_##dv]
-#define SET_INT(dv)	IREQ(dv) = IREQ(dv) | (INT_##dv)
-#define CLR_INT(dv)	IREQ(dv) = IREQ(dv) & ~(INT_##dv)
+#define SET_INT(dv)	int_req[IPL_##dv] = int_req[IPL_##dv] | (INT_##dv)
+#define CLR_INT(dv)	int_req[IPL_##dv] = int_req[IPL_##dv] & ~(INT_##dv)
 
 /* CPU and FPU macros */
 
-#define update_MM ((MMR0 & (MMR0_FREEZE + MMR0_MME)) == MMR0_MME)
-#define setTRAP(name) trap_req = trap_req | (name)
-#define setCPUERR(name) CPUERR = CPUERR | (name)
-#define ABORT(val) longjmp (save_env, (val))
+#define update_MM	((MMR0 & (MMR0_FREEZE + MMR0_MME)) == MMR0_MME)
+#define setTRAP(name)	trap_req = trap_req | (name)
+#define setCPUERR(name)	CPUERR = CPUERR | (name)
+#define ABORT(val)	longjmp (save_env, (val))
 #define SP R[6]
 #define PC R[7]
 
@@ -364,9 +434,21 @@ typedef struct fpac fpac_t;
 #define LOG_CPU_I	00000001
 #define LOG_RP		00000010
 #define LOG_TS		00000020
+#define LOG_RQ		00000040
 #define LOG_TC_MS	00000100
 #define LOG_TC_RW	00000200
 #define LOG_TC_RA	00000400
 #define LOG_TC_BL	00001000
 
-#define DBG_LOG(x)	(sim_log && (pdp11_log & (x)))
+#define DBG_LOG(x)	(sim_log && (cpu_log & (x)))
+
+/* Function prototypes */
+
+#define QB		0				/* Q22 native */
+#define UB		1				/* Unibus */
+
+t_bool Map_Addr (t_addr qa, t_addr *ma);
+int32 Map_ReadB (t_addr ba, int32 bc, uint8 *buf, t_bool ub);
+int32 Map_ReadW (t_addr ba, int32 bc, uint16 *buf, t_bool ub);
+int32 Map_WriteB (t_addr ba, int32 bc, uint8 *buf, t_bool ub);
+int32 Map_WriteW (t_addr ba, int32 bc, uint16 *buf, t_bool ub);

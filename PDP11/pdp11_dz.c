@@ -24,7 +24,19 @@
    in this Software without prior written authorization from Robert M Supnik.
 
    dz		DZ11 terminal multiplexor
+
+   09-Nov-01	RMS	Added VAX support
 */
 
+#if defined (USE_INT64)
+#define VM_VAX		1
+#include "vax_defs.h"
+#define DZ_RDX		16
+
+#else
+#define VM_PDP11	1
 #include "pdp11_defs.h"
+#define DZ_RDX		8
+#endif
+
 #include "dec_dz.h"

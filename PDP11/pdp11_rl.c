@@ -1,4 +1,4 @@
-/* pdp11_rl.c: RL11 (RLV12) cartridge disk simulator
+ /* pdp11_rl.c: RL11 (RLV12) cartridge disk simulator
 
    Copyright (c) 1993-2001, Robert M Supnik
 
@@ -25,6 +25,11 @@
 
    rl		RL11(RLV12)/RL01/RL02 cartridge disk
 
+   30-Nov-01	MRS	Added read only, extended SET/SHOW support
+   26-Nov-01	RMS	Fixed per-drive error handling
+   24-Nov-01	RMS	Converted FLG, CAPAC to arrays
+   19-Nov-01	RMS	Fixed signed/unsigned mismatch in write check
+   09-Nov-01	RMS	Added bus map, VAX support
    07-Sep-01	RMS	Revised device disable and interrupt mechanisms
    20-Aug-01	RMS	Added bad block option in attach
    17-Jul-01	RMS	Fixed warning from VC++ 6.0
@@ -42,11 +47,31 @@
 
    The most complicated part of the RL11 controller is the way it does
    seeks.  Seeking is relative to the current disk address; this requires
-   keeping accurate track of the current cylinder.  The RL01 will not
+   keeping accurate track of the current cylinder.  The RL11 will not
    switch heads or cross cylinders during transfers.
+
+   The RL11 functions in three environments:
+
+   - PDP-11 Q22 systems - the I/O map is one for one, so it's safe to
+     go through the I/O map
+   - PDP-11 Unibus 22b systems - the RL11 behaves as an 18b Unibus
+     peripheral and must go through the I/O map
+   - VAX Q22 systems - the RL11 must go through the I/O map
 */
 
+#if defined (USE_INT64)					/* VAX version */
+#include "vax_defs.h"
+#define VM_VAX		1
+#define RL_RDX		16
+#define RL_18B		FALSE				/* always 22b */
+
+#else							/* PDP11 version */
 #include "pdp11_defs.h"
+#define VM_PDP11	1
+#define RL_RDX		8
+#define RL_18B		(cpu_18b || cpu_ubm)
+extern int32 cpu_18b, cpu_ubm;
+#endif
 
 /* Constants */
 
@@ -55,46 +80,47 @@
 #define RL_NUMSF	2				/* surfaces/cylinder */
 #define RL_NUMCY	256				/* cylinders/drive */
 #define RL_NUMDR	4				/* drives/controller */
+#define RL_MAXFR	(1 << 16)			/* max transfer */
 #define RL01_SIZE (RL_NUMCY * RL_NUMSF * RL_NUMSC * RL_NUMWD)  /* words/drive */
 #define RL02_SIZE	(RL01_SIZE * 2)			/* words/drive */
-#define RL_MAXMEM	((int) (MEMSIZE / sizeof (int16)))	/* words/memory */
 
 /* Flags in the unit flags word */
 
-#define UNIT_V_HWLK	(UNIT_V_UF)			/* hwre write lock */
+#define UNIT_V_WLK	(UNIT_V_UF)			/* hwre write lock */
 #define UNIT_V_RL02	(UNIT_V_UF+1)			/* RL01 vs RL02 */
 #define UNIT_V_AUTO	(UNIT_V_UF+2)			/* autosize enable */
 #define UNIT_W_UF	4				/* saved flags width */
 #define UNIT_V_DUMMY	(UNIT_V_UF + UNIT_W_UF)	/* dummy flag */
 #define UNIT_DUMMY	(1 << UNIT_V_DUMMY)
-#define UNIT_HWLK	(1u << UNIT_V_HWLK)
+#define UNIT_WLK	(1u << UNIT_V_WLK)
 #define UNIT_RL02	(1u << UNIT_V_RL02)
 #define UNIT_AUTO	(1u << UNIT_V_AUTO)
+#define UNIT_WPRT	(UNIT_WLK | UNIT_RO)		/* write protected */
 
 /* Parameters in the unit descriptor */
 
 #define TRK		u3				/* current track */
 #define STAT		u4				/* status */
 
-/* RLDS */
+/* RLDS, NI = not implemented, * = kept in STAT, ^ = kept in TRK */
 
 #define RLDS_LOAD	0				/* no cartridge */
 #define RLDS_LOCK	5				/* lock on */
-#define RLDS_BHO	0000010				/* brushes home */
-#define RLDS_HDO	0000020				/* heads out */
-#define RLDS_CVO	0000040				/* cover open */
-#define RLDS_HD		0000100				/* head select */
-#define RLDS_DSE	0000400				/* drive select err */
+#define RLDS_BHO	0000010				/* brushes home NI */
+#define RLDS_HDO	0000020				/* heads out NI */
+#define RLDS_CVO	0000040				/* cover open NI */
+#define RLDS_HD		0000100				/* head select ^ */
 #define RLDS_RL02	0000200				/* RL02 */
-#define RLDS_VCK	0001000				/* volume check */
-#define RLDS_WGE	0002000				/* write gate err */
-#define RLDS_SPE	0004000				/* spin err */
-#define RLDS_STO	0010000				/* seek time out */
-#define RLDS_WLK	0020000				/* write locked */
-#define RLDS_HCE	0040000				/* head current err */
-#define RLDS_WDE	0100000				/* write data err */
-#define RLDS_ATT	(RLDS_HDO+RLDS_BHO+RLDS_LOCK)	/* attached status */
-#define RLDS_UNATT	(RLDS_CVO+RLDS_LOAD)		/* unattached status */
+#define RLDS_DSE	0000400				/* drv sel err NI */
+#define RLDS_VCK	0001000				/* vol check * */
+#define RLDS_WGE	0002000				/* wr gate err * */
+#define RLDS_SPE	0004000				/* spin err * */
+#define RLDS_STO	0010000				/* seek time out NI */
+#define RLDS_WLK	0020000				/* wr locked */
+#define RLDS_HCE	0040000				/* hd curr err NI */
+#define RLDS_WDE	0100000				/* wr data err NI */
+#define RLDS_ATT	(RLDS_HDO+RLDS_BHO+RLDS_LOCK)	/* att status */
+#define RLDS_UNATT	(RLDS_CVO+RLDS_LOAD)		/* unatt status */
 #define RLDS_ERR 	(RLDS_WDE+RLDS_HCE+RLDS_STO+RLDS_SPE+RLDS_WGE+ \
 			RLDS_VCK+RLDS_DSE)		/* errors bits */
 
@@ -156,9 +182,8 @@
 
 #define RLBAE_IMP	0000077				/* implemented */
 
-extern uint16 *M;					/* memory */
 extern int32 int_req[IPL_HLVL];
-extern UNIT cpu_unit;
+uint16 *rlxb = NULL;					/* xfer buffer */
 int32 rlcs = 0;						/* control/status */
 int32 rlba = 0;						/* memory address */
 int32 rlbae = 0;					/* mem addr extension */
@@ -173,8 +198,8 @@ t_stat rl_reset (DEVICE *dptr);
 void rl_set_done (int32 error);
 t_stat rl_boot (int32 unitno);
 t_stat rl_attach (UNIT *uptr, char *cptr);
-t_stat rl_set_size (UNIT *uptr, int32 value);
-t_stat rl_set_bad (UNIT *uptr, int32 value);
+t_stat rl_set_size (UNIT *uptr, int32 val, char *cptr, void *desc);
+t_stat rl_set_bad (UNIT *uptr, int32 val, char *cptr, void *desc);
 extern t_stat pdp11_bad_block (UNIT *uptr, int32 sec, int32 wds);
 
 /* RL11 data structures
@@ -186,48 +211,40 @@ extern t_stat pdp11_bad_block (UNIT *uptr, int32 sec, int32 wds);
 */
 
 UNIT rl_unit[] = {
-	{ UDATA (&rl_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+UNIT_AUTO,
-		RL01_SIZE) },
-	{ UDATA (&rl_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+UNIT_AUTO,
-		RL01_SIZE) },
-	{ UDATA (&rl_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+UNIT_AUTO,
-		RL01_SIZE) },
-	{ UDATA (&rl_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+UNIT_AUTO,
-		RL01_SIZE) } };
+	{ UDATA (&rl_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
+		UNIT_ROABLE+UNIT_AUTO, RL01_SIZE) },
+	{ UDATA (&rl_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
+		UNIT_ROABLE+UNIT_AUTO, RL01_SIZE) },
+	{ UDATA (&rl_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
+		UNIT_ROABLE+UNIT_AUTO, RL01_SIZE) },
+	{ UDATA (&rl_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+
+		UNIT_ROABLE+UNIT_AUTO, RL01_SIZE) }  };
 
 REG rl_reg[] = {
-	{ ORDATA (RLCS, rlcs, 16) },
-	{ ORDATA (RLDA, rlda, 16) },
-	{ ORDATA (RLBA, rlba, 16) },
-	{ ORDATA (RLBAE, rlbae, 6) },
-	{ ORDATA (RLMP, rlmp, 16) },
-	{ ORDATA (RLMP1, rlmp1, 16) },
-	{ ORDATA (RLMP2, rlmp2, 16) },
+	{ GRDATA (RLCS, rlcs, RL_RDX, 16, 0) },
+	{ GRDATA (RLDA, rlda, RL_RDX, 16, 0) },
+	{ GRDATA (RLBA, rlba, RL_RDX, 16, 0) },
+	{ GRDATA (RLBAE, rlbae, RL_RDX, 6, 0) },
+	{ GRDATA (RLMP, rlmp, RL_RDX, 16, 0) },
+	{ GRDATA (RLMP1, rlmp1, RL_RDX, 16, 0) },
+	{ GRDATA (RLMP2, rlmp2, RL_RDX, 16, 0) },
 	{ FLDATA (INT, IREQ (RL), INT_V_RL) },
 	{ FLDATA (ERR, rlcs, CSR_V_ERR) },
 	{ FLDATA (DONE, rlcs, CSR_V_DONE) },
 	{ FLDATA (IE, rlcs, CSR_V_IE) },
 	{ DRDATA (STIME, rl_swait, 24), PV_LEFT },
 	{ DRDATA (RTIME, rl_rwait, 24), PV_LEFT },
-	{ GRDATA (FLG0, rl_unit[0].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG1, rl_unit[1].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG2, rl_unit[2].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG3, rl_unit[3].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ DRDATA (CAPAC0, rl_unit[0].capac, 32), PV_LEFT + REG_HRO },
-	{ DRDATA (CAPAC1, rl_unit[1].capac, 32), PV_LEFT + REG_HRO },
-	{ DRDATA (CAPAC2, rl_unit[2].capac, 32), PV_LEFT + REG_HRO },
-	{ DRDATA (CAPAC3, rl_unit[3].capac, 32), PV_LEFT + REG_HRO },
+	{ URDATA (FLG, rl_unit[0].flags, 8, UNIT_W_UF, UNIT_V_UF - 1,
+		  RL_NUMDR, REG_HRO) },
+	{ URDATA (CAPAC, rl_unit[0].capac, 10, 31, 0,
+		  RL_NUMDR, PV_LEFT + REG_HRO) },
 	{ FLDATA (STOP_IOE, rl_stopioe, 0) },
 	{ FLDATA (*DEVENB, rl_enb, 0), REG_HRO },
 	{ NULL }  };
 
 MTAB rl_mod[] = {
-	{ UNIT_HWLK, 0, "write enabled", "ENABLED", NULL },
-	{ UNIT_HWLK, UNIT_HWLK, "write locked", "LOCKED", NULL },
+	{ UNIT_WLK, 0, "write enabled", "ENABLED", NULL },
+	{ UNIT_WLK, UNIT_WLK, "write locked", "LOCKED", NULL },
 	{ UNIT_DUMMY, 0, NULL, "BADBLOCK", &rl_set_bad },
 	{ (UNIT_RL02+UNIT_ATT), UNIT_ATT, "RL01", NULL, NULL },
 	{ (UNIT_RL02+UNIT_ATT), (UNIT_RL02+UNIT_ATT), "RL02", NULL, NULL },
@@ -241,7 +258,7 @@ MTAB rl_mod[] = {
 
 DEVICE rl_dev = {
 	"RL", rl_unit, rl_reg, rl_mod,
-	RL_NUMDR, 8, 24, 1, 8, 16,
+	RL_NUMDR, RL_RDX, 24, 1, RL_RDX, 16,
 	NULL, NULL, &rl_reset,
 	&rl_boot, &rl_attach, NULL };
 
@@ -279,6 +296,7 @@ case 3:							/* RLMP */
 	rlmp1 = rlmp2;
 	break;
 case 4:							/* RLBAE */
+	if (RL_18B) return SCPE_NXM;			/* not in RL11 */
 	*data = rlbae & RLBAE_IMP;
 	break;  }					/* end switch */
 return SCPE_OK;
@@ -348,6 +366,7 @@ case 3:							/* RLMP */
 	rlmp = rlmp1 = rlmp2 = data;
 	break;
 case 4:							/* RLBAE */
+	if (RL_18B) return SCPE_NXM;			/* not in RL11 */
 	if (PA & 1) return SCPE_OK;
 	rlbae = data & RLBAE_IMP;
 	rlcs = (rlcs & ~RLCS_MEX) | ((rlbae & RLCS_M_MEX) << RLCS_V_MEX);
@@ -366,27 +385,29 @@ return SCPE_OK;
 
 t_stat rl_svc (UNIT *uptr)
 {
-int32 comp, err, awc, wc, maxwc;
-int32 func, pa, da, remc;
-static uint16 fill[RL_NUMWD] = { 0 };
+int32 err, wc, maxwc, t;
+int32 i, func, da, awc;
+t_addr ma;
+uint16 comp;
 
 func = GET_FUNC (rlcs);					/* get function */
 if (func == RLCS_GSTA) {				/* get status */
+	if (rlda & RLDA_GS_CLR) uptr -> STAT = uptr -> STAT & ~RLDS_ERR;
 	rlmp = uptr -> STAT | (uptr -> TRK & RLDS_HD) |
 		((uptr -> flags & UNIT_ATT)? RLDS_ATT: RLDS_UNATT);
-	if (rlda & RLDA_GS_CLR) rlmp = rlmp & ~RLDS_ERR;
 	if (uptr -> flags & UNIT_RL02) rlmp = rlmp | RLDS_RL02;
-	if (uptr -> flags & UNIT_HWLK) rlmp = rlmp | RLDS_WLK;
-	uptr -> STAT = rlmp2 = rlmp1 = rlmp;
+	if (uptr -> flags & UNIT_WPRT) rlmp = rlmp | RLDS_WLK;
+	rlmp2 = rlmp1 = rlmp;
 	rl_set_done (0);				/* done */
 	return SCPE_OK;  }
 
 if ((uptr -> flags & UNIT_ATT) == 0) {			/* attached? */
 	rlcs = rlcs & ~RLCS_DRDY;			/* clear drive ready */
+	uptr -> STAT = uptr -> STAT | RLDS_SPE;		/* spin error */
 	rl_set_done (RLCS_ERR | RLCS_INCMP);		/* flag error */
 	return IORETURN (rl_stopioe, SCPE_UNATT);  }
 
-if ((func == RLCS_WRITE) && (uptr -> flags & UNIT_HWLK)) {
+if ((func == RLCS_WRITE) && (uptr -> flags & UNIT_WPRT)) {
 	uptr -> STAT = uptr -> STAT | RLDS_WGE;		/* write and locked */
 	rl_set_done (RLCS_ERR | RLCS_DRE);
 	return SCPE_OK;  }
@@ -397,7 +418,7 @@ if (func == RLCS_SEEK) {				/* seek? */
 
 if (func == RLCS_RHDR) {				/* read header? */
 	rlmp = (uptr -> TRK & RLDA_TRACK) | GET_SECT (rlda);
-	rlmp1 = 0;
+	rlmp1 = rlmp2 = 0;
 	rl_set_done (0);				/* done */
 	return SCPE_OK;  }
 
@@ -406,45 +427,53 @@ if (((func != RLCS_RNOHDR) && ((uptr -> TRK & RLDA_CYL) != (rlda & RLDA_CYL)))
 	rl_set_done (RLCS_ERR | RLCS_HDE | RLCS_INCMP);	/* wrong cylinder? */
 	return SCPE_OK;  }
 	
-pa = ((rlbae << 16) | rlba) >> 1;			/* form phys addr */
+ma = (rlbae << 16) | rlba;				/* get mem addr */
 da = GET_DA (rlda) * RL_NUMWD;				/* get disk addr */
 wc = 0200000 - rlmp;					/* get true wc */
 
 maxwc = (RL_NUMSC - GET_SECT (rlda)) * RL_NUMWD;	/* max transfer */
 if (wc > maxwc) wc = maxwc;				/* track overrun? */
-if ((pa + wc) > RL_MAXMEM) {				/* mem overrun? */
-	rlcs = rlcs | RLCS_ERR | RLCS_NXM;
-	wc = (RL_MAXMEM - pa);  }
-if (wc < 0) {						/* abort transfer? */
-	rl_set_done (RLCS_INCMP);
-	return SCPE_OK;  }
-
 err = fseek (uptr -> fileref, da * sizeof (int16), SEEK_SET);
+
 if ((func >= RLCS_READ) && (err == 0)) {		/* read (no hdr)? */
-	awc = fxread (&M[pa], sizeof (int16), wc, uptr -> fileref);
-	for ( ; awc < wc; awc++) M[pa + awc] = 0;
-	err = ferror (uptr -> fileref);  }
+	i = fxread (rlxb, sizeof (int16), wc, uptr -> fileref);
+	err = ferror (uptr -> fileref);
+	for ( ; i < wc; i++) rlxb[i] = 0;		/* fill buffer */
+	if (t = Map_WriteW (ma, wc << 1, rlxb, UB)) {	/* store buffer */
+		rlcs = rlcs | RLCS_ERR | RLCS_NXM;	/* nxm */
+		wc = wc - t;  }				/* adjust wc */
+	}						/* end read */
 
 if ((func == RLCS_WRITE) && (err == 0)) {		/* write? */
-	fxwrite (&M[pa], sizeof (int16), wc, uptr -> fileref);
-	err = ferror (uptr -> fileref);
-	if ((err == 0) && (remc = (wc & (RL_NUMWD - 1)))) {
-		fxwrite (fill, sizeof (int16), RL_NUMWD - remc, uptr -> fileref);
-		err = ferror (uptr -> fileref);  }  }
+	if (t = Map_ReadW (ma, wc << 1, rlxb, UB)) {	/* fetch buffer */
+		rlcs = rlcs | RLCS_ERR | RLCS_NXM;	/* nxm */
+		wc = wc - t;  }				/* adj xfer lnt */
+	if (wc) {					/* any xfer? */
+		awc = (wc + (RL_NUMWD - 1)) & ~(RL_NUMWD - 1);	/* clr to */
+		for (i = wc; i < awc; i++) rlxb[i] = 0;	/* end of blk */
+		fxwrite (rlxb, sizeof (int16), awc, uptr -> fileref);
+		err = ferror (uptr -> fileref);  }
+	}						/* end write */
 
 if ((func == RLCS_WCHK) && (err == 0)) {		/* write check? */
-	remc = wc;					/* xfer length */
-	for (wc = 0; (err == 0) && (wc < remc); wc++)  {
-		awc = fxread (&comp, sizeof (int16), 1, uptr -> fileref);
-		if (awc == 0) comp = 0;
-		if (comp != M[pa + wc]) rlcs = rlcs | RLCS_ERR | RLCS_CRC;  }
-	err = ferror (uptr -> fileref);  }
+	i = fxread (rlxb, sizeof (int16), wc, uptr -> fileref);
+	err = ferror (uptr -> fileref);
+	for ( ; i < wc; i++) rlxb[i] = 0;		/* fill buffer */
+	awc = wc;					/* save wc */
+	for (wc = 0; (err == 0) && (wc < awc); wc++)  {	/* loop thru buf */
+		if (Map_ReadW (ma + (wc << 1), 2, &comp, UB)) { /* mem wd */
+		    rlcs = rlcs | RLCS_ERR | RLCS_NXM;	/* nxm */
+		    break;  }
+		if (comp != rlxb[wc])			/* check to buf */
+		    rlcs = rlcs | RLCS_ERR | RLCS_CRC;
+		}					/* end for */
+	}						/* end wcheck */
 
 rlmp = (rlmp + wc) & 0177777;				/* final word count */
 if (rlmp != 0) rlcs = rlcs | RLCS_ERR | RLCS_INCMP;	/* completed? */
-pa = (pa + wc) << 1;					/* final byte addr */
-rlbae = (pa >> 16) & RLBAE_IMP;				/* upper 6b */
-rlba = pa & RLBA_IMP;					/* lower 16b */
+ma = ma + (wc << 1);					/* final byte addr */
+rlbae = (ma >> 16) & RLBAE_IMP;				/* upper 6b */
+rlba = ma & RLBA_IMP;					/* lower 16b */
 rlcs = (rlcs & ~RLCS_MEX) | ((rlbae & RLCS_M_MEX) << RLCS_V_MEX);
 rlda = rlda + ((wc + (RL_NUMWD - 1)) / RL_NUMWD);
 rl_set_done (0);
@@ -483,6 +512,8 @@ for (i = 0; i < RL_NUMDR; i++) {
 	uptr = rl_dev.units + i;
 	sim_cancel (uptr);
 	uptr -> STAT = 0;  }
+if (rlxb == NULL) rlxb = calloc (RL_MAXFR, sizeof (unsigned int16));
+if (rlxb == NULL) return SCPE_MEM;
 return SCPE_OK;
 }
 
@@ -496,9 +527,12 @@ t_stat r;
 uptr -> capac = (uptr -> flags & UNIT_RL02)? RL02_SIZE: RL01_SIZE;
 r = attach_unit (uptr, cptr);
 if ((r != SCPE_OK) || ((uptr -> flags & UNIT_AUTO) == 0)) return r;
+uptr -> TRK = 0;					/* cylinder 0 */
+uptr -> STAT = RLDS_VCK;				/* new volume */
 if (fseek (uptr -> fileref, 0, SEEK_END)) return SCPE_OK;
-if ((p = ftell (uptr -> fileref)) == 0)
-	return pdp11_bad_block (uptr, RL_NUMSC, RL_NUMWD);
+if ((p = ftell (uptr -> fileref)) == 0) {
+	if (uptr -> flags & UNIT_RO) return SCPE_OK;
+	return pdp11_bad_block (uptr, RL_NUMSC, RL_NUMWD);  }
 if (p > (RL01_SIZE * sizeof (int16))) {
 	uptr -> flags = uptr -> flags | UNIT_RL02;
 	uptr -> capac = RL02_SIZE;  }
@@ -509,21 +543,23 @@ return SCPE_OK;
 
 /* Set size routine */
 
-t_stat rl_set_size (UNIT *uptr, int32 value)
+t_stat rl_set_size (UNIT *uptr, int32 val, char *cptr, void *desc)
 {
 if (uptr -> flags & UNIT_ATT) return SCPE_ALATT;
-uptr -> capac = (value & UNIT_RL02)? RL02_SIZE: RL01_SIZE;
+uptr -> capac = (val & UNIT_RL02)? RL02_SIZE: RL01_SIZE;
 return SCPE_OK;
 }
 
 /* Set bad block routine */
 
-t_stat rl_set_bad (UNIT *uptr, int32 value)
+t_stat rl_set_bad (UNIT *uptr, int32 val, char *cptr, void *desc)
 {
 return pdp11_bad_block (uptr, RL_NUMSC, RL_NUMWD);
 }
 
 /* Device bootstrap */
+
+#if defined (VM_PDP11)
 
 #define BOOT_START 02000				/* start */
 #define BOOT_UNIT 02006					/* unit number */
@@ -574,9 +610,18 @@ t_stat rl_boot (int32 unitno)
 {
 int32 i;
 extern int32 saved_PC;
+extern uint16 *M;
 
 for (i = 0; i < BOOT_LEN; i++) M[(BOOT_START >> 1) + i] = boot_rom[i];
 M[BOOT_UNIT >> 1] = unitno & RLCS_M_DRIVE;
 saved_PC = BOOT_START;
 return SCPE_OK;
 }
+
+#else
+
+t_stat rl_boot (int32 unitno)
+{
+return SCPE_NOFNC;
+}
+#endif

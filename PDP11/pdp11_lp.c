@@ -25,11 +25,21 @@
 
    lpt		LP11 line printer
 
+   09-Nov-01	RMS	Added VAX support
    07-Sep-01	RMS	Revised interrupt mechanism
    30-Oct-00	RMS	Standardized register naming
 */
 
+#if defined (USE_INT64)
+#define VM_VAX		1
+#include "vax_defs.h"
+#define LPT_DRDX	16
+
+#else
+#define VM_PDP11	1
 #include "pdp11_defs.h"
+#define LPT_DRDX	8
+#endif
 
 #define LPTCSR_IMP	(CSR_ERR + CSR_DONE + CSR_IE)	/* implemented */
 #define LPTCSR_RW	(CSR_IE)			/* read/write */
@@ -53,8 +63,8 @@ UNIT lpt_unit = {
 	UDATA (&lpt_svc, UNIT_SEQ+UNIT_ATTABLE, 0), SERIAL_OUT_WAIT };
 
 REG lpt_reg[] = {
-	{ ORDATA (BUF, lpt_unit.buf, 8) },
-	{ ORDATA (CSR, lpt_csr, 16) },
+	{ GRDATA (BUF, lpt_unit.buf, LPT_DRDX, 8, 0) },
+	{ GRDATA (CSR, lpt_csr, LPT_DRDX, 16, 0) },
 	{ FLDATA (INT, IREQ (LPT), INT_V_LPT) },
 	{ FLDATA (ERR, lpt_csr, CSR_V_ERR) },
 	{ FLDATA (DONE, lpt_csr, CSR_V_DONE) },
@@ -66,7 +76,7 @@ REG lpt_reg[] = {
 
 DEVICE lpt_dev = {
 	"LPT", &lpt_unit, lpt_reg, NULL,
-	1, 10, 31, 1, 8, 8,
+	1, 10, 31, 1, LPT_DRDX, 8,
 	NULL, NULL, &lpt_reset,
 	NULL, &lpt_attach, &lpt_detach };
 

@@ -28,6 +28,7 @@
 
    cpu		Eclipse central processor
 
+   30-Nov-01	RMS	Added extended SET/SHOW support
    01-Jun-01	RMS	Added second terminal, plotter support
    26-Apr-01	RMS	Added device enable/disable support
 
@@ -313,8 +314,6 @@
 
 #include "nova_defs.h"
 
-#define ILL_ADR_FLAG	0100000
-#define save_ibkpt	(cpu_unit.u3)
 #define UNIT_V_MICRO	(UNIT_V_UF)			/* Microeclipse? */
 #define UNIT_MICRO	(1 << UNIT_V_MICRO)
 #define UNIT_V_MSIZE	(UNIT_V_UF+1)			/* dummy mask */
@@ -336,7 +335,6 @@ int32 pimask = 0;					/* priority int mask */
 int32 pwr_low = 0;					/* power fail flag */
 int32 ind_max = 15;					/* iadr nest limit */
 int32 stop_dev = 0;					/* stop on ill dev */
-int32 ibkpt_addr = ILL_ADR_FLAG | AMASK;		/* ibreakpoint addr */
 int32 old_PC = 0;					/* previous PC */
 int32 model = 130;					/* Model of Eclipse */
 int32 speed = 0;					/* Delay for each instruction */
@@ -417,15 +415,15 @@ int32 Tron = 0;			/* For trace files */
 FILE *Trace;
 
 t_stat reason;
-
 extern int32 sim_int_char;
+extern int32 sim_brk_types, sim_brk_dflt, sim_brk_summ;	/* breakpoint info */
+
 t_stat cpu_ex (t_value *vptr, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_dep (t_value val, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_reset (DEVICE *dptr);
-t_stat cpu_svc (UNIT *uptr);
 t_stat cpu_boot (int32 unitno);
-t_stat cpu_set_size (UNIT *uptr, int32 value);
-t_stat Debug_Dump (UNIT *uptr, int32 value);
+t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc);
+t_stat Debug_Dump (UNIT *uptr, int32 val, char *cptr, void *desc);
 t_stat map_ex (t_value *vptr, t_addr addr, UNIT *uptr, int32 sw);
 t_stat map_dep (t_value val, t_addr addr, UNIT *uptr, int32 sw);
 t_stat map_reset (DEVICE *dptr);
@@ -494,7 +492,7 @@ struct ndev dev_table[64] = {
    cpu_mod	CPU modifiers list
 */
 
-UNIT cpu_unit = { UDATA (&cpu_svc, UNIT_FIX + UNIT_BINK,
+UNIT cpu_unit = { UDATA (NULL, UNIT_FIX + UNIT_BINK,
 		MAXMEMSIZE) };
 
 REG cpu_reg[] = {
@@ -517,7 +515,6 @@ REG cpu_reg[] = {
 	{ FLDATA (MICRO, cpu_unit.flags, UNIT_V_MICRO), REG_HRO },
 	{ DRDATA (INDMAX, ind_max, 16), REG_NZ + PV_LEFT },
 	{ ORDATA (DEBUG, Debug_Flags, 16) },
-	{ ORDATA (BREAK, ibkpt_addr, 16) },
 	{ DRDATA (MODEL, model, 16) },
 	{ DRDATA (SPEED, speed, 16) },
 	{ ORDATA (WRU, sim_int_char, 8) },
@@ -714,10 +711,7 @@ if (Inhibit != 0) {		/* Handle 1-instruction inhibit sequence */
         Inhibit = 0;
 }            
 
-if (PC == ibkpt_addr) {					/* breakpoint? */
-	save_ibkpt = ibkpt_addr;			/* save address */
-	ibkpt_addr = ibkpt_addr | ILL_ADR_FLAG;		/* disable */
-	sim_activate (&cpu_unit, 1);			/* sched re-enable */
+if (sim_brk_summ && sim_brk_test (PC, SWMASK ('E'))) {	/* breakpoint? */
 	reason = STOP_IBKPT;				/* stop simulation */
 	break;
 }
@@ -3223,7 +3217,8 @@ int_req = int_req & ~INT_ION;
 pimask = 0;
 dev_disable = 0;
 pwr_low = 0;
-return cpu_svc (&cpu_unit);
+sim_brk_types = sim_brk_dflt = SWMASK ('E');
+return SCPE_OK;
 }
 
 /* Memory examine */
@@ -3244,26 +3239,17 @@ M[addr] = val & 0177777;
 return SCPE_OK;
 }
 
-/* Breakpoint service */
-
-t_stat cpu_svc (UNIT *uptr)
-{
-if ((ibkpt_addr & ~ILL_ADR_FLAG) == save_ibkpt) ibkpt_addr = save_ibkpt;
-save_ibkpt = -1;
-return SCPE_OK;
-}
-
-t_stat cpu_set_size (UNIT *uptr, int32 value)
+t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc)
 {
 int32 mc = 0;
 t_addr i;
 
-if ((value <= 0) || (value > MAXMEMSIZE) || ((value & 07777) != 0))
+if ((val <= 0) || (val > MAXMEMSIZE) || ((val & 07777) != 0))
 	return SCPE_ARG;
-for (i = value; i < MEMSIZE; i++) mc = mc | M[i];
+for (i = val; i < MEMSIZE; i++) mc = mc | M[i];
 if ((mc != 0) && (!get_yn ("Really truncate memory [N]?", FALSE)))
 	return SCPE_OK;
-MEMSIZE = value;
+MEMSIZE = val;
 for (i = MEMSIZE; i < MAXMEMSIZE; i++) M[i] = 0;
 return SCPE_OK;
 }
@@ -3366,7 +3352,7 @@ int32 Debug_Entry(int32 PC, int32 inst, int32 inst2, int32 AC0, int32 AC1, int32
 	return 0;
 }
 
-int32 Debug_Dump(UNIT *uptr, int32 value)
+int32 Debug_Dump(UNIT *uptr, int32 val, char *cptr, void *desc)
 {
     char debmap[4], debion[4];
     t_value simeval[20];

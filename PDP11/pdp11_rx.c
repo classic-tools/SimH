@@ -25,6 +25,8 @@
 
    rx		RX11/RX01 floppy disk
 
+   30-Nov-01	RMS	Added read only unit, extended SET/SHOW support
+   24-Nov-01	RMS	Converted FLG to array
    07-Sep-01	RMS	Revised device disable and interrupt mechanisms
    17-Jul-01	RMS	Fixed warning from VC++ 6.0
    26-Apr-01	RMS	Added device enable/disable support
@@ -48,6 +50,7 @@
 #define RX_M_NUMDR	01
 #define UNIT_V_WLK	(UNIT_V_UF)			/* write locked */
 #define UNIT_WLK	(1u << UNIT_V_UF)
+#define UNIT_WPRT	(UNIT_WLK | UNIT_RO)		/* write protect */
 
 #define IDLE		0				/* idle state */
 #define RWDS		1				/* rw, sect next */
@@ -139,8 +142,7 @@ REG rx_reg[] = {
 	{ DRDATA (CTIME, rx_cwait, 24), PV_LEFT },
 	{ DRDATA (STIME, rx_swait, 24), PV_LEFT },
 	{ DRDATA (XTIME, rx_xwait, 24), PV_LEFT },
-	{ FLDATA (FLG0, rx_unit[0].flags, UNIT_V_WLK), REG_HRO },
-	{ FLDATA (FLG1, rx_unit[1].flags, UNIT_V_WLK), REG_HRO },
+	{ URDATA (FLG, rx_unit[0].flags, 2, 1, UNIT_V_WLK, RX_NUMDR, REG_HRO) },
 	{ FLDATA (STOP_IOE, rx_stopioe, 0) },
 	{ BRDATA (SBUF, rx_buf, 8, 8, RX_NUMBY) },
 	{ FLDATA (*DEVENB, rx_enb, 0), REG_HRO },
@@ -316,7 +318,7 @@ case RWDT:						/* wait for track */
 	if (func == RXCS_READ) {			/* read? */
 		for (i = 0; i < RX_NUMBY; i++)
 			rx_buf[i] = *(((int8 *) uptr -> filebuf) + da + i);  }
-	else {	if (uptr -> flags & UNIT_WLK) {		/* write and locked? */
+	else {	if (uptr -> flags & UNIT_WPRT) {	/* write and locked? */
 			rx_esr = rx_esr | RXES_WLK;	/* flag error */
 			rx_done (rx_esr, 0100);		/* done, error */
 			break;  }

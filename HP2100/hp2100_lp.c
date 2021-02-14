@@ -25,6 +25,7 @@
 
    lpt		12653A line printer
 
+   03-Dec-01	RMS	Changed DEVNO to use extended SET/SHOW
    07-Sep-01	RMS	Moved function prototypes
    21-Nov-00	RMS	Fixed flag, fbf power up state
 			Added command flop
@@ -68,7 +69,8 @@ REG lpt_reg[] = {
 	{ NULL }  };
 
 MTAB lpt_mod[] = {
-	{ UNIT_DEVNO, inLPT, NULL, "DEVNO", &hp_setdev },
+	{ MTAB_XTD | MTAB_VDV, inLPT, "DEVNO", "DEVNO",
+		&hp_setdev, &hp_showdev, NULL },
 	{ 0 }  };
 
 DEVICE lpt_dev = {

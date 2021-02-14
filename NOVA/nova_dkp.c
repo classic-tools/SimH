@@ -25,6 +25,8 @@
 
    dkp		moving head disk
 
+   30-Nov-01	RMS	Added read only unit, extended SET/SHOW support
+   24-Nov-01	RMS	Changed FLG, CAPAC to arrays
    26-Apr-01	RMS	Added device enable/disable support
    12-Dec-00	RMS	Added Eclipse support from Charles Owen
    15-Oct-00	RMS	Editorial changes
@@ -51,6 +53,7 @@
 #define GET_DTYPE(x)	(((x) >> UNIT_V_DTYPE) & UNIT_M_DTYPE)
 #define FUNC		u3				/* function */
 #define CYL		u4				/* on cylinder */
+#define UNIT_WPRT	(UNIT_WLK | UNIT_RO)		/* write protect */
 
 /* Unit, surface, sector, count register
 
@@ -282,7 +285,7 @@ t_stat dkp_reset (DEVICE *dptr);
 t_stat dkp_boot (int32 unitno);
 t_stat dkp_attach (UNIT *uptr, char *cptr);
 t_stat dkp_go (void);
-t_stat dkp_set_size (UNIT *uptr, int32 value);
+t_stat dkp_set_size (UNIT *uptr, int32 val, char *cptr, void *desc);
 #if defined (ECLIPSE)
 extern int32 MapAddr (int32 map, int32 addr);
 #else
@@ -299,13 +302,13 @@ extern int32 MapAddr (int32 map, int32 addr);
 
 UNIT dkp_unit[] = {
 	{ UDATA (&dkp_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+UNIT_AUTO+
-		(TYPE_D31 << UNIT_V_DTYPE), SIZE_D31) },
+		UNIT_ROABLE+(TYPE_D31 << UNIT_V_DTYPE), SIZE_D31) },
 	{ UDATA (&dkp_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+UNIT_AUTO+
-		(TYPE_D31 << UNIT_V_DTYPE), SIZE_D31) },
+		UNIT_ROABLE+(TYPE_D31 << UNIT_V_DTYPE), SIZE_D31) },
 	{ UDATA (&dkp_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+UNIT_AUTO+
-		(TYPE_D31 << UNIT_V_DTYPE), SIZE_D31) },
+		UNIT_ROABLE+(TYPE_D31 << UNIT_V_DTYPE), SIZE_D31) },
 	{ UDATA (&dkp_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+UNIT_AUTO+
-		(TYPE_D31 << UNIT_V_DTYPE), SIZE_D31) }  };
+		UNIT_ROABLE+(TYPE_D31 << UNIT_V_DTYPE), SIZE_D31) }  };
 
 REG dkp_reg[] = {
 	{ ORDATA (FCCY, dkp_fccy, 16) },
@@ -318,18 +321,10 @@ REG dkp_reg[] = {
 	{ FLDATA (DISABLE, dev_disable, INT_V_DKP) },
 	{ DRDATA (STIME, dkp_swait, 24), PV_LEFT },
 	{ DRDATA (RTIME, dkp_rwait, 24), PV_LEFT },
-	{ GRDATA (FLG0, dkp_unit[0].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG1, dkp_unit[1].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG2, dkp_unit[2].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG3, dkp_unit[3].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ DRDATA (CAPAC0, dkp_unit[0].capac, 32), PV_LEFT + REG_HRO },
-	{ DRDATA (CAPAC1, dkp_unit[1].capac, 32), PV_LEFT + REG_HRO },
-	{ DRDATA (CAPAC2, dkp_unit[2].capac, 32), PV_LEFT + REG_HRO },
-	{ DRDATA (CAPAC3, dkp_unit[3].capac, 32), PV_LEFT + REG_HRO },
+	{ URDATA (FLG, dkp_unit[0].flags, 8, UNIT_W_UF, UNIT_V_UF - 1,
+		  DKP_NUMDR, REG_HRO) },
+	{ URDATA (CAPAC, dkp_unit[0].capac, 10, 31, 0,
+		  DKP_NUMDR, PV_LEFT | REG_HRO) },
 	{ FLDATA (*DEVENB, iot_enb, INT_V_DKP), REG_HRO },
 	{ NULL }  };
 
@@ -572,7 +567,7 @@ if (uptr -> FUNC == FCCY_SEEK) {			/* seek? */
 	return SCPE_OK;  }
 
 if (((uptr -> flags & UNIT_ATT) == 0) ||		/* not attached? */
-    ((uptr -> flags & UNIT_WLK) && (uptr -> FUNC == FCCY_WRITE)))
+    ((uptr -> flags & UNIT_WPRT) && (uptr -> FUNC == FCCY_WRITE)))
 	dkp_sta = dkp_sta | STA_DONE | STA_ERR;		/* error */
 
 else if ((uptr -> CYL >= drv_tab[dtype].cyl) ||		/* bad cylinder */
@@ -673,10 +668,10 @@ return SCPE_OK;
 
 /* Set size command validation routine */
 
-t_stat dkp_set_size (UNIT *uptr, int32 value)
+t_stat dkp_set_size (UNIT *uptr, int32 val, char *cptr, void *desc)
 {
 if (uptr -> flags & UNIT_ATT) return SCPE_ALATT;
-uptr -> capac = drv_tab[GET_DTYPE (value)].size;
+uptr -> capac = drv_tab[GET_DTYPE (val)].size;
 return SCPE_OK;
 }
 

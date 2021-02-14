@@ -25,6 +25,9 @@
 
    rp		RH/RP/RM moving head disks
 
+   30-Nov-01	RMS	Added read only unit, extended SET/SHOW support
+   24-Nov-01	RMS	Changed RPDS, RPER, FLG, CAPAC, RPFN to arrays
+   09-Nov-01	RMS	Added bus map, VAX support
    23-Oct-01	RMS	Fixed bug in error interrupts
    15-Oct-01	RMS	Added debug logging
    05-Oct-01	RMS	Rewrote interrupt handling from schematics
@@ -66,14 +69,45 @@
      level sensitive.
    - The DONE interrupt, once set, is not disabled if IE is cleared,
      but the SC interrupt is.
+
+   The RP/RM functions in four environments:
+
+   - PDP-11 Q22 systems - the I/O map is one for one, so it's safe to
+     go through the I/O map
+   - PDP-11 Unibus systems with native 22b controllers - see above
+   - PDP-11 Unibus 22b systems - the RP/RM behaves as an 18b Unibus
+     peripheral and must go through the I/O map
+   - VAX Q22 systems - the Rp/RM must go through the I/O map
+
+   To distinguish the two Unibus cases, the PDP-11 version of the RP/RM
+   provides an internal mode flag for RH11 vs RH70
 */
 
+#if defined (USE_INT64)					/* VAX version */
+#include "vax_defs.h"
+#define VM_VAX		1
+#define RP_RDX		16
+#define RP_WID		32
+#define DMASK		0xFFFF
+#define RH_18B		FALSE				/* always 22b */
+
+#else							/* PDP11 version */
 #include "pdp11_defs.h"
+#define VM_PDP11	1
+#define RP_RDX		8
+#define RP_WID		16				/* off by default */
+#define RH_18B		(cpu_18b || (cpu_ubm && cpu_rh11))
+extern uint16 *M;
+extern int32 cpu_18b, cpu_ubm, cpu_rh11;
+extern int32 cpu_log;
+extern FILE *sim_log;
+#endif
+
 #include <math.h>
 
 #define RP_NUMDR	8				/* #drives */
 #define RP_NUMWD	256				/* words/sector */
-#define RP_MAXFR	65536				/* max transfer */
+#define RP_MAXFR	(1 << 16)			/* max transfer */
 #define GET_SECTOR(x,d)	((int) fmod (sim_gtime() / ((double) (x)), \
 			((double) drv_tab[d].sect)))
 
@@ -90,6 +124,7 @@
 #define UNIT_V_DUMMY	(UNIT_V_UF + UNIT_W_UF)	/* dummy flag */
 #define UNIT_DUMMY	(1 << UNIT_V_DUMMY)
 #define GET_DTYPE(x)	(((x) >> UNIT_V_DTYPE) & UNIT_M_DTYPE)
+#define UNIT_WPRT	(UNIT_WLK | UNIT_RO)		/* write prot */
 
 /* Parameters in the unit descriptor */
 
@@ -318,7 +353,7 @@ struct drvtyp {
 	int	devtype;				/* device type */
 };
 
-struct drvtyp drv_tab[] = {
+static struct drvtyp drv_tab[] = {
 	{ RM03_SECT, RM03_SURF, RM03_CYL, RM03_SIZE, RM03_DEV },
 	{ RP04_SECT, RP04_SURF, RP04_CYL, RP04_SIZE, RP04_DEV },
 	{ RM80_SECT, RM80_SURF, RM80_CYL, RM80_SIZE, RM80_DEV },
@@ -327,11 +362,8 @@ struct drvtyp drv_tab[] = {
 	{ RP07_SECT, RP07_SURF, RP07_CYL, RP07_SIZE, RP07_DEV },
 	{ 0 }  };
 
-extern uint16 *M;					/* memory */
 extern int32 int_req[IPL_HLVL];
-extern UNIT cpu_unit;
-extern int32 pdp11_log;
-extern FILE *sim_log;
+uint16 *rpxb = NULL;					/* xfer buffer */
 int32 rpcs1 = 0;					/* control/status 1 */
 int32 rpwc = 0;						/* word count */
 int32 rpba = 0;						/* bus address */
@@ -360,8 +392,8 @@ int reg_in_drive[32] = {
 
 void update_rpcs (int32 flags, int32 drv);
 void rp_go (int32 drv, int32 fnc);
-t_stat rp_set_size (UNIT *uptr, int32 value);
-t_stat rp_set_bad (UNIT *uptr, int32 value);
+t_stat rp_set_size (UNIT *uptr, int32 val, char *cptr, void *desc);
+t_stat rp_set_bad (UNIT *uptr, int32 val, char *cptr, void *desc);
 t_stat rp_svc (UNIT *uptr);
 t_stat rp_reset (DEVICE *dptr);
 t_stat rp_boot (int32 unitno);
@@ -379,38 +411,40 @@ extern t_stat pdp11_bad_block (UNIT *uptr, int32 sec, int32 wds);
 
 UNIT rp_unit[] = {
 	{ UDATA (&rp_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+UNIT_AUTO+
-		(RM03_DTYPE << UNIT_V_DTYPE), RM03_SIZE) },
+		UNIT_ROABLE+(RM03_DTYPE << UNIT_V_DTYPE), RM03_SIZE) },
 	{ UDATA (&rp_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+UNIT_AUTO+
-		(RM03_DTYPE << UNIT_V_DTYPE), RM03_SIZE) },
+		UNIT_ROABLE+(RM03_DTYPE << UNIT_V_DTYPE), RM03_SIZE) },
 	{ UDATA (&rp_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+UNIT_AUTO+
-		(RM03_DTYPE << UNIT_V_DTYPE), RM03_SIZE) },
+		UNIT_ROABLE+(RM03_DTYPE << UNIT_V_DTYPE), RM03_SIZE) },
 	{ UDATA (&rp_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+UNIT_AUTO+
-		(RM03_DTYPE << UNIT_V_DTYPE), RM03_SIZE) },
+		UNIT_ROABLE+(RM03_DTYPE << UNIT_V_DTYPE), RM03_SIZE) },
 	{ UDATA (&rp_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+UNIT_AUTO+
-		(RM03_DTYPE << UNIT_V_DTYPE), RM03_SIZE) },
+		UNIT_ROABLE+(RM03_DTYPE << UNIT_V_DTYPE), RM03_SIZE) },
 	{ UDATA (&rp_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+UNIT_AUTO+
-		(RM03_DTYPE << UNIT_V_DTYPE), RM03_SIZE) },
+		UNIT_ROABLE+(RM03_DTYPE << UNIT_V_DTYPE), RM03_SIZE) },
 	{ UDATA (&rp_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+UNIT_AUTO+
-		(RM03_DTYPE << UNIT_V_DTYPE), RM03_SIZE) },
+		UNIT_ROABLE+(RM03_DTYPE << UNIT_V_DTYPE), RM03_SIZE) },
 	{ UDATA (&rp_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_DISABLE+UNIT_AUTO+
-		(RM03_DTYPE << UNIT_V_DTYPE), RM03_SIZE) }  };
+		UNIT_ROABLE+(RM03_DTYPE << UNIT_V_DTYPE), RM03_SIZE) }  };
 
 REG rp_reg[] = {
-	{ ORDATA (RPCS1, rpcs1, 16) },
-	{ ORDATA (RPWC, rpwc, 16) },
-	{ ORDATA (RPBA, rpba, 16) },
-	{ ORDATA (RPDA, rpda, 16) },
-	{ ORDATA (RPCS2, rpcs2, 16) },
-	{ ORDATA (RPOF, rpof, 16) },
-	{ ORDATA (RPDC, rpdc, 16) },
-	{ ORDATA (RPER2, rper2, 16) },
-	{ ORDATA (RPER3, rper3, 16) },
-	{ ORDATA (RPEC1, rpec1, 16) },
-	{ ORDATA (RPEC2, rpec2, 16) },
-	{ ORDATA (RPMR, rpmr, 16) },
-	{ ORDATA (RPDB, rpdb, 16) },
-	{ ORDATA (RPBAE, rpbae, 6) },
-	{ ORDATA (RPCS3, rpcs3, 16) },
+	{ GRDATA (RPCS1, rpcs1, RP_RDX, 16, 0) },
+	{ GRDATA (RPWC, rpwc, RP_RDX, 16, 0) },
+	{ GRDATA (RPBA, rpba, RP_RDX, 16, 0) },
+	{ GRDATA (RPDA, rpda, RP_RDX, 16, 0) },
+	{ GRDATA (RPCS2, rpcs2, RP_RDX, 16, 0) },
+	{ BRDATA (RPDS, rpds, RP_RDX, 16, RP_NUMDR) },
+	{ BRDATA (RPER1, rper1, RP_RDX, 16, RP_NUMDR) },
+	{ GRDATA (RPOF, rpof, RP_RDX, 16, 0) },
+	{ GRDATA (RPDC, rpdc, RP_RDX, 16, 0) },
+	{ GRDATA (RPER2, rper2, RP_RDX, 16, 0) },
+	{ GRDATA (RPER3, rper3, RP_RDX, 16, 0) },
+	{ GRDATA (RPEC1, rpec1, RP_RDX, 16, 0) },
+	{ GRDATA (RPEC2, rpec2, RP_RDX, 16, 0) },
+	{ GRDATA (RPMR, rpmr, RP_RDX, 16, 0) },
+	{ GRDATA (RPDB, rpdb, RP_RDX, 16, 0) },
+	{ GRDATA (RPBAE, rpbae, RP_RDX, 6, 0) },
+	{ GRDATA (RPCS3, rpcs3, RP_RDX, 16, 0) },
 	{ FLDATA (IFF, rpiff, 0) },
 	{ FLDATA (INT, IREQ (RP), INT_V_RP) },
 	{ FLDATA (SC, rpcs1, CSR_V_ERR) },
@@ -418,46 +452,12 @@ REG rp_reg[] = {
 	{ FLDATA (IE, rpcs1, CSR_V_IE) },
 	{ DRDATA (STIME, rp_swait, 24), REG_NZ + PV_LEFT },
 	{ DRDATA (RTIME, rp_rwait, 24), REG_NZ + PV_LEFT },
-	{ ORDATA (RPDS0, rpds[0], 16) },
-	{ ORDATA (RPDS1, rpds[1], 16) },
-	{ ORDATA (RPDS2, rpds[2], 16) },
-	{ ORDATA (RPDS3, rpds[3], 16) },
-	{ ORDATA (RPDS4, rpds[4], 16) },
-	{ ORDATA (RPDS5, rpds[5], 16) },
-	{ ORDATA (RPDS6, rpds[6], 16) },
-	{ ORDATA (RPDS7, rpds[7], 16) },
-	{ ORDATA (RPDE0, rper1[0], 16) },
-	{ ORDATA (RPDE1, rper1[1], 16) },
-	{ ORDATA (RPDE2, rper1[2], 16) },
-	{ ORDATA (RPDE3, rper1[3], 16) },
-	{ ORDATA (RPDE4, rper1[4], 16) },
-	{ ORDATA (RPDE5, rper1[5], 16) },
-	{ ORDATA (RPDE6, rper1[6], 16) },
-	{ ORDATA (RPDE7, rper1[7], 16) },
-	{ ORDATA (RPFN0, rp_unit[0].FUNC, 5), REG_HRO },
-	{ ORDATA (RPFN1, rp_unit[1].FUNC, 5), REG_HRO },
-	{ ORDATA (RPFN2, rp_unit[2].FUNC, 5), REG_HRO },
-	{ ORDATA (RPFN3, rp_unit[3].FUNC, 5), REG_HRO },
-	{ ORDATA (RPFN4, rp_unit[4].FUNC, 5), REG_HRO },
-	{ ORDATA (RPFN5, rp_unit[5].FUNC, 5), REG_HRO },
-	{ ORDATA (RPFN6, rp_unit[6].FUNC, 5), REG_HRO },
-	{ ORDATA (RPFN7, rp_unit[7].FUNC, 5), REG_HRO },
-	{ GRDATA (FLG0, rp_unit[0].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG1, rp_unit[1].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG2, rp_unit[2].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG3, rp_unit[3].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG4, rp_unit[4].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG5, rp_unit[5].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG6, rp_unit[6].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG7, rp_unit[7].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
+	{ URDATA (FNC, rp_unit[0].FUNC, RP_RDX, 5, 0,
+		  RP_NUMDR, REG_HRO) },
+	{ URDATA (FLG, rp_unit[0].flags, RP_RDX, UNIT_W_UF, UNIT_V_UF - 1,
+		  RP_NUMDR, REG_HRO) },
+	{ URDATA (CAPAC, rp_unit[0].capac, 10, 31, 0,
+		  RP_NUMDR, PV_LEFT | REG_HRO) },
 	{ FLDATA (STOP_IOE, rp_stopioe, 0) },
 	{ FLDATA (*DEVENB, rp_enb, 0), REG_HRO },
 	{ NULL }  };
@@ -508,7 +508,7 @@ MTAB rp_mod[] = {
 
 DEVICE rp_dev = {
 	"RP", rp_unit, rp_reg, rp_mod,
-	RP_NUMDR, 8, 30, 1, 8, 16,
+	RP_NUMDR, RP_RDX, 30, 1, RP_RDX, RP_WID,
 	NULL, NULL, &rp_reset,
 	&rp_boot, &rp_attach, &rp_detach };
 
@@ -592,9 +592,11 @@ case 023:						/* RPEC2 */
 	*data = rpec2;
 	break;
 case 024:						/* RPBAE */
+	if (RH_18B) return SCPE_NXM;			/* not in RH11 */
 	*data = rpbae = rpbae & ~AE_MBZ;
 	break;
 case 025:						/* RPCS3 */
+	if (RH_18B) return SCPE_NXM;			/* not in RH11 */
 	*data = rpcs3 = (rpcs3 & ~(CS1_IE | CS3_MBZ)) | (rpcs1 & CS1_IE);
 	break;
 default:						/* all others */
@@ -704,11 +706,13 @@ case 016:						/* RPDC */
 	rpdc = data & ~DC_MBZ;
 	break;
 case 024:						/* RPBAE */
+	if (RH_18B) return SCPE_NXM;			/* not in RH11 */
 	if ((access == WRITEB) && (PA & 1)) break;
 	rpbae = data & ~AE_MBZ;
 	rpcs1 = (rpcs1 & ~CS1_UAE) | ((rpbae << CS1_V_UAE) & CS1_UAE);
 	break;
 case 025:						/* RPCS3 */
+	if (RH_18B) return SCPE_NXM;			/* not in RH11 */
 	if ((access == WRITEB) && (PA & 1)) break;
 	rpcs3 = data & ~CS3_MBZ;
 	rpcs1 = (rpcs1 & ~CS1_IE) | (rpcs3 & CS1_IE);
@@ -838,9 +842,11 @@ return;
 
 t_stat rp_svc (UNIT *uptr)
 {
-int32 i, dtype, drv, err;
-int32 ba, wc, awc, twc, da, fc;
-static uint16 dbuf[RP_MAXFR];
+int32 i, t, dtype, drv, err;
+int32 wc, awc, da;
+t_addr ba;
+uint16 comp;
+int32 ub = RH_18B;
 
 dtype = GET_DTYPE (uptr -> flags);			/* get drive type */
 drv = uptr - rp_dev.units;				/* get drv number */
@@ -866,7 +872,7 @@ case FNC_SEEK:						/* seek */
 	break;
 
 case FNC_WRITE:						/* write */
-	if (uptr -> flags & UNIT_WLK) {			/* write locked? */
+	if (uptr -> flags & UNIT_WPRT) {		/* write locked? */
 		rper1[drv] = rper1[drv] | ER1_WLE;	/* set drive error */
 		update_rpcs (CS1_DONE | CS1_TRE, drv);	/* set done, err */
 		break;  }
@@ -878,44 +884,65 @@ case FNC_READH:						/* read headers */
 	wc = 0200000 - rpwc;				/* get true wc */
 
 	if ((da + wc) > drv_tab[dtype].size) {		/* disk overrun? */
-		rper1[drv] = rper1[drv] | ER1_AOE;
-		if (wc > (drv_tab[dtype].size - da))
-			wc = drv_tab[dtype].size - da;  }
+	    rper1[drv] = rper1[drv] | ER1_AOE;		/* set err */
+	    wc = drv_tab[dtype].size - da;		/* trim xfer */
+	    if (da >= drv_tab[dtype].size) {		/* none left? */
+		update_rpcs (CS1_DONE | CS1_TRE, drv);	/* set done, err */
+		break;  }  }
 
 	err = fseek (uptr -> fileref, da * sizeof (int16), SEEK_SET);
 	if (uptr -> FUNC == FNC_WRITE) {		/* write? */
-	    for (twc = 0; twc < wc; twc++) {
-		if (!ADDR_IS_MEM (ba)) {		/* nx memory? */
+	    if (rpcs2 & CS2_UAI) {			/* no addr inc? */
+		if (t = Map_ReadW (ba, 2, &comp, ub)) {	/* get 1st wd */
+		    wc = 0;				/* NXM, no xfr */
+		    rpcs2 = rpcs2 | CS2_NEM;  }		/* set nxm err */
+		for (i = 0; i < wc; i++) rpxb[i] = comp;  }
+	    else {					/* normal */
+		if (t = Map_ReadW (ba, wc << 1, rpxb, ub)) {	/* get buf */
+		    wc = wc - (t >> 1);			/* NXM, adj wc */
+		    rpcs2 = rpcs2 | CS2_NEM;  }		/* set nxm err */
+		ba = ba + (wc << 1);  }			/* adv ba */
+	    awc = (wc + (RP_NUMWD - 1)) & ~(RP_NUMWD - 1);
+	    for (i = wc; i < awc; i++) rpxb[i] = 0;	/* fill buf */
+	    if (wc && !err) {				/* write buf */
+		fxwrite (rpxb, sizeof (uint16), wc, uptr -> fileref);
+		err = ferror (uptr -> fileref);  }
+	    }						/* end if wr */
+	else if ((uptr -> FUNC == FNC_READ) ||		/* read? */
+		   (uptr -> FUNC == FNC_READH)) {
+	    i = fxread (rpxb, sizeof (uint16), wc, uptr -> fileref);
+	    err = ferror (uptr -> fileref);
+	    for ( ; i < wc; i++) rpxb[i] = 0;		/* fill buf */
+	    if (rpcs2 & CS2_UAI) {			/* no addr inc? */
+		if (t = Map_WriteW (ba, 2, &rpxb[wc - 1], ub)) {
+		    wc = 0;				/* NXM, no xfr */
+		    rpcs2 = rpcs2 | CS2_NEM;  }  }	/* set nxm err */
+	    else {					/* normal */
+		if (t = Map_WriteW (ba, wc << 1, rpxb, ub)) {	/* put buf */
+		    wc = wc - (t >> 1);			/* NXM, adj wc */
+		    rpcs2 = rpcs2 | CS2_NEM;  }		/* set nxm err */
+		ba = ba + (wc << 1);  }			/* adv ba */
+	    }						/* end if read */
+	else {						/* wchk */		    
+	    i = fxread (rpxb, sizeof (uint16), wc, uptr -> fileref);
+	    err = ferror (uptr -> fileref);
+	    for ( ; i < wc; i++) rpxb[i] = 0;		/* fill buf */
+	    awc = wc;
+	    for (wc = 0; wc < awc; wc++) {		/* loop thru buf */
+		if (Map_ReadW (ba, 2, &comp, ub)) {	/* read word */
 			rpcs2 = rpcs2 | CS2_NEM;	/* set error */
 			break;  }
-		dbuf[twc] = M[ba >> 1];			/* write to disk */
-		if ((rpcs2 & CS2_UAI) == 0) ba = ba + 2;  }
-	    if (fc = twc & (RP_NUMWD - 1)) {		/* fill? */
-		fc = RP_NUMWD - fc;
-		for (i = 0; i < fc; i++) dbuf[twc + i] = 0;  }
-	    fxwrite (dbuf, sizeof (uint16), twc + fc, uptr -> fileref);
-	    err = ferror (uptr -> fileref);
-	    }						/* end if */
-	else {						/* read, wchk */
-	    awc = fxread (dbuf, sizeof (uint16), wc, uptr -> fileref);
-	    err = ferror (uptr -> fileref);
-	    for ( ; awc < wc; awc++) dbuf[awc] = 0;
-	    for (twc = 0; twc < wc; twc++) {
-		if (!ADDR_IS_MEM (ba)) {		/* nx memory? */
-			rpcs2 = rpcs2 | CS2_NEM;	/* set error */
-			break;  }
-		if (uptr -> FUNC == FNC_READ) M[ba >> 1] = dbuf[twc];
-		else if (M[ba >> 1] != dbuf[twc]) {
+		if (comp != rpxb[wc]) {			/* compare wd */
 			rpcs2 = rpcs2 | CS2_WCE;	/* set error */
 			break;  }
 		if ((rpcs2 & CS2_UAI) == 0) ba = ba + 2;  }
-	    }						/* end else */
+	    }						/* end else wchk */
 
-	rpwc = (rpwc + twc) & 0177777;			/* final word count */
+	rpwc = (rpwc + wc) & 0177777;			/* final word count */
 	rpba = (ba & 0177777) & ~BA_MBZ;		/* lower 16b */
 	rpbae = (ba >> 16) & ~AE_MBZ;			/* upper 6b */
 	rpcs1 = (rpcs1 & ~ CS1_UAE) | ((rpbae << CS1_V_UAE) & CS1_UAE);
-	da = da + twc + (RP_NUMWD - 1);
+	da = da + wc + (RP_NUMWD - 1);
 	if (da >= drv_tab[dtype].size) rpds[drv] = rpds[drv] | DS_LST;
 	da = da / RP_NUMWD;
 	rpda = da % drv_tab[dtype].sect;
@@ -1002,10 +1029,12 @@ for (i = 0; i < RP_NUMDR; i++) {
 	sim_cancel (uptr);
 	uptr -> CYL = uptr -> FUNC = 0;
 	if (uptr -> flags & UNIT_ATT) rpds[i] = (rpds[i] & DS_VV) |
-		DS_DPR | DS_RDY | DS_MOL | ((uptr -> flags & UNIT_WLK)? DS_WRL: 0);
+		DS_DPR | DS_RDY | DS_MOL | ((uptr -> flags & UNIT_WPRT)? DS_WRL: 0);
 	else if (uptr -> flags & UNIT_DIS) rpds[i] = 0;
 	else rpds[i] = DS_DPR;
 	rper1[i] = 0;  }
+if (rpxb == NULL) rpxb = calloc (RP_MAXFR, sizeof (unsigned int16));
+if (rpxb == NULL) return SCPE_MEM;
 return SCPE_OK;
 }
 
@@ -1021,14 +1050,16 @@ r = attach_unit (uptr, cptr);
 if (r != SCPE_OK) return r;
 drv = uptr - rp_dev.units;				/* get drv number */
 rpds[drv] = DS_ATA | DS_MOL | DS_RDY | DS_DPR |
-	((uptr -> flags & UNIT_WLK)? DS_WRL: 0);
+	((uptr -> flags & UNIT_WPRT)? DS_WRL: 0);
 rper1[drv] = 0;
 update_rpcs (CS1_SC, drv);
 
 if ((uptr -> flags & UNIT_AUTO) == 0) return SCPE_OK;	/* autosize? */
 if (fseek (uptr -> fileref, 0, SEEK_END)) return SCPE_OK;
-if ((p = ftell (uptr -> fileref)) == 0)
-	return pdp11_bad_block (uptr, drv_tab[GET_DTYPE (uptr -> flags)].sect, RP_NUMWD);
+if ((p = ftell (uptr -> fileref)) == 0) {
+	if (uptr -> flags & UNIT_RO) return SCPE_OK;
+	return pdp11_bad_block (uptr,
+		drv_tab[GET_DTYPE (uptr -> flags)].sect, RP_NUMWD);  }
 for (i = 0; drv_tab[i].sect != 0; i++) {
     if (p <= (drv_tab[i].size * (int) sizeof (int16))) {
 	uptr -> flags = (uptr -> flags & ~UNIT_DTYPE) | (i << UNIT_V_DTYPE);
@@ -1057,21 +1088,23 @@ return detach_unit (uptr);
 
 /* Set size command validation routine */
 
-t_stat rp_set_size (UNIT *uptr, int32 value)
+t_stat rp_set_size (UNIT *uptr, int32 val, char *cptr, void *desc)
 {
 if (uptr -> flags & UNIT_ATT) return SCPE_ALATT;
-uptr -> capac = drv_tab[GET_DTYPE (value)].size;
+uptr -> capac = drv_tab[GET_DTYPE (val)].size;
 return SCPE_OK;
 }
 
 /* Set bad block routine */
 
-t_stat rp_set_bad (UNIT *uptr, int32 value)
+t_stat rp_set_bad (UNIT *uptr, int32 val, char *cptr, void *desc)
 {
 return pdp11_bad_block (uptr, drv_tab[GET_DTYPE (uptr -> flags)].sect, RP_NUMWD);
 }
 
 /* Device bootstrap */
+
+#if defined (VM_PDP11)
 
 #define BOOT_START 02000				/* start */
 #define BOOT_UNIT 02006					/* unit number */
@@ -1111,3 +1144,12 @@ M[BOOT_UNIT >> 1] = unitno & CS2_M_UNIT;
 saved_PC = BOOT_START;
 return SCPE_OK;
 }
+
+#else
+
+t_stat rp_boot (int32 unitno)
+{
+return SCPE_NOFNC;
+}
+
+#endif

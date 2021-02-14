@@ -35,6 +35,7 @@
    Cards are represented as ASCII text streams terminated by newlines.
    This allows cards to be created and edited as normal files.
 
+   29-Nov-01	RMS	Added read only unit support
    13-Apr-01	RMS	Revised for register arrays
 */
 
@@ -60,7 +61,7 @@ t_stat cd_reset (DEVICE *dptr);
 */
 
 UNIT cdr_unit = {
-	UDATA (&cdr_svc, UNIT_SEQ+UNIT_ATTABLE, 0), 100 };
+	UDATA (&cdr_svc, UNIT_SEQ+UNIT_ATTABLE+UNIT_ROABLE, 0), 100 };
 
 REG cdr_reg[] = {
 	{ FLDATA (LAST, ind[IN_LST], 0) },

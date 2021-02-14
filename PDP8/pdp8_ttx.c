@@ -25,6 +25,8 @@
 
    ttix,ttox	PT08/KL8JA terminal input/output
 
+   30-Nov-01	RMS	Added extended SET/SHOW support
+
    This module implements four individual serial interfaces similar in function
    to the console.  These interfaces are mapped to Telnet based connections as
    though they were the four lines of a terminal multiplexor.  The connection
@@ -58,7 +60,7 @@ t_stat ttox_svc (UNIT *uptr);
 t_stat ttox_reset (DEVICE *dptr);
 t_stat ttx_attach (UNIT *uptr, char *cptr);
 t_stat ttx_detach (UNIT *uptr);
-t_stat ttx_status (UNIT *uptr, FILE *st);
+t_stat ttx_status (FILE *st, UNIT *uptr, int32 val, void *desc);
 
 /* TTIx data structures
 
@@ -71,7 +73,9 @@ t_stat ttx_status (UNIT *uptr, FILE *st);
 MTAB ttix_mod[] = {
 	{ UNIT_UC, 0, "lower case", "LC", NULL },
 	{ UNIT_UC, UNIT_UC, "upper case", "UC", NULL },
-	{ UNIT_ATT, UNIT_ATT, "line status:", NULL, &ttx_status },
+	{ UNIT_ATT, UNIT_ATT, "line status", NULL, NULL, &ttx_status },
+	{ MTAB_XTD | MTAB_VDV | MTAB_NMO, 0, "LINESTATUS", NULL,
+		NULL, &ttx_status, NULL },
 	{ 0 }  };
 
 UNIT ttix_unit[] = {
@@ -409,10 +413,11 @@ return SCPE_OK;
 
 /* Status */
 
-t_stat ttx_status (UNIT *uptr, FILE *st)
+t_stat ttx_status (FILE *st, UNIT *uptr, int32 val, void *desc)
 {
 int32 i;
 
+fprintf (st, "line status:");
 for (i = 0; (i < TTX_LINES) && (ttx_desc.ldsc[i] -> conn == 0); i++) ;
 if (i < TTX_LINES) {
 	for (i = 0; i < TTX_LINES; i++) {

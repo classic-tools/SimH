@@ -26,6 +26,7 @@
    drm		(PDP-7) Type 24 serial drum
 		(PDP-9) RM09 serial drum
 
+   25-Nov-01	RMS	Revised interrupt structure
    10-Jun-01	RMS	Cleaned up IOT decoding to reflect hardware
    26-Apr-01	RMS	Added device enable/disable support
    14-Apr-99	RMS	Changed t_addr to unsigned
@@ -54,7 +55,7 @@
 			((double) DRM_NUMWDT)))
 
 extern int32 M[];
-extern int32 int_req, dev_enb;
+extern int32 int_hwre[API_HLVL+1], dev_enb;
 extern UNIT cpu_unit;
 int32 drm_da = 0;					/* track address */
 int32 drm_ma = 0;					/* memory address */
@@ -80,8 +81,8 @@ UNIT drm_unit =
 REG drm_reg[] = {
 	{ ORDATA (DA, drm_da, 9) },
 	{ ORDATA (MA, drm_ma, 15) },
-	{ FLDATA (INT, int_req, INT_V_DRM) },
-	{ FLDATA (DONE, int_req, INT_V_DRM) },
+	{ FLDATA (INT, int_hwre[API_DRM], INT_V_DRM) },
+	{ FLDATA (DONE, int_hwre[API_DRM], INT_V_DRM) },
 	{ FLDATA (ERR, drm_err, 0) },
 	{ ORDATA (WLK, drm_wlk, 32) },
 	{ DRDATA (TIME, drm_time, 24), REG_NZ + PV_LEFT },
@@ -110,9 +111,9 @@ int32 drm61 (int32 pulse, int32 AC)
 int32 t;
 
 if (pulse & 001) {					/* DRSF */
-	if (int_req & INT_DRM) AC = AC | IOT_SKP;  }
+	if (TST_INT (DRM)) AC = AC | IOT_SKP;  }
 if (pulse & 002) {					/* DRCF */
-	int_req = int_req & ~INT_DRM;			/* clear done */
+	CLR_INT (DRM);					/* clear done */
 	drm_err = 0;  }					/* clear error */
 if (pulse & 004) {					/* DRSS */
 	drm_da = AC & DRM_SMASK;			/* load sector # */
@@ -129,7 +130,7 @@ int32 t;
 if (pulse & 001) {					/* DRSN */
 	if (drm_err == 0) AC = AC | IOT_SKP;  }
 if (pulse & 004) {					/* DRCS */
-	int_req = int_req & ~INT_DRM;			/* clear done */
+	CLR_INT (DRM);					/* clear done */
 	drm_err = 0;					/* clear error */
 	t = ((drm_da % DRM_NUMSC) * DRM_NUMWDS) - GET_POS (drm_time);
 	if (t < 0) t = t + DRM_NUMWDT;			/* wrap around? */
@@ -149,7 +150,7 @@ t_addr da;
 
 if ((uptr -> flags & UNIT_BUF) == 0) {			/* not buf? abort */
 	drm_err = 1;					/* set error */
-	int_req = int_req | INT_DRM;			/* set done */
+	SET_INT (DRM);					/* set done */
 	return IORETURN (drm_stopioe, SCPE_UNATT);  }
 
 da = drm_da * DRM_NUMWDS;				/* compute dev addr */
@@ -163,7 +164,7 @@ for (i = 0; i < DRM_NUMWDS; i++, da++) {		/* do transfer */
 				uptr -> hwmark = da + 1;  }  }
 	drm_ma = (drm_ma + 1) & ADDRMASK;  }		/* incr mem addr */
 drm_da = (drm_da + 1) & DRM_SMASK;			/* incr dev addr */
-int_req = int_req | INT_DRM;				/* set done */
+SET_INT (DRM);						/* set done */
 return SCPE_OK;
 }
 
@@ -172,7 +173,7 @@ return SCPE_OK;
 t_stat drm_reset (DEVICE *dptr)
 {
 drm_ma = drm_ma = drm_err = 0;
-int_req = int_req & ~INT_DRM;
+CLR_INT (DRM);						/* clear done */
 sim_cancel (&drm_unit);
 return SCPE_OK;
 }
@@ -181,7 +182,7 @@ return SCPE_OK;
 
 int32 drm_iors (void)
 {
-return ((int_req & INT_DRM)? IOS_DRM: 0);
+return (TST_INT (DRM)? IOS_DRM: 0);
 }
 
 /* Bootstrap routine */

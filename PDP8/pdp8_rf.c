@@ -25,6 +25,7 @@
 
    rf		RF08 fixed head disk
 
+   28-Nov-01	RMS	Added RL8A support
    25-Apr-01	RMS	Added device enable/disable support
    19-Mar-01	RMS	Added disk monitor bootstrap, fixed IOT decoding
    15-Feb-01	RMS	Fixed 3 cycle data break sequence
@@ -266,7 +267,8 @@ return SCPE_OK;
 
 t_stat rf_reset (DEVICE *dptr)
 {
-if (dev_enb & INT_RF) dev_enb = dev_enb & ~INT_DF;	/* either DF or RF */
+if (dev_enb & INT_RF)					/* RF? no DF or RL */
+	dev_enb = dev_enb & ~(INT_DF | INT_RL);
 rf_sta = rf_da = 0;
 rf_done = 1;
 int_req = int_req & ~INT_RF;				/* clear interrupt */

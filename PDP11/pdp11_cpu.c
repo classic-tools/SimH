@@ -25,6 +25,11 @@
 
    cpu		PDP-11 CPU (J-11 microprocessor)
 
+   25-Dec-01	RMS	Cleaned up sim_inst declarations
+   11-Dec-01	RMS	Moved interrupt debug code
+   07-Dec-01	RMS	Revised to use new breakpoint package
+   08-Nov-01	RMS	Moved I/O to external module
+   26-Oct-01	RMS	Revised to use symbolic definitions for IO page
    15-Oct-01	RMS	Added debug logging
    08-Oct-01	RMS	Fixed bug in revised interrupt logic
    07-Sep-01	RMS	Revised device disable and interrupt mechanisms
@@ -168,39 +173,41 @@
    4. Adding I/O devices.  This requires modifications to three modules:
 
 	pdp11_defs.h		add interrupt request definitions
-	pdp11_cpu.c		add I/O page linkages
+	pdp11_io.c		add I/O page linkages
 	pdp11_sys.c		add to sim_devices
 */
 
 /* Definitions */
 
 #include "pdp11_defs.h"
-#include <setjmp.h>
 
-#define calc_is(md) ((md) << VA_V_MODE)
-#define calc_ds(md) (calc_is((md)) | ((MMR3 & dsmask[(md)])? VA_DS: 0))
-#define calc_MMR1(val) (MMR1 = MMR1? ((val) << 8) | MMR1: (val))
-#define GET_SIGN_W(v) ((v) >> 15)
-#define GET_SIGN_B(v) ((v) >> 7)
-#define GET_Z(v) ((v) == 0)
-#define JMP_PC(x) old_PC = PC; PC = (x)
-#define BRANCH_F(x) old_PC = PC; PC = (PC + (((x) + (x)) & 0377)) & 0177777
-#define BRANCH_B(x) old_PC = PC; PC = (PC + (((x) + (x)) | 0177400)) & 0177777
-#define ILL_ADR_FLAG	0200000
-#define save_ibkpt	(cpu_unit.u3)			/* will be SAVEd */
-#define last_pa		(cpu_unit.u4)			/* and RESTOREd */
+#define calc_is(md)	((md) << VA_V_MODE)
+#define calc_ds(md)	(calc_is((md)) | ((MMR3 & dsmask[(md)])? VA_DS: 0))
+#define calc_MMR1(val)	(MMR1 = MMR1? ((val) << 8) | MMR1: (val))
+#define GET_SIGN_W(v)	((v) >> 15)
+#define GET_SIGN_B(v)	((v) >> 7)
+#define GET_Z(v)	((v) == 0)
+#define JMP_PC(x)	old_PC = PC; PC = (x)
+#define BRANCH_F(x)	old_PC = PC; PC = (PC + (((x) + (x)) & 0377)) & 0177777
+#define BRANCH_B(x)	old_PC = PC; PC = (PC + (((x) + (x)) | 0177400)) & 0177777
+#define last_pa		(cpu_unit.u4)			/* auto save/rest */
 #define UNIT_V_18B	(UNIT_V_UF)			/* force 18b addr */
+#define UNIT_V_UBM	(UNIT_V_UF + 1)			/* bus map present */
+#define UNIT_V_RH11	(UNIT_V_UF + 2)			/* RH11 Massbus */
+#define UNIT_V_CIS	(UNIT_V_UF + 3)			/* CIS present */
+#define UNIT_V_MSIZE	(UNIT_V_UF + 4)			/* dummy */
 #define UNIT_18B	(1u << UNIT_V_18B)
-#define UNIT_V_CIS	(UNIT_V_UF + 1)			/* CIS present */
+#define UNIT_UBM	(1u << UNIT_V_UBM)
+#define UNIT_RH11	(1u << UNIT_V_RH11)
 #define UNIT_CIS	(1u << UNIT_V_CIS)
-#define UNIT_V_MSIZE	(UNIT_V_UF + 2)			/* dummy */
 #define UNIT_MSIZE	(1u << UNIT_V_MSIZE)
+#define UNIT_MAP	(UNIT_18B | UNIT_UBM | UNIT_RH11)
 
 /* Global state */
 
 extern FILE *sim_log;
 
-uint16 *M = NULL;					/* address of memory */
+uint16 *M = NULL;					/* memory */
 int32 REGFILE[6][2] = { 0 };				/* R0-R5, two sets */
 int32 STACKFILE[4] = { 0 };				/* SP, four modes */
 int32 saved_PC = 0;					/* program counter */
@@ -227,34 +234,36 @@ int32 MMR0 = 0;						/* MMR0 - status */
 int32 MMR1 = 0;						/* MMR1 - R+/-R */
 int32 MMR2 = 0;						/* MMR2 - saved PC */
 int32 MMR3 = 0;						/* MMR3 - 22b status */
+int32 ub_map[UBM_LNT_LW] = { 0 };			/* Unibus map array */
+int32 cpu_bme = 0;					/* bus map enable */
+int32 cpu_18b = 0;					/* 18b CPU config'd */
+int32 cpu_ubm = 0;					/* bus map config'd */
+int32 cpu_rh11 = 0;					/* RH11 config'd */
 int32 isenable = 0, dsenable = 0;			/* i, d space flags */
 int32 CPUERR = 0;					/* CPU error reg */
 int32 MEMERR = 0;					/* memory error reg */
 int32 CCR = 0;						/* cache control reg */
 int32 HITMISS = 0;					/* hit/miss reg */
-int32 MAINT = (0 << 9) + (0 << 8) + (4 << 4);		/* maint bit<9> = Q/U */
-							/*  <8> = hwre FP */
-							/*  <6:4> = sys type */
+int32 MAINT = MAINT_Q | MAINT_NOFPA | MAINT_KDJ;	/* maint reg */
 int32 stop_trap = 1;					/* stop on trap */
 int32 stop_vecabort = 1;				/* stop on vec abort */
 int32 stop_spabort = 1;					/* stop on SP abort */
 int32 wait_enable = 0;					/* wait state enable */
-int32 pdp11_log = 0;					/* logging */
-int32 ibkpt_addr = ILL_ADR_FLAG | VAMASK;		/* breakpoint addr */
+int32 cpu_log = 0;					/* logging */
 int32 old_PC = 0;					/* previous PC */
 int32 dev_enb = (-1) & ~INT_TS;				/* dev enables */
 jmp_buf save_env;					/* abort handler */
 int32 dsmask[4] = { MMR3_KDS, MMR3_SDS, 0, MMR3_UDS };	/* dspace enables */
 
 extern int32 sim_int_char;
+extern int32 sim_brk_types, sim_brk_dflt, sim_brk_summ;	/* breakpoint info */
 
 /* Function declarations */
 
 t_stat cpu_ex (t_value *vptr, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_dep (t_value val, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_reset (DEVICE *dptr);
-t_stat cpu_svc (UNIT *uptr);
-t_stat cpu_set_size (UNIT *uptr, int32 value);
+t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc);
 int32 GeteaB (int32 spec);
 int32 GeteaW (int32 spec);
 int32 relocR (int32 addr);
@@ -267,103 +276,14 @@ void WriteW (int32 data, int32 addr);
 void WriteB (int32 data, int32 addr);
 void PWriteW (int32 data, int32 addr);
 void PWriteB (int32 data, int32 addr);
-t_stat iopageR (int32 *data, int32 addr, int32 access);
-t_stat iopageW (int32 data, int32 addr, int32 access);
-int32 calc_ints (int32 nipl, int32 trq);
-
-t_stat CPU_rd (int32 *data, int32 addr, int32 access);
 t_stat CPU_wr (int32 data, int32 addr, int32 access);
-t_stat APR_rd (int32 *data, int32 addr, int32 access);
-t_stat APR_wr (int32 data, int32 addr, int32 access);
-t_stat SR_MMR012_rd (int32 *data, int32 addr, int32 access);
-t_stat SR_MMR012_wr (int32 data, int32 addr, int32 access);
-t_stat MMR3_rd (int32 *data, int32 addr, int32 access);
-t_stat MMR3_wr (int32 data, int32 addr, int32 access);
-extern t_stat std_rd (int32 *data, int32 addr, int32 access);
-extern t_stat std_wr (int32 data, int32 addr, int32 access);
-extern t_stat lpt_rd (int32 *data, int32 addr, int32 access);
-extern t_stat lpt_wr (int32 data, int32 addr, int32 access);
-extern t_stat dz_rd (int32 *data, int32 addr, int32 access);
-extern t_stat dz_wr (int32 data, int32 addr, int32 access);
-extern t_stat rk_rd (int32 *data, int32 addr, int32 access);
-extern t_stat rk_wr (int32 data, int32 addr, int32 access);
-extern int32 rk_inta (void);
-extern int32 rk_enb;
-/* extern t_stat hk_rd (int32 *data, int32 addr, int32 access);
-extern t_stat hk_wr (int32 data, int32 addr, int32 access);
-extern int32 hk_inta (void);
-extern int32 hk_enb; */
-extern t_stat rl_rd (int32 *data, int32 addr, int32 access);
-extern t_stat rl_wr (int32 data, int32 addr, int32 access);
-extern int32 rl_enb;
-extern t_stat rp_rd (int32 *data, int32 addr, int32 access);
-extern t_stat rp_wr (int32 data, int32 addr, int32 access);
-extern int32 rp_inta (void);
-extern int32 rp_enb;
-extern t_stat rx_rd (int32 *data, int32 addr, int32 access);
-extern t_stat rx_wr (int32 data, int32 addr, int32 access);
-extern int32 rx_enb;
-extern t_stat dt_rd (int32 *data, int32 addr, int32 access);
-extern t_stat dt_wr (int32 data, int32 addr, int32 access);
-extern int32 dt_enb;
-extern t_stat tm_rd (int32 *data, int32 addr, int32 access);
-extern t_stat tm_wr (int32 data, int32 addr, int32 access);
-extern int32 tm_enb;
-extern t_stat ts_rd (int32 *data, int32 addr, int32 access);
-extern t_stat ts_wr (int32 data, int32 addr, int32 access);
-extern int32 ts_enb;
-
-/* Auxiliary data structures */
 
-struct iolink {						/* I/O page linkage */
-	int32	low;					/* low I/O addr */
-	int32	high;					/* high I/O addr */
-	int32	*enb;					/* enable flag */
-	t_stat	(*read)();				/* read routine */
-	t_stat	(*write)();  };				/* write routine */
+extern t_stat iopageR (int32 *data, int32 addr, int32 access);
+extern t_stat iopageW (int32 data, int32 addr, int32 access);
+extern int32 calc_ints (int32 nipl, int32 trq);
+extern int32 get_vector (int32 nipl);
 
-struct iolink iotable[] = {
-	{ 017777740, 017777777, NULL, &CPU_rd, &CPU_wr },
-	{ 017777546, 017777567, NULL, &std_rd, &std_wr },
-	{ 017777514, 017777517, NULL, &lpt_rd, &lpt_wr },
-	{ 017760100, 017760107, NULL, &dz_rd, &dz_wr },
-	{ 017777400, 017777417, &rk_enb, &rk_rd, &rk_wr },
-/*	{ 017777440, 017777477, &hk_enb, &hk_rd, &hk_wr }, */
-	{ 017774400, 017774411, &rl_enb, &rl_rd, &rl_wr },
-	{ 017776700, 017776753, &rp_enb, &rp_rd, &rp_wr },
-	{ 017777170, 017777173, &rx_enb, &rx_rd, &rx_wr },
-	{ 017777340, 017777351, &dt_enb, &dt_rd, &dt_wr },
-	{ 017772520, 017772533, &tm_enb, &tm_rd, &tm_wr },
-	{ 017772520, 017772523, &ts_enb, &ts_rd, &ts_wr },
-	{ 017777600, 017777677, NULL, &APR_rd, &APR_wr },
-	{ 017772200, 017772377, NULL, &APR_rd, &APR_wr },
-	{ 017777570, 017777577, NULL, &SR_MMR012_rd, &SR_MMR012_wr },
-	{ 017772516, 017772517, NULL, &MMR3_rd, &MMR3_wr },
-	{ 0, 0, NULL, NULL, NULL }  };
-
-int32 int_vec[IPL_HLVL][32] = {				/* int req to vector */
-	{ 0 },						/* IPL 0 */
-	{ VEC_PIRQ },					/* IPL 1 */
-	{ VEC_PIRQ },					/* IPL 2 */
-	{ VEC_PIRQ },					/* IPL 3 */
-	{ VEC_TTI, VEC_TTO, VEC_PTR, VEC_PTP,		/* IPL 4 */
-	  VEC_LPT, VEC_PIRQ },
-	{ VEC_RK, VEC_RL, VEC_RX, VEC_TM,		/* IPL 5 */
-	  VEC_RP, VEC_TS, VEC_HK, VEC_DZRX,
-	  VEC_DZTX, VEC_PIRQ }, 
-	{ VEC_CLK, VEC_DTA, VEC_PIRQ },			/* IPL 6 */
-	{ VEC_PIRQ }  };				/* IPL 7 */
-
-int32 (*int_ack[IPL_HLVL][32])() = {			/* int ack routines */
-	{ NULL },					/* IPL 0 */
-	{ NULL },					/* IPL 1 */
-	{ NULL },					/* IPL 2 */
-	{ NULL },					/* IPL 3 */
-	{ NULL },					/* IPL 4 */
-	{ &rk_inta, NULL, NULL, NULL,			/* IPL 5 */
-	  &rp_inta, NULL, NULL, NULL },
-	{ NULL },					/* IPL 6 */
-	{ NULL }  };					/* IPL 7 */
+/* Trap data structures */
 
 int32 trap_vec[TRAP_V_MAX] = {				/* trap req to vector */
 	VEC_RED, VEC_ODD, VEC_MME, VEC_NXM,
@@ -390,7 +310,7 @@ int32 trap_clear[TRAP_V_MAX] = {			/* trap clears */
    cpu_mod	CPU modifier list
 */
 
-UNIT cpu_unit = { UDATA (&cpu_svc, UNIT_FIX + UNIT_BINK, INIMEMSIZE) };
+UNIT cpu_unit = { UDATA (NULL, UNIT_FIX + UNIT_BINK, INIMEMSIZE) };
 
 REG cpu_reg[] = {
 	{ ORDATA (PC, saved_PC, 16) },
@@ -434,7 +354,7 @@ REG cpu_reg[] = {
 	{ ORDATA (STOP_TRAPS, stop_trap, TRAP_V_MAX) },
 	{ FLDATA (STOP_VECA, stop_vecabort, 0) },
 	{ FLDATA (STOP_SPA, stop_spabort, 0) },
-	{ ORDATA (DBGLOG, pdp11_log, 16), REG_HIDDEN },
+	{ ORDATA (DBGLOG, cpu_log, 16), REG_HIDDEN },
 	{ ORDATA (FAC0H, FR[0].h, 32) },
 	{ ORDATA (FAC0L, FR[0].l, 32) },
 	{ ORDATA (FAC1H, FR[1].h, 32) },
@@ -550,19 +470,23 @@ REG cpu_reg[] = {
 	{ GRDATA (UDPDR6, APRFILE[076], 8, 16, 0) },
 	{ GRDATA (UDPAR7, APRFILE[077], 8, 16, 16) },
 	{ GRDATA (UDPDR7, APRFILE[077], 8, 16, 0) },
+	{ BRDATA (UBMAP, ub_map, 8, 22, UBM_LNT_LW) },
 	{ FLDATA (18B_ADDR, cpu_unit.flags, UNIT_V_18B), REG_HRO },
+	{ FLDATA (UB_MAP, cpu_unit.flags, UNIT_V_UBM), REG_HRO },
+	{ FLDATA (RH11, cpu_unit.flags, UNIT_V_RH11), REG_HRO },
 	{ FLDATA (CIS, cpu_unit.flags, UNIT_V_CIS), REG_HRO },
 	{ ORDATA (OLDPC, old_PC, 16), REG_RO },
-	{ ORDATA (BREAK, ibkpt_addr, 17) },
 	{ ORDATA (WRU, sim_int_char, 8) },
 	{ ORDATA (DEVENB, dev_enb, 32), REG_HRO },
 	{ NULL}  };
 
 MTAB cpu_mod[] = {
-	{ UNIT_18B, UNIT_18B, "18b addressing", "18B", NULL },
-	{ UNIT_18B, 0, NULL, "22B", NULL },
+	{ UNIT_MAP, UNIT_18B, "18b addressing", "18B", NULL },
+	{ UNIT_MAP, UNIT_UBM, "22b Unibus + RH70", "URH70", NULL },
+	{ UNIT_MAP, UNIT_UBM + UNIT_RH11, "22b Unibus + RH11", "URH11", NULL },
+	{ UNIT_MAP, 0, "22b addressing", "22B", NULL },
 	{ UNIT_CIS, UNIT_CIS, "CIS", "CIS", NULL },
-	{ UNIT_CIS, 0, "No CIS", "NOCIS", NULL },
+	{ UNIT_CIS, 0, "no CIS", "NOCIS", NULL },
 	{ UNIT_MSIZE, 16384, NULL, "16K", &cpu_set_size},
 	{ UNIT_MSIZE, 32768, NULL, "32K", &cpu_set_size},
 	{ UNIT_MSIZE, 49152, NULL, "48K", &cpu_set_size},
@@ -595,11 +519,8 @@ t_stat sim_instr (void)
 extern int32 sim_interval;
 extern UNIT *sim_clock_queue;
 extern UNIT clk_unit;
-int32 IR, srcspec, srcreg, dstspec, dstreg;
-int32 src, src2, dst;
-int32 i, j, t, sign, oldrs, trapnum;
-int32 abortval;
-volatile int32 trapea;
+int abortval, i;
+volatile int32 trapea;					/* needed at longjmp */
 t_stat reason;
 void fp11 (int32 IR);
 void cis11 (int32 IR);
@@ -631,7 +552,11 @@ isenable = calc_is (cm);
 dsenable = calc_ds (cm);
 
 CPU_wr (PIRQ, 017777772, WRITE);			/* rewrite PIRQ */
-trap_req = calc_ints (ipl, trap_req);
+cpu_bme = (MMR3 & MMR3_BME) && (cpu_unit.flags & UNIT_UBM);
+cpu_18b = cpu_unit.flags & UNIT_18B;			/* export cnf flgs */
+cpu_ubm = cpu_unit.flags & UNIT_UBM;
+cpu_rh11 = cpu_unit.flags & UNIT_RH11;
+trap_req = calc_ints (ipl, trap_req);			/* upd int req */
 trapea = 0;
 reason = 0;
 sim_rtc_init (clk_unit.wait);				/* init clock */
@@ -668,41 +593,37 @@ if (abortval != 0) {
 */ 
 
 while (reason == 0)  {
-if (sim_interval <= 0) {				/* check clock queue */
-	reason = sim_process_event ();
-	trap_req = calc_ints (ipl, trap_req);
-	continue;  }
+
+int32 IR, srcspec, srcreg, dstspec, dstreg;
+int32 src, src2, dst;
+int32 i, t, sign, oldrs, trapnum;
+
+if (sim_interval <= 0) {				/* intv cnt expired? */
+	reason = sim_process_event ();			/* process events */
+	trap_req = calc_ints (ipl, trap_req);		/* recalc int req */
+	continue;
+	}						/* end if sim_interval */
+
 if (trap_req) {						/* check traps, ints */
 	trapea = 0;					/* assume srch fails */
 	if (t = trap_req & TRAP_ALL) {			/* if a trap */
-	    for (trapnum = 0; trapnum < TRAP_V_MAX; trapnum++) {
-		if ((t >> trapnum) & 1) {
-			trapea = trap_vec[trapnum];
+		for (trapnum = 0; trapnum < TRAP_V_MAX; trapnum++) {
+		    if ((t >> trapnum) & 1) {		/* trap set? */
+			trapea = trap_vec[trapnum];	/* get vec, clr */
 			trap_req = trap_req & ~trap_clear[trapnum];
-			if ((stop_trap >> trapnum) & 1)
-				reason = trapnum + 1;
-			break;  }			/* end if t & 1 */
-		}					/* end for */
-	    }						/* end if */
-	else {
-	    for (i = IPL_HLVL - 1; (trapea == 0) && (i > ipl); i--) {
-		t = int_req[i];				/* get level */
-		for (j = 0; t && (j < 32); j++) {	/* srch level */
-		    if ((t >> j) & 1) {			/* irq found? */
-			int_req[i] = int_req[i] & ~(1u << j);
-			if (int_ack[i][j]) trapea = int_ack[i][j]();
-			else trapea = int_vec[i][j];
-			trapnum = TRAP_V_MAX;
-			if (DBG_LOG (LOG_CPU_I)) fprintf (sim_log,
-			    ">>CPU, lvl=%d, flag=%d, vec=%o\n",
-			    i, j, trapea);
-			break;  }			/* end if t & 1 */
-		    }					/* end for j */
-	        }					/* end for i */
-	    }						/* end else */
+			if ((stop_trap >> trapnum) & 1)	/* stop on trap? */
+			    reason = trapnum + 1;
+			break;
+			}				/* end if t & 1 */
+		    }					/* end for */
+		}					/* end if t */
+	else {	trapea = get_vector (ipl);		/* get int vector */
+		trapnum = TRAP_V_MAX;			/* defang stk trap */
+		}					/* end else t*/
 	if (trapea == 0) {				/* nothing to do? */
 		trap_req = calc_ints (ipl, 0);		/* recalculate */
-		continue;  }				/* back to fetch */
+		continue;				/* back to fetch */
+		}					/* end if trapea */
 
 /* Process a trap or interrupt
 
@@ -761,10 +682,7 @@ if (wait_state) {					/* wait state? */
 	else reason = STOP_WAIT;
 	continue;  }
 
-if (PC == ibkpt_addr) {					/* breakpoint? */
-	save_ibkpt = ibkpt_addr;			/* save bkpt */
-	ibkpt_addr = ibkpt_addr | ILL_ADR_FLAG;		/* disable */
-	sim_activate (&cpu_unit, 1);			/* sched re-enable */
+if (sim_brk_summ && sim_brk_test (PC, SWMASK ('E'))) {	/* breakpoint? */
 	reason = STOP_IBKPT;				/* stop simulation */
 	continue;  }
 
@@ -2090,56 +2008,6 @@ else {	pa = va & 0177777;				/* mmgt off */
 return pa;
 }
 
-/* I/O page lookup and linkage routines
-
-   Inputs:
-	*data	=	pointer to data to read, if READ
-	data	=	data to store, if WRITE or WRITEB
-	pa	=	address
-	access	=	READ, WRITE, or WRITEB
-   Outputs:
-	status	=	SCPE_OK or SCPE_NXM
-*/
-
-t_stat iopageR (int32 *data, int32 pa, int32 access)
-{
-t_stat stat;
-struct iolink *p;
-
-for (p = &iotable[0]; p -> low != 0; p++ ) {
-	if ((pa >= p -> low) && (pa <= p -> high) &&
-	    ((p -> enb == NULL) || *p -> enb))  {
-		stat = p -> read (data, pa, access);
-		trap_req = calc_ints (ipl, trap_req);
-		return stat;  }  }
-return SCPE_NXM;
-}
-
-t_stat iopageW (int32 data, int32 pa, int32 access)
-{
-t_stat stat;
-struct iolink *p;
-
-for (p = &iotable[0]; p -> low != 0; p++ ) {
-	if ((pa >= p -> low) && (pa <= p -> high) &&
-	    ((p -> enb == NULL) || *p -> enb))  {
-		stat = p -> write (data, pa, access);
-		trap_req = calc_ints (ipl, trap_req);
-		return stat;  }  }
-return SCPE_NXM;
-}
-
-/* Calculate interrupt outstanding */
-
-int32 calc_ints (int32 nipl, int32 trq)
-{
-int32 i;
-
-for (i = IPL_HLVL - 1; i > nipl; i--) {
-	if (int_req[i]) return (trq | TRAP_INT);  }
-return (trq & ~TRAP_INT);
-}
-
 /* I/O page routines for CPU registers
 
    Switch register and memory management registers
@@ -2196,6 +2064,7 @@ if (pa & 1) return SCPE_OK;
 MMR3 = data & MMR3_RW;
 if (cpu_unit.flags & UNIT_18B)
 	MMR3 = MMR3 & ~(MMR3_BME + MMR3_M22E);		/* for UNIX V6 */
+cpu_bme = (MMR3 & MMR3_BME) && (cpu_unit.flags & UNIT_UBM);
 dsenable = calc_ds (cm);
 return SCPE_OK;
 }
@@ -2269,8 +2138,9 @@ case 2: 						/* MEMERR */
 case 3:							/* CCR */
 	*data = CCR;
 	return SCPE_OK;
-case 4:							/* MAint */
-	*data = MAINT;
+case 4:							/* MAINT */
+	if (cpu_ubm) *data = MAINT | MAINT_U;
+	else *data = MAINT | MAINT_Q;
 	return SCPE_OK;
 case 5:							/* Hit/miss */
 	*data = HITMISS;
@@ -2378,14 +2248,19 @@ return SCPE_NXM;					/* unimplemented */
 
 t_stat cpu_reset (DEVICE *dptr)
 {
+int32 i;
+
 PIRQ = MMR0 = MMR1 = MMR2 = MMR3 = 0;
+cpu_bme = 0;
 DR = CPUERR = MEMERR = CCR = HITMISS = 0;
 PSW = 000340;
 trap_req = 0;
 wait_state = 0;
 if (M == NULL) M = calloc (MEMSIZE >> 1, sizeof (unsigned int16));
 if (M == NULL) return SCPE_MEM;
-return cpu_svc (&cpu_unit);
+for (i = 0; i < UBM_LNT_LW; i++) ub_map[i] = 0;
+sim_brk_types = sim_brk_dflt = SWMASK ('E');
+return SCPE_OK;
 }
 
 /* Memory examine */
@@ -2423,34 +2298,25 @@ if (addr < MEMSIZE) {
 if (addr < IOPAGEBASE) return SCPE_NXM;
 return iopageW ((int32) val, addr, WRITEC);
 }
-
-/* Breakpoint service */
-
-t_stat cpu_svc (UNIT *uptr)
-{
-if ((ibkpt_addr & ~ILL_ADR_FLAG) == save_ibkpt) ibkpt_addr = save_ibkpt;
-save_ibkpt = -1;
-return SCPE_OK;
-}
 
 /* Memory allocation */
 
-t_stat cpu_set_size (UNIT *uptr, int32 value)
+t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc)
 {
 int32 mc = 0;
 t_addr i, clim;
 unsigned int16 *nM = NULL;
 
-if ((value <= 0) || (value > MAXMEMSIZE) || ((value & 07777) != 0))
+if ((val <= 0) || (val > MAXMEMSIZE) || ((val & 07777) != 0))
 	return SCPE_ARG;
-for (i = value; i < MEMSIZE; i = i + 2)	mc = mc | M[i >> 1];
+for (i = val; i < MEMSIZE; i = i + 2) mc = mc | M[i >> 1];
 if ((mc != 0) && !get_yn ("Really truncate memory [N]?", FALSE))
 	return SCPE_OK;
-nM = calloc (value >> 1, sizeof (unsigned int16));
+nM = calloc (val >> 1, sizeof (unsigned int16));
 if (nM == NULL) return SCPE_MEM;
-clim = (((t_addr) value) < MEMSIZE)? value: MEMSIZE;
+clim = (((t_addr) val) < MEMSIZE)? val: MEMSIZE;
 for (i = 0; i < clim; i = i + 2) nM[i >> 1] = M[i >> 1];
 free (M);
 M = nM;
-MEMSIZE = value;
+MEMSIZE = val;
 return SCPE_OK;  }

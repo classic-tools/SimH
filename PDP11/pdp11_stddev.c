@@ -27,6 +27,8 @@
    tti,tto	DL11 terminal input/output
    clk		KW11L line frequency clock
 
+   29-Nov-01	RMS	Added read only unit support
+   09-Nov-01	RMS	Added RQDX3 support
    07-Oct-01	RMS	Upgraded clock to full KW11L for RSTS/E autoconfigure
    07-Sep-01	RMS	Moved function prototypes, revised interrupt mechanism
    17-Jul-01	RMS	Moved function prototype
@@ -60,6 +62,7 @@ int32 tto_csr = 0;					/* control/status */
 int32 clk_csr = 0;					/* control/status */
 int32 clk_tps = 60;					/* ticks/second */
 int32 tmxr_poll = CLK_DELAY;				/* term mux poll */
+int32 tmr_poll = CLK_DELAY;				/* timer poll */
 
 t_stat ptr_svc (UNIT *uptr);
 t_stat ptp_svc (UNIT *uptr);
@@ -84,7 +87,8 @@ t_stat ptp_detach (UNIT *uptr);
 */
 
 UNIT ptr_unit = {
-	UDATA (&ptr_svc, UNIT_SEQ+UNIT_ATTABLE, 0), SERIAL_IN_WAIT };
+	UDATA (&ptr_svc, UNIT_SEQ+UNIT_ATTABLE+UNIT_ROABLE, 0),
+		SERIAL_IN_WAIT };
 
 REG ptr_reg[] = {
 	{ ORDATA (BUF, ptr_unit.buf, 8) },
@@ -500,6 +504,7 @@ clk_csr = clk_csr | CSR_DONE;				/* set done */
 if (clk_csr & CSR_IE) SET_INT (CLK);
 t = sim_rtc_calb (clk_tps);				/* calibrate clock */
 sim_activate (&clk_unit, t);				/* reactivate unit */
+tmr_poll = t;						/* set timer poll */
 tmxr_poll = t;						/* set mux poll */
 return SCPE_OK;
 }
@@ -509,6 +514,7 @@ t_stat clk_reset (DEVICE *dptr)
 clk_csr = 0;
 CLR_INT (CLK);
 sim_activate (&clk_unit, clk_unit.wait);		/* activate unit */
+tmr_poll = clk_unit.wait;				/* set timer poll */
 tmxr_poll = clk_unit.wait;				/* set mux poll */
 return SCPE_OK;
 }

@@ -25,6 +25,8 @@
 
    dp		12557A cartridge disk system
 
+   03-Dec-01	RMS	Changed DEVNO to use extended SET/SHOW
+   24-Nov-01	RMS	Changed STA to be an array
    07-Sep-01	RMS	Moved function prototypes
    29-Nov-00	RMS	Made variable names unique
    21-Nov-00	RMS	Fixed flag, buffer power up state
@@ -182,10 +184,7 @@ REG dpc_reg[] = {
 	{ DRDATA (CTIME, dpc_ctime, 24), PV_LEFT },
 	{ DRDATA (STIME, dpc_stime, 24), PV_LEFT },
 	{ DRDATA (XTIME, dpc_xtime, 24), REG_NZ + PV_LEFT },
-	{ ORDATA (STA0, dpc_sta[0], 16) },
-	{ ORDATA (STA1, dpc_sta[1], 16) },
-	{ ORDATA (STA2, dpc_sta[2], 16) },
-	{ ORDATA (STA3, dpc_sta[3], 16) },
+	{ BRDATA (STA, dpc_sta, 8, 16, DP_NUMDRV) },
 	{ GRDATA (UFLG0, dpc_unit[0].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
 		  REG_HRO },
 	{ GRDATA (UFLG1, dpc_unit[1].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
@@ -200,7 +199,8 @@ REG dpc_reg[] = {
 MTAB dpc_mod[] = {
 /*	{ UNIT_WLK, 0, "write enabled", "ENABLED", &dpc_vlock }, */
 /*	{ UNIT_WLK, UNIT_WLK, "write locked", "LOCKED", &dpc_vlock }, */
-	{ UNIT_DEVNO, inDPD, NULL, "DEVNO", &hp_setdev2 },
+	{ MTAB_XTD | MTAB_VDV, inDPD, "DEVNO", "DEVNO",
+		&hp_setdev2, &hp_showdev2, NULL },
 	{ 0 }  };
 
 DEVICE dpc_dev = {

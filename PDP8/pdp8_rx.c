@@ -25,6 +25,8 @@
 
    rx		RX8E/RX01 floppy disk
 
+   30-Nov-01	RMS	Added read only unit, extended SET/SHOW support
+   24-Nov-01	RMS	Converted FLG to array
    17-Jul-01	RMS	Fixed warning from VC++ 6
    26-Apr-01	RMS	Added device enable/disable support
    13-Apr-01	RMS	Revised for register arrays
@@ -52,6 +54,7 @@
 #define RX_M_NUMDR	01
 #define UNIT_V_WLK	(UNIT_V_UF)			/* write locked */
 #define UNIT_WLK	(1 << UNIT_V_UF)
+#define UNIT_WPRT	(UNIT_WLK | UNIT_RO)		/* write protect */
 
 #define IDLE		0				/* idle state */
 #define RWDS		1				/* rw, sect next */
@@ -114,10 +117,10 @@ t_stat rx_boot (int32 unitno);
 */
 
 UNIT rx_unit[] = {
-	{ UDATA (&rx_svc,
-	  UNIT_FIX+UNIT_ATTABLE+UNIT_BUFABLE+UNIT_MUSTBUF, RX_SIZE) },
-	{ UDATA (&rx_svc,
-	  UNIT_FIX+UNIT_ATTABLE+UNIT_BUFABLE+UNIT_MUSTBUF, RX_SIZE) }  };
+	{ UDATA (&rx_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_BUFABLE+UNIT_MUSTBUF+
+		UNIT_ROABLE, RX_SIZE) },
+	{ UDATA (&rx_svc, UNIT_FIX+UNIT_ATTABLE+UNIT_BUFABLE+UNIT_MUSTBUF+
+		UNIT_ROABLE, RX_SIZE) }  };
 
 REG rx_reg[] = {
 	{ ORDATA (RXCS, rx_csr, 12) },
@@ -136,8 +139,7 @@ REG rx_reg[] = {
 	{ DRDATA (CTIME, rx_cwait, 24), PV_LEFT },
 	{ DRDATA (STIME, rx_swait, 24), PV_LEFT },
 	{ DRDATA (XTIME, rx_xwait, 24), PV_LEFT },
-	{ FLDATA (FLG0, rx_unit[0].flags, UNIT_V_WLK), REG_HRO },
-	{ FLDATA (FLG1, rx_unit[1].flags, UNIT_V_WLK), REG_HRO },
+	{ URDATA (FLG, rx_unit[0].flags, 2, 1, UNIT_V_WLK, RX_NUMDR, REG_HRO) },
 	{ FLDATA (STOP_IOE, rx_stopioe, 0) },
 	{ BRDATA (SBUF, rx_buf, 8, 8, RX_NUMBY) },
 	{ FLDATA (*DEVENB, dev_enb, INT_V_RX), REG_HRO },
@@ -324,7 +326,7 @@ case RWDT:						/* wait for track */
 	if (func == RXCS_READ) {			/* read? */
 		for (i = 0; i < RX_NUMBY; i++)
 			rx_buf[i] = *(((int8 *) uptr -> filebuf) + da + i);  }
-	else {	if (uptr -> flags & UNIT_WLK) {		/* write and locked? */
+	else {	if (uptr -> flags & UNIT_WPRT) {	/* write and locked? */
 			rx_esr = rx_esr | RXES_WLK;	/* flag error */
 			rx_done (rx_esr, 0100);		/* done, error */
 			break;  }

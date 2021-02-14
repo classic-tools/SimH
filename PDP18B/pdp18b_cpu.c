@@ -25,6 +25,8 @@
 
    cpu		PDP-4/7/9/15 central processor
 
+   30-Nov-01	RMS	Added extended SET/SHOW support
+   25-Nov-01	RMS	Revised interrupt structure
    19-Sep-01	RMS	Fixed bug in EAE (found by Dave Conroy)
    17-Sep-01	RMS	Fixed typo in conditional
    10-Aug-01	RMS	Removed register from declarations
@@ -224,9 +226,9 @@
 	nested XCT's
 	I/O error in I/O simulator
 
-   2. Interrupts.  Interrupt requests are maintained in the int_req
-      register.  If interrupts are on and not deferred, and at least
-      one interrupt request is set, a program interrupt occurs.
+   2. Interrupts.  Interrupt requests are maintained in the int_hwre
+      array.  int_hwre[0:3] corresponds to API levels 0-3; int_hwre[4]
+      holds PI requests.
 
    3. Arithmetic.  The 18b PDP's implements both 1's and 2's complement
       arithmetic for signed numbers.  In 1's complement arithmetic, a
@@ -244,8 +246,6 @@
 
 #include "pdp18b_defs.h"
 
-#define ILL_ADR_FLAG	(1 << ADDRSIZE)
-#define save_ibkpt	(cpu_unit.u3)
 #define UNIT_V_NOEAE	(UNIT_V_UF)			/* EAE absent */
 #define UNIT_NOEAE	(1 << UNIT_V_NOEAE)
 #define UNIT_V_NOAPI	(UNIT_V_UF+1)			/* API absent */
@@ -271,7 +271,8 @@ int32 saved_PC = 0;					/* PC */
 int32 iors = 0;						/* IORS */
 int32 ion = 0;						/* int on */
 int32 ion_defer = 0;					/* int defer */
-int32 int_req = 0;					/* int requests */
+int32 int_pend = 0;					/* int pending */
+int32 int_hwre[API_HLVL+1] = { 0 };			/* int requests */
 int32 api_enb = 0;					/* API enable */
 int32 api_req = 0;					/* API requests */
 int32 api_act = 0;					/* API active */
@@ -297,16 +298,16 @@ int32 LR = 0;						/* limit register */
 int32 stop_inst = 0;					/* stop on rsrv inst */
 int32 xct_max = 16;					/* nested XCT limit */
 int32 old_PC = 0;					/* old PC */
-int32 ibkpt_addr = ILL_ADR_FLAG | ADDRMASK;		/* breakpoint addr */
 int32 dev_enb = -1;					/* device enables */
 extern int32 sim_int_char;
+extern int32 sim_brk_types, sim_brk_dflt, sim_brk_summ;	/* breakpoint info */
+
 t_stat cpu_ex (t_value *vptr, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_dep (t_value val, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_reset (DEVICE *dptr);
-t_stat cpu_svc (UNIT *uptr);
-t_stat cpu_set_size (UNIT *uptr, int32 value);
+t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc);
 int32 upd_iors (void);
-int32 api_eval (void);
+int32 api_eval (int32 *pend);
 
 static const int32 api_ffo[256] = {
  8, 7, 6, 6, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4,
@@ -326,11 +327,11 @@ static const int32 api_ffo[256] = {
  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  };
 
-static const int32 api_vec[32] = {
- 0, 0, 0, 0, 0, 0, 0, 0,
- 0, ACH_TTO1, ACH_TTI1, ACH_CLK, 0, 0, 0, 0,
- 0, ACH_LPT, ACH_LPT, ACH_PTR, 0, 0, 0, ACH_RP,
- ACH_RF, ACH_DRM, ACH_MTA, ACH_DTA, 0, 0, ACH_PWRFL, 0 };
+static const int32 api_vec[API_HLVL][32] = {
+ { ACH_PWRFL },						/* API 0 */
+ { ACH_DTA, ACH_MTA, ACH_DRM, ACH_RF, ACH_RP },		/* API 1 */
+ { ACH_PTR, ACH_LPT, ACH_LPT },				/* API 2 */
+ { ACH_CLK, ACH_TTI1, ACH_TTO1 }  };			/* API 3 */
 
 /* CPU data structures
 
@@ -340,7 +341,7 @@ static const int32 api_vec[32] = {
    cpu_mod	CPU modifier list
 */
 
-UNIT cpu_unit = { UDATA (&cpu_svc, UNIT_FIX + UNIT_BINK + EAE_DFLT + API_DFLT,
+UNIT cpu_unit = { UDATA (NULL, UNIT_FIX + UNIT_BINK + EAE_DFLT + API_DFLT,
 		MAXMEMSIZE) };
 
 REG cpu_reg[] = {
@@ -354,13 +355,14 @@ REG cpu_reg[] = {
 #endif
 	{ ORDATA (SR, SR, 18) },
 	{ ORDATA (IORS, iors, 18), REG_RO },
-	{ ORDATA (INT, int_req, 32), REG_RO },
+	{ BRDATA (INT, int_hwre, 8, 32, API_HLVL+1), REG_RO },
 	{ FLDATA (ION, ion, 0) },
 	{ ORDATA (ION_DELAY, ion_defer, 2) },
 #if defined (PDP7) 
 	{ FLDATA (TRAPM, usmd, 0) },
 	{ FLDATA (TRAPP, trap_pending, 0) },
 	{ FLDATA (EXTM, memm, 0) },
+	{ FLDATA (EXTM_INIT, memm_init, 0) },
 	{ FLDATA (EMIRP, emir_pending, 0) },
 #endif
 #if defined (PDP9)
@@ -377,7 +379,7 @@ REG cpu_reg[] = {
 	{ FLDATA (EXTM_INIT, memm_init, 0) },
 	{ FLDATA (EMIRP, emir_pending, 0) },
 	{ FLDATA (RESTP, rest_pending, 0) },
-	{ FLDATA (PWRFL, int_req, INT_V_PWRFL) },
+	{ FLDATA (PWRFL, int_hwre[API_PWRFL], INT_V_PWRFL) },
 #endif
 #if defined (PDP15)
 	{ FLDATA (APIENB, api_enb, 0) },
@@ -386,22 +388,21 @@ REG cpu_reg[] = {
 	{ ORDATA (XR, XR, 18) },
 	{ ORDATA (LR, LR, 18) },
 	{ ORDATA (BR, BR, ADDRSIZE) },
+	{ FLDATA (USMD, usmd, 0) },
+	{ FLDATA (USMDBUF, usmdbuf, 0) },
 	{ FLDATA (NEXM, nexm, 0) },
 	{ FLDATA (PRVN, prvn, 0) },
 	{ FLDATA (TRAPP, trap_pending, 0) },
-	{ FLDATA (USMD, usmd, 0) },
-	{ FLDATA (USMDBUF, usmdbuf, 0) },
 	{ FLDATA (BANKM, memm, 0) },
 	{ FLDATA (BANKM_INIT, memm_init, 0) },
-	{ FLDATA (RESP, rest_pending, 0) },
-	{ FLDATA (PWRFL, int_req, INT_V_PWRFL) },
+	{ FLDATA (RESTP, rest_pending, 0) },
+	{ FLDATA (PWRFL, int_hwre[API_PWRFL], INT_V_PWRFL) },
 #endif
 	{ ORDATA (OLDPC, old_PC, ADDRSIZE), REG_RO },
 	{ FLDATA (STOP_INST, stop_inst, 0) },
 	{ FLDATA (NOEAE, cpu_unit.flags, UNIT_V_NOEAE), REG_HRO },
 	{ FLDATA (NOAPI, cpu_unit.flags, UNIT_V_NOAPI), REG_HRO },
 	{ DRDATA (XCT_MAX, xct_max, 8), PV_LEFT + REG_NZ },
-	{ ORDATA (BREAK, ibkpt_addr, ADDRSIZE + 1) },
 	{ ORDATA (WRU, sim_int_char, 8) },
 	{ ORDATA (DEVENB, dev_enb, 32), REG_HRO },
 	{ NULL }  };
@@ -608,7 +609,7 @@ MQ = saved_MQ & 0777777;
 reason = 0;
 sim_rtc_init (clk_unit.wait);				/* init calibration */
 if (cpu_unit.flags & UNIT_NOAPI) api_enb = api_req = api_act = 0;
-api_int = api_eval ();					/* eval API */
+api_int = api_eval (&int_pend);				/* eval API */
 api_cycle = 0;						/* not API cycle */
 
 /* Main instruction fetch/decode loop: check trap and interrupt */
@@ -619,7 +620,7 @@ int32 link_init, fill;
 
 if (sim_interval <= 0) {				/* check clock queue */
 	if (reason = sim_process_event ()) break;
-	api_int = api_eval ();  }			/* eval API */
+	api_int = api_eval (&int_pend);  }		/* eval API */
 
 /* Protection traps work like interrupts, with these quirks:
 
@@ -653,18 +654,18 @@ if (trap_pending) {					/* trap pending? */
 if (api_int && !ion_defer) {				/* API intr? */
 	int32 i, lvl = api_int - 1;			/* get req level */
 	api_act = api_act | (0200 >> lvl);		/* set level active */
-	if (lvl >= 4) {					/* software req? */
-		MA = ACH_SWRE + lvl - 4;		/* vec = 40:43 */
+	if (lvl >= API_HLVL) {				/* software req? */
+		MA = ACH_SWRE + lvl - API_HLVL;		/* vec = 40:43 */
 		api_req = api_req & ~(0200 >> lvl);  }	/* remove request */
 	else {	MA = 0;					/* assume fails */
-		for (i = 31; i >= 0; i--) {		/* loop hi to lo */
-			if ((int_req >> i) & 1) {	/* int req set? */
-				MA = api_vec[i];	/* get vector */
-				break;  }  }  }		/* and stop */
+		for (i = 0; i < 32; i++) {		/* loop hi to lo */
+		    if ((int_hwre[lvl] >> i) & 1) {	/* int req set? */
+			MA = api_vec[lvl][i];		/* get vector */
+			break;  }  }  }			/* and stop */
 	if (MA == 0) {					/* bad channel? */
 		reason = STOP_API;			/* API error */
 		break;  }
-	api_int = api_eval ();				/* no API int */
+	api_int = api_eval (&int_pend);			/* no API int */
 	api_cycle = 1;					/* in API cycle */
 	emir_pending = rest_pending = 0;		/* emir, restore off */
 	xct_count = 0;
@@ -672,9 +673,9 @@ if (api_int && !ion_defer) {				/* API intr? */
 
 /* Standard program interrupt */
 
-if (!(api_enb && api_act) && ion && !ion_defer && int_req) {
+if (!(api_enb && api_act) && ion && !ion_defer && int_pend) {
 #else
-if (ion && !ion_defer && int_req) {			/* interrupt? */
+if (ion && !ion_defer && int_pend) {			/* interrupt? */
 #endif
 	old_PC = PC;					/* save old PC */
 	M[0] = JMS_WORD (usmd);				/* save state */
@@ -688,10 +689,7 @@ if (ion && !ion_defer && int_req) {			/* interrupt? */
 
 /* Breakpoint */
 
-if (PC == ibkpt_addr) {					/* breakpoint? */
-	save_ibkpt = ibkpt_addr;			/* save ibkpt */
-	ibkpt_addr = ibkpt_addr | ILL_ADR_FLAG;		/* disable */
-	sim_activate (&cpu_unit, 1);			/* sched re-enable */
+if (sim_brk_summ && sim_brk_test (PC, SWMASK ('E'))) {	/* breakpoint? */
 	reason = STOP_IBKPT;				/* stop simulation */
 	break;  }
 
@@ -862,7 +860,7 @@ case 001: case 000:					/* CAL */
 	usmd = 0;					/* clear user mode */
 	if ((cpu_unit.flags & UNIT_NOAPI) == 0) {	/* if API, act lvl 4 */
 		api_act = api_act | 010;
-		api_int = api_eval ();  }
+		api_int = api_eval (&int_pend);  }
 #endif
 	if (IR & 0020000) { INDIRECT;  }		/* indirect? */
 	CHECK_ADDR_W (MA);
@@ -1345,7 +1343,7 @@ case 034:						/* IOT */
 		else if (pulse == 044) nexm = 0;
 		break;
 	case 032:					/* power fail */
-		if ((pulse == 001) && (int_req & INT_PWRFL))
+		if ((pulse == 001) && (TST_INT (PWRFL)))
 			 PC = INCR_ADDR (PC);
 		break;
 	case 033:					/* CPU control */
@@ -1477,7 +1475,7 @@ case 034:						/* IOT */
 	LAC = LAC | (iot_data & 0777777);
 	if (iot_data & IOT_SKP) PC = INCR_ADDR (PC);
 	if (iot_data >= IOT_REASON) reason = iot_data >> IOT_V_REASON;
-	api_int = api_eval ();				/* eval API */
+	api_int = api_eval (&int_pend);			/* eval API */
 	break;						/* end case IOT */
 	}						/* end switch opcode */
 if (api_cycle) {					/* API cycle? */
@@ -1497,16 +1495,17 @@ return reason;
 
 /* Evaluate API */
 
-int32 api_eval (void)
+int32 api_eval (int32 *pend)
 {
 int32 i, hi;
-static const uint32 api_mask[4] = {
-	API_L0, API_L1, API_L2, API_L3 };
 
+for (i = *pend = 0; i < API_HLVL+1; i++) {		/* any intr? */
+	if (int_hwre[i]) *pend = 1;  }
 if (api_enb == 0) return 0;				/* off? no req */
 api_req = api_req & ~0360;				/* clr req<0:3> */
-for (i = 0; i < 4; i++) {
-	if (int_req & api_mask[i]) api_req = api_req | (0200 >> i);  }
+for (i = 0; i < API_HLVL; i++) {			/* loop thru levels */
+	if (int_hwre[i])				/* req on level? */
+		api_req = api_req | (0200 >> i);  }	/* set api req */
 hi = api_ffo[api_req & 0377];				/* find hi req */
 if (hi < api_ffo[api_act & 0377]) return (hi + 1);
 return 0;
@@ -1554,14 +1553,15 @@ t_stat cpu_reset (DEVICE *dptr)
 SC = 0;
 eae_ac_sign = 0;
 ion = ion_defer = 0;
-int_req = int_req & ~INT_PWRFL;
+CLR_INT (PWRFL);
 api_enb = api_req = api_act = 0;
 BR = 0;
 usmd = usmdbuf = 0;
 memm = memm_init;
 nexm = prvn = trap_pending = 0;
 emir_pending = rest_pending = 0;
-return cpu_svc (&cpu_unit);
+sim_brk_types = sim_brk_dflt = SWMASK ('E');
+return SCPE_OK;
 }
 
 /* Memory examine */
@@ -1582,28 +1582,19 @@ M[addr] = val & 0777777;
 return SCPE_OK;
 }
 
-/* Service breakpoint */
-
-t_stat cpu_svc (UNIT *uptr)
-{
-if ((ibkpt_addr & ~ILL_ADR_FLAG) == save_ibkpt) ibkpt_addr = save_ibkpt;
-save_ibkpt = -1;
-return SCPE_OK;
-}
-
 /* Change memory size */
 
-t_stat cpu_set_size (UNIT *uptr, int32 value)
+t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc)
 {
 int32 mc = 0;
 t_addr i;
 
-if ((value <= 0) || (value > MAXMEMSIZE) || ((value & 07777) != 0))
+if ((val <= 0) || (val > MAXMEMSIZE) || ((val & 07777) != 0))
 	return SCPE_ARG;
-for (i = value; i < MEMSIZE; i++) mc = mc | M[i];
+for (i = val; i < MEMSIZE; i++) mc = mc | M[i];
 if ((mc != 0) && (!get_yn ("Really truncate memory [N]?", FALSE)))
 	return SCPE_OK;
-MEMSIZE = value;
+MEMSIZE = val;
 for (i = MEMSIZE; i < MAXMEMSIZE; i++) M[i] = 0;
 return SCPE_OK;
 }

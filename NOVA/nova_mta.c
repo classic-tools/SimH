@@ -25,6 +25,8 @@
 
    mta		magnetic tape
 
+   30-Nov-01	RMS	Added read only unit, extended SET/SHOW support
+   24-Nov-01	RMS	Changed POS, USTAT, FLG to an array
    26-Apr-01	RMS	Added device enable/disable support
    18-Apr-01	RMS	Changed to rewind tape before boot
    10-Dec-00	RMS	Added Eclipse support from Charles Owen
@@ -54,12 +56,13 @@
 
 #define MTA_NUMDR	8				/* #drives */
 #define UNIT_V_WLK	(UNIT_V_UF + 0)			/* write locked */
+#define UNIT_WLK	(1 << UNIT_V_WLK)
 #define UNIT_W_UF	2				/* saved flags width */
-#define UNIT_WLK	1 << UNIT_V_WLK
 #define USTAT		u3				/* unit status */
 #define UNUM		u4				/* unit number */
 #define DTSIZE		(1 << 14)			/* max data xfer */
 #define DTMASK		(DTSIZE - 1)
+#define UNIT_WPRT	(UNIT_WLK | UNIT_RO)		/* write protect */
 
 /* Command/unit */
 
@@ -149,7 +152,7 @@ t_stat mta_attach (UNIT *uptr, char *cptr);
 t_stat mta_detach (UNIT *uptr);
 int32 mta_updcsta (UNIT *uptr);
 void mta_upddsta (UNIT *uptr, int32 newsta);
-t_stat mta_vlock (UNIT *uptr, int32 val);
+t_stat mta_vlock (UNIT *uptr, int32 val, char *cptr, void *desc);
 #if defined (ECLIPSE)
 extern int32 MapAddr (int32 map, int32 addr);
 #else
@@ -169,14 +172,14 @@ static const int ctype[32] = {				/* c vs r timing */
 */
 
 UNIT mta_unit[] = {
-	{ UDATA (&mta_svc, UNIT_ATTABLE + UNIT_DISABLE, 0) },
-	{ UDATA (&mta_svc, UNIT_ATTABLE + UNIT_DISABLE, 0) },
-	{ UDATA (&mta_svc, UNIT_ATTABLE + UNIT_DISABLE, 0) },
-	{ UDATA (&mta_svc, UNIT_ATTABLE + UNIT_DISABLE, 0) },
-	{ UDATA (&mta_svc, UNIT_ATTABLE + UNIT_DISABLE, 0) },
-	{ UDATA (&mta_svc, UNIT_ATTABLE + UNIT_DISABLE, 0) },
-	{ UDATA (&mta_svc, UNIT_ATTABLE + UNIT_DISABLE, 0) },
-	{ UDATA (&mta_svc, UNIT_ATTABLE + UNIT_DISABLE, 0) }  };
+	{ UDATA (&mta_svc, UNIT_ATTABLE+UNIT_DISABLE+UNIT_ROABLE, 0) },
+	{ UDATA (&mta_svc, UNIT_ATTABLE+UNIT_DISABLE+UNIT_ROABLE, 0) },
+	{ UDATA (&mta_svc, UNIT_ATTABLE+UNIT_DISABLE+UNIT_ROABLE, 0) },
+	{ UDATA (&mta_svc, UNIT_ATTABLE+UNIT_DISABLE+UNIT_ROABLE, 0) },
+	{ UDATA (&mta_svc, UNIT_ATTABLE+UNIT_DISABLE+UNIT_ROABLE, 0) },
+	{ UDATA (&mta_svc, UNIT_ATTABLE+UNIT_DISABLE+UNIT_ROABLE, 0) },
+	{ UDATA (&mta_svc, UNIT_ATTABLE+UNIT_DISABLE+UNIT_ROABLE, 0) },
+	{ UDATA (&mta_svc, UNIT_ATTABLE+UNIT_DISABLE+UNIT_ROABLE, 0) }  };
 
 REG mta_reg[] = {
 	{ ORDATA (CU, mta_cu, 16) },
@@ -191,38 +194,11 @@ REG mta_reg[] = {
 	{ FLDATA (INT, int_req, INT_V_MTA) },
 	{ DRDATA (CTIME, mta_cwait, 24), PV_LEFT },
 	{ DRDATA (RTIME, mta_rwait, 24), PV_LEFT },
-	{ ORDATA (UST0, mta_unit[0].USTAT, 32) },
-	{ ORDATA (UST1, mta_unit[1].USTAT, 32) },
-	{ ORDATA (UST2, mta_unit[2].USTAT, 32) },
-	{ ORDATA (UST3, mta_unit[3].USTAT, 32) },
-	{ ORDATA (UST4, mta_unit[4].USTAT, 32) },
-	{ ORDATA (UST5, mta_unit[5].USTAT, 32) },
-	{ ORDATA (UST6, mta_unit[6].USTAT, 32) },
-	{ ORDATA (UST7, mta_unit[7].USTAT, 32) },
-	{ DRDATA (POS0, mta_unit[0].pos, 31), REG_RO + PV_LEFT },
-	{ DRDATA (POS1, mta_unit[1].pos, 31), REG_RO + PV_LEFT },
-	{ DRDATA (POS2, mta_unit[2].pos, 31), REG_RO + PV_LEFT },
-	{ DRDATA (POS3, mta_unit[3].pos, 31), REG_RO + PV_LEFT },
-	{ DRDATA (POS4, mta_unit[4].pos, 31), REG_RO + PV_LEFT },
-	{ DRDATA (POS5, mta_unit[5].pos, 31), REG_RO + PV_LEFT },
-	{ DRDATA (POS6, mta_unit[6].pos, 31), REG_RO + PV_LEFT },
-	{ DRDATA (POS7, mta_unit[7].pos, 31), REG_RO + PV_LEFT },
-	{ GRDATA (FLG0, mta_unit[0].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG1, mta_unit[1].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG2, mta_unit[2].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG3, mta_unit[3].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG4, mta_unit[4].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG5, mta_unit[5].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG6, mta_unit[6].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
-	{ GRDATA (FLG7, mta_unit[7].flags, 8, UNIT_W_UF, UNIT_V_UF - 1),
-		  REG_HRO },
+	{ URDATA (UST, mta_unit[0].USTAT, 8, 32, 0, MTA_NUMDR, 0) },
+	{ URDATA (POS, mta_unit[0].pos, 8, 31, 0,
+		  MTA_NUMDR, REG_RO | PV_LEFT) },
+	{ URDATA (FLG, mta_unit[0].flags, 8, UNIT_W_UF, UNIT_V_UF - 1,
+		  MTA_NUMDR, REG_HRO) },
 	{ FLDATA (*DEVENB, iot_enb, INT_V_MTA), REG_HRO },
 	{ NULL }  };
 
@@ -341,7 +317,7 @@ if ((uptr -> flags & UNIT_ATT) == 0) {			/* not attached? */
 	mta_upddsta (uptr, 0);				/* unit off line */
 	mta_sta = mta_sta | STA_ILL;  }			/* illegal operation */
 
-else if ((uptr -> flags & UNIT_WLK) &&			/* write locked? */
+else if ((uptr -> flags & UNIT_WPRT) &&			/* write locked? */
 	((c == CU_WRITE) || (c == CU_WREOF) || (c == CU_ERASE))) {
 	mta_upddsta (uptr, uptr -> USTAT | STA_WLK | STA_RDY);
 	mta_sta = mta_sta | STA_ILL;  }			/* illegal operation */
@@ -526,7 +502,7 @@ for (u = 0; u < MTA_NUMDR; u++) {			/* loop thru units */
 	uptr -> UNUM = u;
 	if (uptr -> flags & UNIT_ATT) uptr -> USTAT = STA_RDY |
 			(uptr -> USTAT & STA_PEM) |
-			((uptr -> flags & UNIT_WLK)? STA_WLK: 0) |
+			((uptr -> flags & UNIT_WPRT)? STA_WLK: 0) |
 			((uptr -> pos)? 0: STA_BOT);
 	else uptr -> USTAT = 0;  }
 mta_updcsta (&mta_unit[0]);				/* update status */
@@ -542,7 +518,7 @@ t_stat r;
 r = attach_unit (uptr, cptr);
 if (r != SCPE_OK) return r;
 if (!sim_is_active (uptr)) mta_upddsta (uptr, STA_RDY | STA_BOT | STA_PEM |
-	((uptr -> flags & UNIT_WLK)? STA_WLK: 0));
+	((uptr -> flags & UNIT_WPRT)? STA_WLK: 0));
 return r;
 }
 
@@ -556,7 +532,7 @@ return detach_unit (uptr);
 
 /* Write lock/unlock validate routine */
 
-t_stat mta_vlock (UNIT *uptr, int32 val)
+t_stat mta_vlock (UNIT *uptr, int32 val, char *cptr, void *desc)
 {
 if ((uptr -> flags & UNIT_ATT) && val)
 	mta_upddsta (uptr, uptr -> USTAT | STA_WLK);
