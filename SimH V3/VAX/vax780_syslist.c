@@ -1,6 +1,6 @@
 /* vax_syslist.c: VAX device list
 
-   Copyright (c) 1998-2004, Robert M Supnik
+   Copyright (c) 1998-2005, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -19,23 +19,23 @@
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-   Except as contained in this notice, the name of Robert M Supnik shall not
-   be used in advertising or otherwise to promote the sale, use or other dealings
+   Except as contained in this notice, the name of Robert M Supnik shall not be
+   used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
-   01-Oct-2004	RMS	Cloned from vax_sys.c
+   01-Oct-2004  RMS     Cloned from vax_sys.c
 */
-
+
 #include "vax_defs.h"
 
-char sim_name[] = "VAX780 (pre-Beta developers preview)";
+char sim_name[] = "VAX780";
 
 extern DEVICE cpu_dev;
 extern DEVICE tlb_dev;
 extern DEVICE sbi_dev;
-extern DEVICE mctl0_dev, mctl1_dev;
+extern DEVICE mctl_dev[MCTL_NUM];
 extern DEVICE uba_dev;
-extern DEVICE mba0_dev, mba1_dev;
+extern DEVICE mba_dev[MBA_NUM];
 extern DEVICE clk_dev;
 extern DEVICE tmr_dev;
 extern DEVICE tti_dev, tto_dev;
@@ -54,50 +54,50 @@ extern DEVICE xu_dev, xub_dev;
 
 extern int32 sim_switches;
 extern UNIT cpu_unit;
-extern void WriteB (int32 pa, int32 val);
+extern void WriteB (uint32 pa, int32 val);
 extern void rom_wr_B (int32 pa, int32 val);
 
 DEVICE *sim_devices[] = { 
-	&cpu_dev,
-	&tlb_dev,
-	&sbi_dev,
-	&mctl0_dev,
-	&mctl1_dev,
-	&uba_dev,
-	&mba0_dev,
-	&mba1_dev,
-	&clk_dev,
-	&tmr_dev,
-	&tti_dev,
-	&tto_dev,
-	&fl_dev,
-	&dz_dev,
-	&lpt_dev,
-	&rp_dev,
-	&rl_dev,
-	&hk_dev,
-	&rq_dev,
-	&rqb_dev,
-	&rqc_dev,
-	&rqd_dev,
-	&ry_dev,
-	&tu_dev,
-	&ts_dev,
-	&tq_dev,
-	&xu_dev,
-	&xub_dev,
-	NULL };
+    &cpu_dev,
+    &tlb_dev,
+    &sbi_dev,
+    &mctl_dev[0],
+    &mctl_dev[1],
+    &uba_dev,
+    &mba_dev[0],
+    &mba_dev[1],
+    &clk_dev,
+    &tmr_dev,
+    &tti_dev,
+    &tto_dev,
+    &fl_dev,
+    &dz_dev,
+    &lpt_dev,
+    &rp_dev,
+    &rl_dev,
+    &hk_dev,
+    &rq_dev,
+    &rqb_dev,
+    &rqc_dev,
+    &rqd_dev,
+    &ry_dev,
+    &tu_dev,
+    &ts_dev,
+    &tq_dev,
+    &xu_dev,
+    &xub_dev,
+    NULL
+    };
 
-
 /* Binary loader
 
    The binary loader handles absolute system images, that is, system
    images linked /SYSTEM.  These are simply a byte stream, with no
    origin or relocation information.
 
-   -r		load ROM0
-   -s		load ROM1
-   -o		for memory, specify origin
+   -r           load ROM0
+   -s           load ROM1
+   -o           for memory, specify origin
 */
 
 t_stat sim_load (FILE *fileref, char *cptr, char *fnam, int flag)
@@ -106,24 +106,29 @@ t_stat r;
 int32 val;
 uint32 origin, limit;
 
-if (flag) return SCPE_ARG;				/* dump? */
-origin = 0;						/* memory */
+if (flag) return SCPE_ARG;                              /* dump? */
+origin = 0;                                             /* memory */
 limit = (uint32) cpu_unit.capac;
-if (sim_switches & SWMASK ('O')) {			/* origin? */
-	origin = (int32) get_uint (cptr, 16, 0xFFFFFFFF, &r);
-	if (r != SCPE_OK) return SCPE_ARG;  }
+if (sim_switches & SWMASK ('O')) {                      /* origin? */
+    origin = (int32) get_uint (cptr, 16, 0xFFFFFFFF, &r);
+    if (r != SCPE_OK) return SCPE_ARG;
+    }
 
-while ((val = getc (fileref)) != EOF) {			/* read byte stream */
-	if (sim_switches & SWMASK ('R')) {		/* ROM0? */
-	    if (origin >= ROMSIZE) return SCPE_NXM;
-	    rom_wr_B (ROM0BASE + origin, val);  }
-	else if (sim_switches & SWMASK ('S')) {		/* ROM1? */
-	    if (origin >= ROMSIZE) return SCPE_NXM;
-	    rom_wr_B (ROM1BASE + origin, val);  }
-	else {
-	    if (origin >= limit) return SCPE_NXM;	/* NXM? */
-	    WriteB (origin, val);  }			/* memory */
-	origin = origin + 1;  }
+while ((val = getc (fileref)) != EOF) {                 /* read byte stream */
+    if (sim_switches & SWMASK ('R')) {                  /* ROM0? */
+        if (origin >= ROMSIZE) return SCPE_NXM;
+        rom_wr_B (ROM0BASE + origin, val);
+        }
+    else if (sim_switches & SWMASK ('S')) {             /* ROM1? */
+        if (origin >= ROMSIZE) return SCPE_NXM;
+        rom_wr_B (ROM1BASE + origin, val);
+        }
+    else {
+        if (origin >= limit) return SCPE_NXM;           /* NXM? */
+        WriteB (origin, val);                           /* memory */
+        }
+    origin = origin + 1;
+    }
 return SCPE_OK;
 }
 

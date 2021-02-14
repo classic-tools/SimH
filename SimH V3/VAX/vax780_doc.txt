@@ -1,14 +1,14 @@
 To:	Users
 From:	Bob Supnik
 Subj:	VAX780 Simulator Usage
-Date:	20-Jan-2005
+Date:	01-Dec-2005
 
 			COPYRIGHT NOTICE
 
 The following copyright notice applies to both the SIMH source and binary:
 
-   Original code published in 1993-2004, written by Robert M Supnik
-   Copyright (c) 1993-2004, Robert M Supnik
+   Original code published in 1993-2005, written by Robert M Supnik
+   Copyright (c) 1993-2005, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -27,8 +27,8 @@ The following copyright notice applies to both the SIMH source and binary:
    IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
    CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-   Except as contained in this notice, the name of Robert M Supnik shall not
-   be used in advertising or otherwise to promote the sale, use or other dealings
+   Except as contained in this notice, the name of Robert M Supnik shall not be
+   used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
 This memorandum documents the VAX simulator.
@@ -71,7 +71,8 @@ sim/vax/	vax_defs.h
 		vax_sys.c
 		vax_syscm.c
 		vax780_mba.c
-		vax780_sbimem.c
+		vax780_mem.c
+		vax780_sbi.c
 		vax780_stddev.c
 		vax780_syslist.c
 		vax780_uba.c
@@ -152,8 +153,6 @@ binary bytes without origin or checksum, for loading memory.
 CPU options include the size of main memory and the treatment of the
 HALT instruction.
 
-	SET CPU EXTEND		enable MS780E controllers (>8MB)
-	SET CPU NOEXTEND	disable MS780E controllers
 	SET CPU 8M		set memory size = 8MB
 	SET CPU 16M		set memory size = 16MB
 	SET CPU 32M		set memory size = 32MB
@@ -176,6 +175,7 @@ Notes on memory size:
   supported  1-4MB of memory per controller.  This is the only memory
   controller recognized by VMS V1.
 - MS780E controllers supported 4MB-64MB per controller.
+- The controller type is set automatically based on memory size.
 
 Initial memory size is 8MB.
 
@@ -366,7 +366,7 @@ The UBA has these registers:
 	BRRVR6		32	vector register, IPL 16
 	BRRVR7		32	vector register, IPL 17
 	DPR[0:15]	32	data path registers 0..15
-	MAP[0:4095]	32	map registers 0..4095
+	MAP[0:495]	32	map registers 0..495
 	AITIME		24	adapter initialization time
 	UITIME		24	Unibus initialization time
 
@@ -397,14 +397,15 @@ presense of other devices in the configuration:
 
 	DZ11		all instances have floating addresses
 	RL11		first instance has fixed address, rest floating
-	RX11/RX211	first instance has fixed address, second floating
+	RX11/RX211	first instance has fixed address, rest floating
+	DEUNA/DELUA	first instance has fixed address, rest floating
 	MSCP disk	first instance has fixed address, rest floating
 	TMSCP tape	first instance has fixed address, rest floating
 
 To maintain addressing consistency as the configuration changes, the
 simulator implements DEC's standard I/O address and vector autoconfiguration
-algorithms for devices DZ, RL, RQ, and TQ.  This allows the user to
-enable or disable devices without needing to manage I/O addresses
+algorithms for devices DZ, VH, RL, RY, XUn, RQn, and TQ.  This allows the
+user to enable or disable devices without needing to manage I/O addresses
 and vectors.
 
 In addition to autoconfiguration, most devices support the SET ADDRESS
@@ -429,10 +430,18 @@ the device address and vector, respectively.
 
 2.3.1 Console Input (TTI)
 
-The console interfaces (TTI, TTO) can be set to one of two modes:
-7B or 8B.  In 7B mode, input and output characters are masked  to 7
-bits.  In 8B mode, characters are not modified.  Changing the mode
-of either interface changes both.  The default mode is 8B.
+The console interfaces (TTI, TTO) can be set to one of three modes, 
+7P, 7B or 8B:
+
+	mode	input characters	output characters
+
+	7P	high-order bit cleared	high-order bit cleared,
+					non-printing characters
+					 suppressed	
+	7B	high-order bit cleared	high-order bit cleared
+	8B	no changes		no changes
+
+The default mode is 8B.
 
 The console input (TTI) polls the console keyboard for input.  It
 implements these registers:
@@ -953,19 +962,24 @@ Error handling is as follows:
 
 2.6.1 DZ11 Terminal Multiplexor (DZ)
 
-The DZ11 is an 8-line terminal multiplexor.  Up to 4 DZ11's (21 lines)
+The DZ11 is an 8-line terminal multiplexor.  Up to 4 DZ11's (32 lines)
 are supported.  The number of lines can be changed with the command
 
 	SET DZ LINES=n		set line count to n
 
-The line count must be a multiple of 8, with a maximum of 21.
+The line count must be a multiple of 8, with a maximum of 32.
 
-The DZ11 supports 8-bit input and output of characters.  8-bit output
-may be incompatible with certain operating systems.  The command
+The DZ11 supports three character processing modes, 7P, 7B, and 8B:
 
-	SET DZ 7B
+	mode	input characters	output characters
 
-forces output characters to be masked to 7 bits.
+	7P	high-order bit cleared	high-order bit cleared,
+					non-printing characters
+					 suppressed	
+	7B	high-order bit cleared	high-order bit cleared
+	8B	no changes		no changes
+
+The default is 8B.
 
 The DZ11 supports logging on a per-line basis.  The command
 

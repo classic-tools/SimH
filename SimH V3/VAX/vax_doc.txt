@@ -1,7 +1,7 @@
 To:	Users
 From:	Bob Supnik
 Subj:	VAX Simulator Usage
-Date:	01-Jul-2005
+Date:	01-Dec-2005
 
 			COPYRIGHT NOTICE
 
@@ -148,8 +148,6 @@ ROM, or the non-volatile memory.
 CPU options include the size of main memory and the treatment of the
 HALT instruction.
 
-	SET CPU EXTEND		enable extended memory support
-	SET CPU NOEXTEND	disable extended memory support
 	SET CPU 16M		set memory size = 16MB
 	SET CPU 32M		set memory size = 32MB
 	SET CPU 48M		set memory size = 48MB
@@ -173,9 +171,7 @@ Notes on memory size:
 
 - The real KA655 CPU only supported 16MB to 64MB of memory.  The simulator
   provides a KA655"X" mode, which increases supported memory to 512MB.
-  Extended memory is enabled by default.  If extended memory is enabled,
-  and memory size exceeds 64MB, the CPU will boot using special firmware
-  ka655x.bin.  This firmware contains code to determine the size of extended
+  The firmware (ka655x.bin) contains code to determine the size of extended
   memory and set up the PFN bit map accordingly.  Other than setting up
   the PFN bootmap, the firmware does not recognize extended memory and
   will behave as though memory size was 64MB. 
@@ -391,15 +387,15 @@ floating addresses; that is, the assigned device address depends on the
 presense of other devices in the configuration:
 
 	DZ11		all instances have floating addresses
-	DQH11		all instances have floating addresses
+	DHQ11		all instances have floating addresses
 	RL11		first instance has fixed address, rest floating
-	RX11/RX211	first instance has fixed address, second floating
+	RX11/RX211	first instance has fixed address, rest floating
 	MSCP disk	first instance has fixed address, rest floating
 	TMSCP tape	first instance has fixed address, rest floating
 
 To maintain addressing consistency as the configuration changes, the
 simulator implements DEC's standard I/O address and vector autoconfiguration
-algorithms for devices DZ, VH, RL, RQ, and TQ.  This allows the user to
+algorithms for devices DZ, VH, RL, RQn, and TQ.  This allows the user to
 enable or disable devices without needing to manage I/O addresses
 and vectors.
 
@@ -425,10 +421,18 @@ the device address and vector, respectively.
 
 2.3.1 Terminal Input (TTI)
 
-The terminal interfaces (TTI, TTO) can be set to one of two modes:
-7B or 8B.  In 7B mode, input and output characters are masked  to 7
-bits.  In 8B mode, characters are not modified.  Changing the mode
-of either interface changes both.  The default mode is 8B.
+The console interfaces (TTI, TTO) can be set to one of three modes, 
+7P, 7B or 8B:
+
+	mode	input characters	output characters
+
+	7P	high-order bit cleared	high-order bit cleared,
+					non-printing characters
+					 suppressed	
+	7B	high-order bit cleared	high-order bit cleared
+	8B	no changes		no changes
+
+The default mode is 8B.
 
 When the console terminal is attached to a Telnet session, it
 recognizes BREAK.  If BREAK is entered, and BDR<7> is set, control
@@ -824,12 +828,17 @@ are supported.  The number of lines can be changed with the command
 
 The line count must be a multiple of 4, with a maximum of 16.
 
-The DZV11 supports 8-bit input and output of characters.  8-bit output
-may be incompatible with certain operating systems.  The command
+The DZ11 supports three character processing modes, 7P, 7B, and 8B:
 
-	SET DZ 7B
+	mode	input characters	output characters
 
-forces output characters to be masked to 7 bits.
+	7P	high-order bit cleared	high-order bit cleared,
+					non-printing characters
+					 suppressed	
+	7B	high-order bit cleared	high-order bit cleared
+	8B	no changes		no changes
+
+The default is 8B.
 
 The DZ11 supports logging on a per-line basis.  The command
 
