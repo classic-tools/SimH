@@ -1,6 +1,6 @@
 /* sim_timer.c: simulator timer library
 
-   Copyright (c) 1993-2008, Robert M Supnik
+   Copyright (c) 1993-2010, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -23,6 +23,7 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   29-Dec-10    MP      Fixed clock resolution determination for Unix platforms
    22-Sep-08    RMS     Added "stability threshold" for idle routine
    27-May-08    RMS     Fixed bug in Linux idle routines (from Walter Mueller)
    18-Jun-07    RMS     Modified idle to exclude counted delays
@@ -76,6 +77,11 @@ UNIT sim_throt_unit = { UDATA (&sim_throt_svc, 0, 0) };
 
 #if defined (__VAX)
 #define sys$gettim SYS$GETTIM
+#define sys$setimr SYS$SETIMR
+#define lib$emul LIB$EMUL
+#define sys$waitfr SYS$WAITFR
+#define lib$subx LIB$SUBX
+#define lib$ediv LIB$EDIV
 #endif
 
 #include <starlet.h>
@@ -298,19 +304,6 @@ return;
 
 uint32 sim_os_ms_sleep_init (void)
 {
-#if defined (_POSIX_SOURCE)                              /* POSIX-compliant */
-
-struct timespec treq;
-uint32 msec;
-
-if (clock_getres (CLOCK_REALTIME, &treq) != 0)
-    return 0;
-msec = (treq.tv_nsec + (NANOS_PER_MILLI - 1)) / NANOS_PER_MILLI;
-if (msec > SIM_IDLE_MAX) return 0;
-return msec;
-
-#else                                                   /* others */
-
 uint32 i, t1, t2, tot, tim;
 
 for (i = 0, tot = 0; i < sleep1Samples; i++) {
@@ -320,13 +313,9 @@ for (i = 0, tot = 0; i < sleep1Samples; i++) {
     tot += (t2 - t1);
     }
 tim = (tot + (sleep1Samples - 1)) / sleep1Samples;
-if (tim == 0)
-    tim = 1;
-else if (tim > SIM_IDLE_MAX)
+if (tim > SIM_IDLE_MAX)
     tim = 0;
 return tim;
-
-#endif
 }
 
 uint32 sim_os_ms_sleep (unsigned int milliseconds)
@@ -462,7 +451,8 @@ return (sim_idle_rate_ms != 0);
 
 t_bool sim_idle (uint32 tmr, t_bool sin_cyc)
 {
-uint32 cyc_ms, w_ms, w_idle, act_ms;
+static uint32 cyc_ms = 0;
+uint32 w_ms, w_idle, act_ms;
 int32 act_cyc;
 
 if ((sim_clock_queue == NULL) ||                        /* clock queue empty? */
@@ -472,7 +462,8 @@ if ((sim_clock_queue == NULL) ||                        /* clock queue empty? */
         sim_interval = sim_interval - 1;
     return FALSE;
     }
-cyc_ms = (rtc_currd[tmr] * rtc_hz[tmr]) / 1000;         /* cycles per msec */
+if (cyc_ms == 0)                                        /* not computed yet? */
+    cyc_ms = (rtc_currd[tmr] * rtc_hz[tmr]) / 1000;     /* cycles per msec */
 if ((sim_idle_rate_ms == 0) || (cyc_ms == 0)) {         /* not possible? */
     if (sin_cyc)
         sim_interval = sim_interval - 1;
@@ -485,11 +476,11 @@ if (w_idle == 0) {                                      /* none? */
         sim_interval = sim_interval - 1;
     return FALSE;
     }
-act_ms = sim_os_ms_sleep (w_idle);                      /* wait */
+act_ms = sim_os_ms_sleep (w_ms);                        /* wait */
 act_cyc = act_ms * cyc_ms;
 if (sim_interval > act_cyc)
-    sim_interval = sim_interval - act_cyc;
-else sim_interval = 1;
+    sim_interval = sim_interval - act_cyc;              /* count down sim_interval */
+else sim_interval = 0;                                  /* or fire immediately */
 return TRUE;
 }
 

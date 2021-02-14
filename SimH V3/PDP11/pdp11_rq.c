@@ -1,6 +1,6 @@
 /* pdp11_rq.c: MSCP disk controller simulator
 
-   Copyright (c) 2002-2008, Robert M Supnik
+   Copyright (c) 2002-2010, Robert M Supnik
    Derived from work by Stephen F. Shirron
 
    Permission is hereby granted, free of charge, to any person obtaining a
@@ -26,23 +26,24 @@
 
    rq           RQDX3 disk controller
 
+   14-Jan-09    JH      Added support for RD32 disc drive
    18-Jun-07    RMS     Added UNIT_IDLE flag to timer thread
    31-Oct-05    RMS     Fixed address width for large files
    16-Aug-05    RMS     Fixed C++ declaration and cast problems
-   22-Jul-05    RMS     Fixed warning from Solaris C (from Doug Gwyn)
+   22-Jul-05    RMS     Fixed warning from Solaris C (Doug Gwyn)
    17-Jan-05    RMS     Added more RA and RD disks
    31-Oct-04    RMS     Added -L switch (LBNs) to RAUSER size specification
    01-Oct-04    RMS     Revised Unibus interface
                         Changed to identify as UDA50 in Unibus configurations
                         Changed width to be 16b in all configurations
                         Changed default timing for VAX
-   24-Jul-04    RMS     VAX controllers luns start with 0 (from Andreas Cejna)
+   24-Jul-04    RMS     VAX controllers luns start with 0 (Andreas Cejna)
    05-Feb-04    RMS     Revised for file I/O library
    25-Jan-04    RMS     Revised for device debug support
-   12-Jan-04    RMS     Fixed bug in interrupt control (found by Tom Evans)
+   12-Jan-04    RMS     Fixed bug in interrupt control (Tom Evans)
    07-Oct-03    RMS     Fixed problem with multiple RAUSER drives
    17-Sep-03    RMS     Fixed MB to LBN conversion to be more accurate
-   11-Jul-03    RMS     Fixed bug in user disk size (found by Chaskiel M Grundman)
+   11-Jul-03    RMS     Fixed bug in user disk size (Chaskiel M Grundman)
    19-May-03    RMS     Revised for new conditional compilation scheme
    25-Apr-03    RMS     Revised for extended file support
    14-Mar-03    RMS     Fixed variable size interaction with save/restore
@@ -56,7 +57,7 @@
                         Fixed status code in HBE error log
                         Consolidated MSCP/TMSCP header file
                         New data structures
-   16-Aug-02    RMS     Removed unused variables (found by David Hittner)
+   16-Aug-02    RMS     Removed unused variables (David Hittner)
    04-May-02    RMS     Fixed bug in polling loop for queued operations
    26-Mar-02    RMS     Fixed bug, reset routine cleared UF_WPH
    09-Mar-02    RMS     Adjusted delays for M+ timing bugs
@@ -85,7 +86,7 @@ extern int32 fault_PC;
 #define RQ_XTIME        500
 #define OLDPC           MMR2
 extern int32 MMR2;
-extern int32 cpu_opt;
+extern uint32 cpu_opt;
 #endif
 
 #if !defined (RQ_NUMCT)
@@ -127,7 +128,7 @@ extern int32 cpu_opt;
 #define UNIT_V_WLK      (UNIT_V_UF + 1)                 /* hwre write lock */
 #define UNIT_V_ATP      (UNIT_V_UF + 2)                 /* attn pending */
 #define UNIT_V_DTYPE    (UNIT_V_UF + 3)                 /* drive type */
-#define UNIT_M_DTYPE    0xF
+#define UNIT_M_DTYPE    0x1F
 #define UNIT_ONL        (1 << UNIT_V_ONL)
 #define UNIT_WLK        (1 << UNIT_V_WLK)
 #define UNIT_ATP        (1 << UNIT_V_ATP)
@@ -219,7 +220,7 @@ struct rqpkt {
    RD51 18      4       306     4       1       36*4    21600
    RD31 17      4       615     4       1       3*8     41560
    RD52 17      8       512     8       1       4*8     60480
-x  RD32 17      6       820     ?       ?       ?       83236
+   RD32 17      6       820     6       1       4*8     83204
 x  RD33 17      7       1170    ?       ?       ?       138565
    RD53 17      7       1024    7       1       5*8     138672
    RD54 17      15      1225    15      1       7*8     311200
@@ -505,6 +506,22 @@ x  RA73 70(+1)  21      2667+   21      1       ?       3920490
 #define RA71_MED        0x25641047
 #define RA71_FLGS       RQDF_SDI
 
+#define RD32_DTYPE      16
+#define RD32_SECT       17
+#define RD32_SURF       6
+#define RD32_CYL        820
+#define RD32_TPG        RD32_SURF
+#define RD32_GPC        1
+#define RD32_XBN        54
+#define RD32_DBN        48
+#define RD32_LBN        83204
+#define RD32_RCTS       4
+#define RD32_RCTC       8
+#define RD32_RBN        200
+#define RD32_MOD        15
+#define RD32_MED        0x25644020
+#define RD32_FLGS       0
+
 struct drvtyp {
     int32       sect;                                   /* sectors */
     int32       surf;                                   /* surfaces */
@@ -539,6 +556,7 @@ static struct drvtyp drv_tab[] = {
     { RQ_DRV (RA90), "RA90" }, { RQ_DRV (RA92), "RA92" },
     { RQ_DRV (RA8U), "RAUSER" }, { RQ_DRV (RA60), "RA60" },
     { RQ_DRV (RA81), "RA81" }, { RQ_DRV (RA71), "RA71" },
+    { RQ_DRV (RD32), "RD32" },
     { 0 }
     };
 
@@ -724,6 +742,8 @@ MTAB rq_mod[] = {
       &rq_set_type, NULL, NULL },
     { MTAB_XTD | MTAB_VUN, RD31_DTYPE, NULL, "RD31",
       &rq_set_type, NULL, NULL },
+    { MTAB_XTD | MTAB_VUN, RD32_DTYPE, NULL, "RD32",
+      &rq_set_type, NULL, NULL },
     { MTAB_XTD | MTAB_VUN, RD51_DTYPE, NULL, "RD51",
       &rq_set_type, NULL, NULL },
     { MTAB_XTD | MTAB_VUN, RD52_DTYPE, NULL, "RD52",
@@ -757,14 +777,14 @@ MTAB rq_mod[] = {
 #if defined (VM_PDP11)
     { MTAB_XTD|MTAB_VDV, 004, "ADDRESS", "ADDRESS",
       &set_addr, &show_addr, NULL },
+    { MTAB_XTD | MTAB_VDV, 0, NULL, "AUTOCONFIGURE",
+      &set_addr_flt, NULL, NULL },
 #else
     { MTAB_XTD|MTAB_VDV, 004, "ADDRESS", NULL,
       NULL, &show_addr, NULL },
 #endif
     { MTAB_XTD|MTAB_VDV, 0, "VECTOR", NULL,
       NULL, &show_vec, NULL },
-    { MTAB_XTD | MTAB_VDV, 0, NULL, "AUTOCONFIGURE",
-      &set_addr_flt, NULL, NULL },
     { 0 }
     };
 

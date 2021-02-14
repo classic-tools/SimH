@@ -1,6 +1,6 @@
 /* vax_sysdev.c: VAX 3900 system-specific logic
 
-   Copyright (c) 1998-2008, Robert M Supnik
+   Copyright (c) 1998-2011, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -32,9 +32,10 @@
    cso          console storage output
    sysd         system devices (SSC miscellany)
 
+   23-Dec-10    RMS     Added power clear call to boot routine (Mark Pizzolato)
    25-Oct-05    RMS     Automated CMCTL extended memory
    16-Aug-05    RMS     Fixed C++ declaration and cast problems
-   10-Mar-05    RMS     Fixed bug in timer schedule routine (from Mark Hittinger)
+   10-Mar-05    RMS     Fixed bug in timer schedule routine (Mark Hittinger)
    30-Sep-04    RMS     Moved CADR, MSER, CONPC, CONPSL, machine_check, cpu_boot,
                          con_halt here from vax_cpu.c
                         Moved model-specific IPR's here from vax_cpu1.c
@@ -45,10 +46,10 @@
                         Fixed calibration problems interval timer (Mark Pizzolato)
    12-May-03    RMS     Fixed compilation warnings from VC.Net
    23-Apr-03    RMS     Revised for 32b/64b t_addr
-   19-Aug-02    RMS     Removed unused variables (found by David Hittner)
+   19-Aug-02    RMS     Removed unused variables (David Hittner)
                         Allowed NVR to be attached to file
    30-May-02    RMS     Widened POS to 32b
-   28-Feb-02    RMS     Fixed bug, missing end of table (found by Lars Brinkhoff)
+   28-Feb-02    RMS     Fixed bug, missing end of table (Lars Brinkhoff)
 */
 
 #include "vax_defs.h"
@@ -275,6 +276,7 @@ extern void txcs_wr (int32 dat);
 extern void txdb_wr (int32 dat);
 extern void ioreset_wr (int32 dat);
 extern uint32 sim_os_msec();
+extern void cpu_idle (void);
 
 /* ROM data structures
 
@@ -475,16 +477,17 @@ return ((val << 24) & 0xff000000) | (( val << 8) & 0xff0000) |
     ((val >> 8) & 0xff00) | ((val >> 24) & 0xff);
 }
 
+volatile int32 rom_loopval = 0;
+
 int32 rom_read_delay (int32 val)
 {
 uint32 i, l = rom_delay;
-int32 loopval = 0;
 
 if (rom_unit.flags & UNIT_NODELAY)
     return val;
 
 /* Calibrate the loop delay factor when first used.
-   Do this 4 times to and use the largest value computed. */
+   Do this 4 times and use the largest value computed. */
 
 if (rom_delay == 0) {
     uint32 ts, te, c = 10000, samples = 0;
@@ -497,15 +500,15 @@ if (rom_delay == 0) {
    away by a good compiler. loopval always is zero.  To avoid smart compilers,
    the loopval variable is referenced in the function arguments so that the
    function expression is not loop invariant.  It also must be referenced
-   by subsequent code or to avoid the whole computation being eliminated. */
+   by subsequent code to avoid the whole computation being eliminated. */
 
         for (i = 0; i < c; i++)
-            loopval |= (loopval + ts) ^ rom_swapb (rom_swapb (loopval + ts));
+            rom_loopval |= (rom_loopval + ts) ^ rom_swapb (rom_swapb (rom_loopval + ts));
         te = sim_os_msec (); 
         if ((te - ts) < 50)                         /* sample big enough? */
             continue;
-        if (rom_delay < (loopval + (c / (te - ts) / 1000) + 1))
-            rom_delay = loopval + (c / (te - ts) / 1000) + 1;
+        if (rom_delay < (rom_loopval + (c / (te - ts) / 1000) + 1))
+            rom_delay = rom_loopval + (c / (te - ts) / 1000) + 1;
         if (++samples >= 4)
             break;
         c = c / 2;
@@ -515,8 +518,8 @@ if (rom_delay == 0) {
     }
 
 for (i = 0; i < l; i++)
-    loopval |= (loopval + val) ^ rom_swapb (rom_swapb (loopval + val));
-return val + loopval;
+    rom_loopval |= (rom_loopval + val) ^ rom_swapb (rom_swapb (rom_loopval + val));
+return val + rom_loopval;
 }
 
 int32 rom_rd (int32 pa)
@@ -1556,6 +1559,7 @@ if (*rom == 0) {                                        /* no boot? */
     if (r != SCPE_OK)
         return r;
     }
+sysd_powerup ();
 return SCPE_OK;
 }
 

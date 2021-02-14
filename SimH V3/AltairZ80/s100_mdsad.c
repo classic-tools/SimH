@@ -42,6 +42,7 @@
 
 /*#define DBG_MSG*/
 #include "altairz80_defs.h"
+#include "sim_imd.h"
 
 #if defined (_WIN32)
 #include <windows.h>
@@ -160,8 +161,6 @@ static SECTOR_FORMAT sdata;
 #define UNIT_V_MDSAD_VERBOSE    (UNIT_V_UF + 1) /* verbose mode, i.e. show error messages       */
 #define UNIT_MDSAD_VERBOSE      (1 << UNIT_V_MDSAD_VERBOSE)
 #define MDSAD_CAPACITY          (70*10*MDSAD_SECTOR_LEN)    /* Default North Star Disk Capacity */
-#define IMAGE_TYPE_DSK          1               /* Flat binary "DSK" image file.                */
-#define IMAGE_TYPE_CPT          3               /* CP/M Transfer "CPT" image file.              */
 
 /* MDS-AD Controller Subcases */
 #define MDSAD_READ_ROM      0
@@ -244,10 +243,6 @@ static MTAB mdsad_mod[] = {
     { 0 }
 };
 
-#define TRACE_PRINT(level, args)    if(mdsad_dev.dctrl & level) {   \
-                                       printf args;                 \
-                                    }
-
 /* Debug Flags */
 static DEBTAB mdsad_dt[] = {
     { "ERROR",  ERROR_MSG },
@@ -325,8 +320,8 @@ t_stat mdsad_attach(UNIT *uptr, char *cptr)
     uptr->u3 = IMAGE_TYPE_DSK;
 
     if(uptr->capac > 0) {
-        fgets(header, 4, uptr->fileref);
-        if(!strcmp(header, "CPT")) {
+        char *rtn = fgets(header, 4, uptr->fileref);
+        if((rtn != NULL) && (strncmp(header, "CPT", 3) == 0)) {
             printf("CPT images not yet supported\n");
             uptr->u3 = IMAGE_TYPE_CPT;
             mdsad_detach(uptr);
@@ -338,7 +333,7 @@ t_stat mdsad_attach(UNIT *uptr, char *cptr)
 
     if (uptr->flags & UNIT_MDSAD_VERBOSE)
         printf("MDSAD%d, attached to '%s', type=%s, len=%d\n", i, cptr,
-            uptr->u3 == uptr->u3 == IMAGE_TYPE_CPT ? "CPT" : "DSK",
+            uptr->u3 == IMAGE_TYPE_CPT ? "CPT" : "DSK",
             uptr->capac);
 
     return SCPE_OK;
@@ -450,6 +445,7 @@ static uint8 MDSAD_Read(const uint32 Addr)
     uint8 cData;
     uint8 ds;
     MDSAD_DRIVE_INFO *pDrive;
+    int32 rtn;
 
     cData = 0x00;
 
@@ -462,13 +458,10 @@ static uint8 MDSAD_Read(const uint32 Addr)
         case MDSAD_WRITE_DATA:
         {
             if(mdsad_info->datacount == 0) {
-                TRACE_PRINT(WR_DATA_MSG, ("MDSAD: " ADDRESS_FORMAT
-                    " WRITE Start:  Drive: %d, Track=%d, Head=%d, Sector=%d" NLP,
-                    PCX,
-                    mdsad_info->orders.ds,
-                    pDrive->track,
-                    mdsad_info->orders.ss,
-                    pDrive->sector));
+                sim_debug(WR_DATA_MSG, &mdsad_dev, "MDSAD: " ADDRESS_FORMAT
+                          " WRITE Start:  Drive: %d, Track=%d, Head=%d, Sector=%d\n",
+                          PCX, mdsad_info->orders.ds, pDrive->track,
+                          mdsad_info->orders.ss, pDrive->sector);
 
                 sec_offset = calculate_mdsad_sec_offset(pDrive->track,
                     mdsad_info->orders.ss,
@@ -484,13 +477,12 @@ static uint8 MDSAD_Read(const uint32 Addr)
                 sdata.raw[mdsad_info->datacount] = Addr & 0xFF;
 
             if(mdsad_info->datacount == (MDSAD_RAW_LEN - 1)) {
-                TRACE_PRINT(WR_DATA_MSG, ("MDSAD: " ADDRESS_FORMAT
-                    " Write Complete" NLP, PCX));
+                sim_debug(WR_DATA_MSG, &mdsad_dev, "MDSAD: " ADDRESS_FORMAT
+                          " Write Complete\n", PCX);
 
                 if ((pDrive->uptr == NULL) || (pDrive->uptr->fileref == NULL)) {
-                    TRACE_PRINT(WR_DATA_MSG, ("MDSAD: " ADDRESS_FORMAT
-                        " Drive: %d not attached - write ignored." NLP,
-                        PCX, mdsad_info->orders.ds));
+                    sim_debug(WR_DATA_MSG, &mdsad_dev, "MDSAD: " ADDRESS_FORMAT
+                              " Drive: %d not attached - write ignored.\n", PCX, mdsad_info->orders.ds);
                     return 0x00;
                 }
                 if(mdsad_dev.dctrl & WR_DATA_DETAIL_MSG)
@@ -502,7 +494,7 @@ static uint8 MDSAD_Read(const uint32 Addr)
                             printf(".fileref is NULL!" NLP);
                         } else {
                             sim_fseek((pDrive->uptr)->fileref, sec_offset, SEEK_SET);
-                            fwrite(sdata.u.data, MDSAD_SECTOR_LEN, 1,
+                            sim_fwrite(sdata.u.data, 1, MDSAD_SECTOR_LEN,
                                 (pDrive->uptr)->fileref);
                         }
                         break;
@@ -541,34 +533,29 @@ static uint8 MDSAD_Read(const uint32 Addr)
             }
 
             if(mdsad_info->orders.ds != (mdsad_info->orders.ds & 0x03)) {
-                TRACE_PRINT(ERROR_MSG, ("MDSAD: " ADDRESS_FORMAT
-                    " Controller Orders update drive %x" NLP, PCX, mdsad_info->orders.ds));
+                sim_debug(ERROR_MSG, &mdsad_dev, "MDSAD: " ADDRESS_FORMAT
+                          " Controller Orders update drive %x\n", PCX, mdsad_info->orders.ds);
                 mdsad_info->orders.ds &= 0x03;
             }
-            TRACE_PRINT(ORDERS_MSG, ("MDSAD: " ADDRESS_FORMAT
-                " Controller Orders: Drive=%x[%x], DD=%d, SS=%d, DP=%d, ST=%d" NLP,
-                PCX,
-                mdsad_info->orders.ds, ds,
-                mdsad_info->orders.dd,
-                mdsad_info->orders.ss,
-                mdsad_info->orders.dp,
-                mdsad_info->orders.st));
+            sim_debug(ORDERS_MSG, &mdsad_dev, "MDSAD: " ADDRESS_FORMAT
+                      " Controller Orders: Drive=%x[%x], DD=%d, SS=%d, DP=%d, ST=%d\n",
+                      PCX, mdsad_info->orders.ds, ds, mdsad_info->orders.dd,
+                      mdsad_info->orders.ss, mdsad_info->orders.dp, mdsad_info->orders.st);
 
             /* use latest selected drive */
             pDrive = &mdsad_info->drive[mdsad_info->orders.ds];
 
             if(mdsad_info->orders.st == 1) {
                 if(mdsad_info->orders.dp == 0) {
-                    TRACE_PRINT(SEEK_MSG, ("MDSAD: " ADDRESS_FORMAT
-                        " Step out: Track=%d%s" NLP, PCX, pDrive->track,
-                        pDrive->track == 0 ? "[Warn: already at 0]" : ""));
+                    sim_debug(SEEK_MSG, &mdsad_dev, "MDSAD: " ADDRESS_FORMAT
+                              " Step out: Track=%d%s\n", PCX, pDrive->track,
+                              pDrive->track == 0 ? "[Warn: already at 0]" : "");
                     if(pDrive->track > 0) /* anything to do? */
                         pDrive->track--;
                 } else {
-                    TRACE_PRINT(SEEK_MSG, ("MDSAD: " ADDRESS_FORMAT
-                        " Step  in: Track=%d%s" NLP, PCX, pDrive->track,
-                        pDrive->track == (MDSAD_TRACKS - 1) ?
-                        "[Warn: already at highest track]" : ""));
+                    sim_debug(SEEK_MSG, &mdsad_dev, "MDSAD: " ADDRESS_FORMAT
+                              " Step  in: Track=%d%s\n", PCX, pDrive->track,
+                              pDrive->track == (MDSAD_TRACKS - 1) ? "[Warn: already at highest track]" : "");
                     if(pDrive->track < (MDSAD_TRACKS - 1)) /* anything to do? */
                         pDrive->track++;
                 }
@@ -577,11 +564,11 @@ static uint8 MDSAD_Read(const uint32 Addr)
             mdsad_info->b_status.t0 = (pDrive->track == 0);
             break;
         case MDSAD_CTLR_COMMAND:
-/*          TRACE_PRINT(CMD_MSG, ("MDSAD: " ADDRESS_FORMAT " DM=%x" NLP, PCX, (Addr & 0xF0) >> 4)); */
+/*          sim_debug(CMD_MSG, &mdsad_dev, "MDSAD: " ADDRESS_FORMAT " DM=%x\n", PCX, (Addr & 0xF0) >> 4); */
             switch(Addr & 0x0F) {
                 case MDSAD_CMD_MOTORS_ON:
-                    TRACE_PRINT(CMD_MSG, ("MDSAD: " ADDRESS_FORMAT
-                        " CMD=Motors On" NLP, PCX));
+                    sim_debug(CMD_MSG, &mdsad_dev, "MDSAD: " ADDRESS_FORMAT
+                              " CMD=Motors On\n", PCX);
                     mdsad_info->com_status.mo = 1;      /* Turn motors on */
                     break;
 
@@ -616,37 +603,37 @@ static uint8 MDSAD_Read(const uint32 Addr)
                     }
                     break;
                 case MDSAD_CMD_RESET_SF:
-                    TRACE_PRINT(CMD_MSG, ("MDSAD: " ADDRESS_FORMAT
-                        " CMD=Reset Sector Flag" NLP, PCX));
+                    sim_debug(CMD_MSG, &mdsad_dev, "MDSAD: " ADDRESS_FORMAT
+                              " CMD=Reset Sector Flag\n", PCX);
                     mdsad_info->com_status.sf = 0;
                     mdsad_info->datacount = 0;
                     break;
                 case MDSAD_CMD_INTR_DIS:
-                    TRACE_PRINT(CMD_MSG, ("MDSAD: " ADDRESS_FORMAT
-                        " CMD=Disarm Interrupt" NLP, PCX));
+                    sim_debug(CMD_MSG, &mdsad_dev, "MDSAD: " ADDRESS_FORMAT
+                              " CMD=Disarm Interrupt\n", PCX);
                     mdsad_info->int_enable = 0;
                     break;
                 case MDSAD_CMD_INTR_ARM:
-                    TRACE_PRINT(CMD_MSG, ("MDSAD: " ADDRESS_FORMAT
-                        " CMD=Arm Interrupt" NLP, PCX));
+                    sim_debug(CMD_MSG, &mdsad_dev, "MDSAD: " ADDRESS_FORMAT
+                              " CMD=Arm Interrupt\n", PCX);
                     mdsad_info->int_enable = 1;
                     break;
                 case MDSAD_CMD_SET_BODY:
-                    TRACE_PRINT(CMD_MSG, ("MDSAD: " ADDRESS_FORMAT
-                        " CMD=Set Body (Diagnostic)" NLP, PCX));
+                    sim_debug(CMD_MSG, &mdsad_dev, "MDSAD: " ADDRESS_FORMAT
+                              " CMD=Set Body (Diagnostic)\n", PCX);
                     break;
                 case MDSAD_CMD_BEGIN_WR:
-                    TRACE_PRINT(CMD_MSG, ("MDSAD: " ADDRESS_FORMAT
-                        " CMD=Begin Write" NLP, PCX));
+                    sim_debug(CMD_MSG, &mdsad_dev, "MDSAD: " ADDRESS_FORMAT
+                              " CMD=Begin Write\n", PCX);
                     break;
                 case MDSAD_CMD_RESET:
-                    TRACE_PRINT(CMD_MSG, ("MDSAD: " ADDRESS_FORMAT
-                        " CMD=Reset Controller" NLP, PCX));
+                    sim_debug(CMD_MSG, &mdsad_dev, "MDSAD: " ADDRESS_FORMAT
+                              " CMD=Reset Controller\n", PCX);
                     mdsad_info->com_status.mo = 0;  /* Turn motors off */
                     break;
                 default:
-                    TRACE_PRINT(CMD_MSG, ("MDSAD: " ADDRESS_FORMAT
-                        " Unsupported CMD=0x%x" NLP, PCX, Addr & 0x0F));
+                    sim_debug(CMD_MSG, &mdsad_dev, "MDSAD: " ADDRESS_FORMAT
+                              " Unsupported CMD=0x%x\n", PCX, Addr & 0x0F);
                     break;
             }
 
@@ -666,52 +653,56 @@ static uint8 MDSAD_Read(const uint32 Addr)
                     cData |= (mdsad_info->a_status.re & 1) << 2;
                     cData |= (mdsad_info->a_status.sp & 1) << 1;
                     cData |= (mdsad_info->a_status.bd & 1);
-                    TRACE_PRINT(STATUS_MSG, ("MDSAD: " ADDRESS_FORMAT
-                        " A-Status = <%s %s %s %s %s %s %s %s>" NLP, PCX,
-                        cData & MDSAD_A_SF ? "SF" : "  ",
-                        cData & MDSAD_A_IX ? "IX" : "  ",
-                        cData & MDSAD_A_DD ? "DD" : "  ",
-                        cData & MDSAD_A_MO ? "MO" : "  ",
-                        cData & MDSAD_A_WI ? "WI" : "  ",
-                        cData & MDSAD_A_RE ? "RE" : "  ",
-                        cData & MDSAD_A_SP ? "SP" : "  ",
-                        cData & MDSAD_A_BD ? "BD" : "  "));
+                    sim_debug(STATUS_MSG, &mdsad_dev, "MDSAD: " ADDRESS_FORMAT
+                              " A-Status = <%s %s %s %s %s %s %s %s>\n",
+                              PCX,
+                              cData & MDSAD_A_SF ? "SF" : "  ",
+                              cData & MDSAD_A_IX ? "IX" : "  ",
+                              cData & MDSAD_A_DD ? "DD" : "  ",
+                              cData & MDSAD_A_MO ? "MO" : "  ",
+                              cData & MDSAD_A_WI ? "WI" : "  ",
+                              cData & MDSAD_A_RE ? "RE" : "  ",
+                              cData & MDSAD_A_SP ? "SP" : "  ",
+                              cData & MDSAD_A_BD ? "BD" : "  ");
                     break;
                 case MDSAD_B_STATUS:    /* B-STATUS */
                     cData |= (mdsad_info->b_status.wr & 1) << 3;
                     cData |= (mdsad_info->b_status.sp & 1) << 2;
                     cData |= (mdsad_info->b_status.wp & 1) << 1;
                     cData |= (mdsad_info->b_status.t0 & 1);
-                    TRACE_PRINT(STATUS_MSG, ("MDSAD: " ADDRESS_FORMAT
-                        " B-Status = <%s %s %s %s %s %s %s %s>" NLP, PCX,
-                        cData & MDSAD_B_SF ? "SF" : "  ",
-                        cData & MDSAD_B_IX ? "IX" : "  ",
-                        cData & MDSAD_B_DD ? "DD" : "  ",
-                        cData & MDSAD_B_MO ? "MO" : "  ",
-                        cData & MDSAD_B_WR ? "WR" : "  ",
-                        cData & MDSAD_B_SP ? "SP" : "  ",
-                        cData & MDSAD_B_WP ? "WP" : "  ",
-                        cData & MDSAD_B_T0 ? "T0" : "  "));
+                    sim_debug(STATUS_MSG, &mdsad_dev, "MDSAD: " ADDRESS_FORMAT
+                              " B-Status = <%s %s %s %s %s %s %s %s>\n",
+                              PCX,
+                              cData & MDSAD_B_SF ? "SF" : "  ",
+                              cData & MDSAD_B_IX ? "IX" : "  ",
+                              cData & MDSAD_B_DD ? "DD" : "  ",
+                              cData & MDSAD_B_MO ? "MO" : "  ",
+                              cData & MDSAD_B_WR ? "WR" : "  ",
+                              cData & MDSAD_B_SP ? "SP" : "  ",
+                              cData & MDSAD_B_WP ? "WP" : "  ",
+                              cData & MDSAD_B_T0 ? "T0" : "  ");
                     break;
                 case MDSAD_C_STATUS:    /* C-STATUS */
                     cData |= (mdsad_info->c_status.sc & 0xF);
-                    TRACE_PRINT(STATUS_MSG, ("MDSAD: " ADDRESS_FORMAT
-                        " C-Status = <%s %s %s %s %i>" NLP, PCX,
-                        cData & MDSAD_C_SF ? "SF" : "  ",
-                        cData & MDSAD_C_IX ? "IX" : "  ",
-                        cData & MDSAD_C_DD ? "DD" : "  ",
-                        cData & MDSAD_C_MO ? "MO" : "  ", cData & MDSAD_C_SC));
+                    sim_debug(STATUS_MSG, &mdsad_dev, "MDSAD: " ADDRESS_FORMAT
+                              " C-Status = <%s %s %s %s %i>\n",
+                              PCX,
+                              cData & MDSAD_C_SF ? "SF" : "  ",
+                              cData & MDSAD_C_IX ? "IX" : "  ",
+                              cData & MDSAD_C_DD ? "DD" : "  ",
+                              cData & MDSAD_C_MO ? "MO" : "  ",
+                              cData & MDSAD_C_SC);
                     break;
                 case MDSAD_READ_DATA:   /* READ DATA */
                 {
                     if(mdsad_info->datacount == 0) {
-                        TRACE_PRINT(RD_DATA_MSG, ("MDSAD: " ADDRESS_FORMAT
-                            " READ Start:  Drive: %d, Track=%d, Head=%d, Sector=%d" NLP,
-                            PCX,
-                            mdsad_info->orders.ds,
-                            pDrive->track,
-                            mdsad_info->orders.ss,
-                            pDrive->sector));
+                        sim_debug(RD_DATA_MSG, &mdsad_dev, "MDSAD: " ADDRESS_FORMAT
+                                  " READ Start:  Drive: %d, Track=%d, Head=%d, Sector=%d\n",
+                                  PCX,
+                                  mdsad_info->orders.ds,
+                                  pDrive->track,
+                                  mdsad_info->orders.ss,
+                                  pDrive->sector);
 
                             checksum = 0;
 
@@ -721,9 +712,9 @@ static uint8 MDSAD_Read(const uint32 Addr)
 
                             if ((pDrive->uptr == NULL) ||
                                     (pDrive->uptr->fileref == NULL)) {
-                                TRACE_PRINT(RD_DATA_MSG, ("MDSAD: " ADDRESS_FORMAT
-                                    " Drive: %d not attached - read ignored." NLP,
-                                    PCX, mdsad_info->orders.ds));
+                                sim_debug(RD_DATA_MSG, &mdsad_dev, "MDSAD: " ADDRESS_FORMAT
+                                          " Drive: %d not attached - read ignored.\n",
+                                          PCX, mdsad_info->orders.ds);
                                 return 0xe5;
                             }
 
@@ -735,8 +726,12 @@ static uint8 MDSAD_Read(const uint32 Addr)
                                     } else {
                                         sim_fseek((pDrive->uptr)->fileref,
                                             sec_offset, SEEK_SET);
-                                        fread(&sdata.u.data[0], MDSAD_SECTOR_LEN,
-                                            1, (pDrive->uptr)->fileref);
+                                        rtn = sim_fread(&sdata.u.data[0], 1, MDSAD_SECTOR_LEN,
+                                            (pDrive->uptr)->fileref);
+                                        if (rtn != MDSAD_SECTOR_LEN) {
+                                            sim_debug(ERROR_MSG, &mdsad_dev, "MDSAD: " ADDRESS_FORMAT
+                                                      " READ: sim_fread error.\n", PCX);
+                                        }
                                     }
                                     break;
                                 case IMAGE_TYPE_CPT:
@@ -765,9 +760,9 @@ static uint8 MDSAD_Read(const uint32 Addr)
                             PCX, sec_offset, mdsad_info->datacount, cData));
                     } else { /* checksum */
                         cData = checksum;
-                        TRACE_PRINT(RD_DATA_MSG, ("MDSAD: " ADDRESS_FORMAT
-                            " READ-DATA: Checksum is: 0x%02x" NLP,
-                            PCX, cData));
+                        sim_debug(RD_DATA_MSG, &mdsad_dev, "MDSAD: " ADDRESS_FORMAT
+                                  " READ-DATA: Checksum is: 0x%02x\n",
+                                  PCX, cData);
                     }
 
                     mdsad_info->datacount++;

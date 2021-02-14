@@ -1,6 +1,6 @@
 /* vax_cpu1.c: VAX complex instructions
 
-   Copyright (c) 1998-2008, Robert M Supnik
+   Copyright (c) 1998-2012, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -23,11 +23,14 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   15-Mar-12    RMS     Fixed potential integer overflow in LDPCTX (Mark Pizzolato)
+   25-Nov-11    RMS     Added VEC_QBUS test in interrupt handler
+   23-Mar-11    RMS     Revised idle design (Mark Pizzolato)
    28-May-08    RMS     Inlined physical memory routines
    29-Apr-07    RMS     Separated base register access checks for 11/780
    10-May-06    RMS     Added access check on system PTE for 11/780
                         Added mbz check in LDPCTX for 11/780
-   22-Sep-06    RMS     Fixed declarations (from Sterling Garwood)
+   22-Sep-06    RMS     Fixed declarations (Sterling Garwood)
    30-Sep-04    RMS     Added conditionals for full VAX
                         Moved emulation to vax_cis.c
                         Moved model-specific IPRs to system module
@@ -35,8 +38,8 @@
                         Fixed EXTxV, INSV double register PC reference fault
    30-Apr-02    RMS     Fixed interrupt/exception handler to clear traps
    17-Apr-02    RMS     Fixed pos > 31 test in bit fields (should be unsigned)
-   14-Apr-02    RMS     Fixed prv_mode handling for interrupts (found by Tim Stark)
-                        Fixed PROBEx to mask mode to 2b (found by Kevin Handy)
+   14-Apr-02    RMS     Fixed prv_mode handling for interrupts (Tim Stark)
+                        Fixed PROBEx to mask mode to 2b (Kevin Handy)
 
    This module contains the instruction simulators for
 
@@ -109,7 +112,6 @@ extern t_bool chk_tb_ent (uint32 va);
 extern int32 ReadIPR (int32 rg);
 extern void WriteIPR (int32 rg, int32 val);
 extern t_bool BadCmPSL (int32 newpsl);
-extern int32 cpu_psl_ipl_idle (int32 newpsl);
 
 extern jmp_buf save_env;
 
@@ -860,7 +862,7 @@ else {
     else R[5] = MVC_FILL;                               /* fill, set state */
     R[5] = R[5] | (cc << MVC_V_CC);                     /* pack with state */
     PSL = PSL | PSL_FPD;                                /* set FPD */
-	}
+    }
 
 /* At this point,
 
@@ -1099,7 +1101,7 @@ return (R[0]? 0: CC_Z);
 
 /* Interrupt or exception
 
-        vec     =       SCB vector
+        vec     =       SCB vector (bit<0> = interrupt in Qbus mode)
         cc      =       condition codes
         ipl     =       new IPL if interrupt
         ei      =       -1: severe exception
@@ -1118,7 +1120,7 @@ int32 acc;
 
 in_ie = 1;                                              /* flag int/exc */
 CLR_TRAPS;                                              /* clear traps */
-newpc = ReadLP ((SCBB + vec) & PAMASK);                 /* read new PC */
+newpc = ReadLP ((SCBB + vec) & (PAMASK & ~3));          /* read new PC */
 if (ei < 0)                                             /* severe? on istk */
     newpc = newpc | 1;
 if (newpc & 2)                                          /* bad flags? */
@@ -1136,10 +1138,15 @@ else {
         SP = KSP;                                       /* new stack */
         }
     }
-if (ei > 0)                                             /* if int, new IPL */
-    PSL = cpu_psl_ipl_idle (newpsl | (ipl << PSL_V_IPL));
-else PSL = cpu_psl_ipl_idle (newpsl |                   /* exc, old IPL/1F */
-    ((newpc & 1)? PSL_IPL1F: (oldpsl & PSL_IPL)) | (oldcur << PSL_V_PRV));
+if (ei > 0) {                                           /* if int, new IPL */
+    int32 newipl;
+    if (VEC_QBUS && ((vec & VEC_Q) != 0))               /* Qbus and Qbus vector? */
+        newipl = PSL_IPL17;                             /* force IPL 17 */
+    else newipl = ipl << PSL_V_IPL;                     /* otherwise, int IPL */
+    PSL = newpsl | newipl;
+    }
+else PSL = newpsl |                                     /* exc, old IPL/1F */
+    ((newpc & 1)? PSL_IPL1F: (oldpsl & PSL_IPL)) | (oldcur << PSL_V_PRV);
 if (DEBUG_PRI (cpu_dev, LOG_CPU_I))
     fprintf (sim_deb, ">>IEX: PC=%08x, PSL=%08x, SP=%08x, VEC=%08x, nPSL=%08x, nSP=%08x\n",
              PC, oldpsl, oldsp, vec, PSL, SP);
@@ -1249,7 +1256,7 @@ else STK[oldcur] = SP;
 if (DEBUG_PRI (cpu_dev, LOG_CPU_R))
     fprintf (sim_deb, ">>REI: PC=%08x, PSL=%08x, SP=%08x, nPC=%08x, nPSL=%08x, nSP=%08x\n",
              PC, PSL, SP - 8, newpc, newpsl, ((newpsl & IS)? IS: STK[newcur]));
-PSL = cpu_psl_ipl_idle ((PSL & PSL_TP) | (newpsl & ~CC_MASK)); /* set PSL */
+PSL = (PSL & PSL_TP) | (newpsl & ~CC_MASK);             /* set PSL */
 if (PSL & PSL_IS)                                       /* set new stack */
     SP = IS;
 else {
@@ -1268,7 +1275,7 @@ return newpsl & CC_MASK;                                /* set new cc */
 
 void op_ldpctx (int32 acc)
 {
-int32 newpc, newpsl, pcbpa, t;
+uint32 newpc, newpsl, pcbpa, t;
 
 if (PSL & PSL_CUR)                                      /* must be kernel */
     RSVD_INST_FAULT;

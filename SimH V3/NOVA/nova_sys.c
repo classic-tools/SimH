@@ -1,6 +1,6 @@
 /* nova_sys.c: NOVA simulator interface
 
-   Copyright (c) 1993-2008, Robert M. Supnik
+   Copyright (c) 1993-2012, Robert M. Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -23,6 +23,7 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   25-Mar-12    RMS     Fixed declaration (Mark Pizzolato)
    04-Jul-07    BKR     DEC's IOF/ION changed to DG's INTDS/INTEN mnemonic,
                         Fixed QTY/ADCV device name,
                         RDSW changed to DDG's READS mnemonic,
@@ -41,7 +42,7 @@
    15-Oct-00    RMS     Added stack, byte, trap instructions
    14-Apr-99    RMS     Changed t_addr to unsigned
    27-Oct-98    RMS     V2.4 load interface
-   24-Sep-97    RMS     Fixed bug in device name table (found by Charles Owen)
+   24-Sep-97    RMS     Fixed bug in device name table (Charles Owen)
 */
 
 #include "nova_defs.h"
@@ -861,7 +862,8 @@ return SCPE_ARG;
 
 char *get_addr (char *cptr, t_addr addr, t_bool ext, int32 cflag, int32 *val)
 {
-int32 d, r, x, pflag;
+int32 d, x, pflag;
+t_stat r;
 char gbuf[CBUFSIZE];
 int32 dmax, dsign;
 

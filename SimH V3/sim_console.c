@@ -1,6 +1,6 @@
 /* sim_console.c: simulator console I/O library
 
-   Copyright (c) 1993-2008, Robert M Supnik
+   Copyright (c) 1993-2012, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -23,33 +23,34 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   18-Mar-12    RMS     Removed unused reference to sim_switches (Dave Bryan)
+   20-Jan-11    MP      Added support for BREAK key on Windows
    30-Sep-06    RMS     Fixed non-printable characters in KSR mode
    22-Jun-06    RMS     Implemented SET/SHOW PCHAR
    31-May-06    JDB     Fixed bug if SET CONSOLE DEBUG with no argument
    22-Nov-05    RMS     Added central input/output conversion support
    05-Nov-04    RMS     Moved SET/SHOW DEBUG under CONSOLE hierarchy
    28-Oct-04    JDB     Fixed SET CONSOLE to allow comma-separated parameters
-   20-Aug-04    RMS     Added OS/2 EMX fixes (from Holger Veit)
-   14-Jul-04    RMS     Revised Windows console code (from Dave Bryan)
+   20-Aug-04    RMS     Added OS/2 EMX fixes (Holger Veit)
+   14-Jul-04    RMS     Revised Windows console code (Dave Bryan)
    28-May-04    RMS     Added SET/SHOW CONSOLE
                 RMS     Added break, delete character maps
    02-Jan-04    RMS     Removed timer routines, added Telnet console routines
                 RMS     Moved console logging to OS-independent code
-   25-Apr-03    RMS     Added long seek support from Mark Pizzolato
-                        Added Unix priority control from Mark Pizzolato
+   25-Apr-03    RMS     Added long seek support (Mark Pizzolato)
+                        Added Unix priority control (Mark Pizzolato)
    24-Sep-02    RMS     Removed VT support, added Telnet console support
-                        Added CGI support (from Brian Knittel)
-                        Added MacOS sleep (from Peter Schorn)
-   14-Jul-02    RMS     Added Windows priority control from Mark Pizzolato
-   20-May-02    RMS     Added Windows VT support from Fischer Franz
+                        Added CGI support (Brian Knittel)
+                        Added MacOS sleep (Peter Schorn)
+   14-Jul-02    RMS     Added Windows priority control (Mark Pizzolato)
+   20-May-02    RMS     Added Windows VT support (Fischer Franz)
    01-Feb-02    RMS     Added VAX fix from Robert Alan Byer
-   19-Sep-01    RMS     More Mac changes
+   19-Sep-01    RMS     More MacOS changes
    31-Aug-01    RMS     Changed int64 to t_int64 for Windoze
-   20-Jul-01    RMS     Added Macintosh support (from Louis Chretien, Peter Schorn,
-                                and Ben Supnik)
+   20-Jul-01    RMS     Added MacOS support (Louis Chretien, Peter Schorn, Ben Supnik)
    15-May-01    RMS     Added logging support
    05-Mar-01    RMS     Added clock calibration support
-   08-Dec-00    BKR     Added OS/2 support (from Bruce Ray)
+   08-Dec-00    BKR     Added OS/2 support (Bruce Ray)
    18-Aug-98    RMS     Added BeOS support
    13-Oct-97    RMS     Added NetBSD terminal support
    25-Jan-97    RMS     Added POSIX terminal I/O support
@@ -662,17 +663,42 @@ return SCPE_OK;
 
 #elif defined (_WIN32)
 
-#include <conio.h>
 #include <fcntl.h>
 #include <io.h>
 #include <windows.h>
 #define RAW_MODE 0
 static HANDLE std_input;
+static HANDLE std_output;
 static DWORD saved_mode;
- 
+
+static BOOL WINAPI
+ControlHandler(DWORD dwCtrlType)
+    {
+    DWORD Mode;
+    extern void int_handler (int sig);
+
+    switch (dwCtrlType)
+        {
+        case CTRL_BREAK_EVENT:      // Use CTRL-Break or CTRL-C to simulate 
+        case CTRL_C_EVENT:          // SERVICE_CONTROL_STOP in debug mode
+            int_handler(0);
+            return TRUE;
+        case CTRL_CLOSE_EVENT:      // Window is Closing
+        case CTRL_LOGOFF_EVENT:     // User is logging off
+            if (!GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &Mode))
+                return TRUE;        // Not our User, so ignore
+        case CTRL_SHUTDOWN_EVENT:   // System is shutting down
+            int_handler(0);
+            return TRUE;
+        }
+    return FALSE;
+    }
+
 t_stat sim_ttinit (void)
 {
+SetConsoleCtrlHandler( ControlHandler, TRUE );
 std_input = GetStdHandle (STD_INPUT_HANDLE);
+std_output = GetStdHandle (STD_OUTPUT_HANDLE);
 if ((std_input == INVALID_HANDLE_VALUE) ||
     !GetConsoleMode (std_input, &saved_mode))
     return SCPE_TTYERR;
@@ -710,24 +736,48 @@ return SCPE_OK;
 
 t_stat sim_os_poll_kbd (void)
 {
-int c;
+int c = -1;
+DWORD nkbevents, nkbevent;
+INPUT_RECORD rec;
 
-if (!_kbhit ())
-    return SCPE_OK;
-c = _getch ();
+if (!GetNumberOfConsoleInputEvents(std_input, &nkbevents))
+    return SCPE_TTYERR;
+while (c == -1) {
+    if (0 == nkbevents)
+        return SCPE_OK;
+    if (!ReadConsoleInput(std_input, &rec, 1, &nkbevent))
+        return SCPE_TTYERR;
+    if (0 == nkbevent)
+        return SCPE_OK;
+    --nkbevents;
+    if (rec.EventType == KEY_EVENT) {
+        if (rec.Event.KeyEvent.bKeyDown) {
+            if (0 == rec.Event.KeyEvent.uChar.UnicodeChar) {     /* Special Character/Keys? */
+                if (rec.Event.KeyEvent.wVirtualKeyCode == VK_PAUSE) /* Pause/Break Key */
+                    c = sim_brk_char | SCPE_BREAK;
+                else
+                    if (rec.Event.KeyEvent.wVirtualKeyCode == '2')  /* ^@ */
+                        c = 0;                                      /* return NUL */
+            } else
+                c = rec.Event.KeyEvent.uChar.AsciiChar;
+            }
+      }
+    }
 if ((c & 0177) == sim_del_char)
     c = 0177;
 if ((c & 0177) == sim_int_char)
     return SCPE_STOP;
-if (sim_brk_char && ((c & 0177) == sim_brk_char))
+if ((sim_brk_char && ((c & 0177) == sim_brk_char)) || (c & SCPE_BREAK))
     return SCPE_BREAK;
 return c | SCPE_KFLAG;
 }
 
 t_stat sim_os_putchar (int32 c)
 {
+DWORD unused;
+
 if (c != 0177)
-    _putch (c);
+    WriteConsoleA(std_output, &c, 1, &unused, NULL);
 return SCPE_OK;
 }
 

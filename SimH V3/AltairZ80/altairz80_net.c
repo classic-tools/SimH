@@ -1,6 +1,6 @@
 /*  altairz80_net.c: networking capability
 
-    Copyright (c) 2002-2008, Peter Schorn
+    Copyright (c) 2002-2011, Peter Schorn
 
     Permission is hereby granted, free of charge, to any person obtaining a
     copy of this software and associated documentation files (the "Software"),
@@ -67,7 +67,7 @@ static struct {
     int32   outputPosRead;              /* position of next character to write to ioSocket                      */
     int32   outputPosWrite;             /* position of next character to append to output buffer                */
     int32   outputSize;                 /* number of characters in circular output buffer                       */
-} serviceDescriptor[MAX_CONNECTIONS+1] = {   /* serviceDescriptor[0] holds the information for a client          */
+} serviceDescriptor[MAX_CONNECTIONS + 1] = {    /* serviceDescriptor[0] holds the information for a client      */
 /*  stat    dat ms  ios in      inPR    inPW    inS out     outPR   outPW   outS */
     {0x32,  0x33, 0,  0,  {0},    0,      0,      0,  {0},    0,      0,      0}, /* client Z80 port 50 and 51  */
     {0x28,  0x29, 0,  0,  {0},    0,      0,      0,  {0},    0,      0,      0}, /* server Z80 port 40 and 41  */
@@ -95,10 +95,6 @@ static MTAB net_mod[] = {
     { UNIT_SERVER, UNIT_SERVER, "SERVER", "SERVER", &set_net}, /* machine is a server   */
     { 0 }
 };
-
-#define TRACE_PRINT(level, args)    if (net_dev.dctrl & level) {    \
-                                        printf args;                \
-                                    }
 
 /* Debug Flags */
 static DEBTAB net_dt[] = {
@@ -215,7 +211,7 @@ static t_stat net_svc(UNIT *uptr) {
                     s = sim_accept_conn(serviceDescriptor[1].masterSocket, NULL);
                     if (s != INVALID_SOCKET) {
                         serviceDescriptor[i].ioSocket = s;
-                        TRACE_PRINT(ACCEPT_MSG, ("NET: " ADDRESS_FORMAT " Accepted connection %i with socket %i." NLP, PCX, i, s));
+                        sim_debug(ACCEPT_MSG, &net_dev, "NET: " ADDRESS_FORMAT " Accepted connection %i with socket %i.\n", PCX, i, s);
                     }
                 }
         }
@@ -232,8 +228,7 @@ static t_stat net_svc(UNIT *uptr) {
                     r = sim_read_sock(serviceDescriptor[i].ioSocket, svcBuffer,
                         BUFFER_LENGTH - serviceDescriptor[i].inputSize);
                     if (r == -1) {
-                        TRACE_PRINT(DROP_MSG, ("NET: " ADDRESS_FORMAT " Drop connection %i with socket %i." NLP,
-                                    PCX, i, serviceDescriptor[i].ioSocket));
+                        sim_debug(DROP_MSG, &net_dev, "NET: " ADDRESS_FORMAT " Drop connection %i with socket %i.\n", PCX, i, serviceDescriptor[i].ioSocket);
                         sim_close_sock(serviceDescriptor[i].ioSocket, FALSE);
                         serviceDescriptor[i].ioSocket = 0;
                         serviceDescriptor_reset(i);
@@ -290,7 +285,7 @@ int32 netData(const int32 port, const int32 io, const int32 data) {
         return 0;
     net_svc(&net_unit);
     for (i = 0; i <= MAX_CONNECTIONS; i++)
-        if (serviceDescriptor[i].Z80DataPort == port)
+        if (serviceDescriptor[i].Z80DataPort == port) {
             if (io == 0) {  /* IN   */
                 if (serviceDescriptor[i].inputSize == 0) {
                     printf("re-read from %i" NLP, port);
@@ -303,8 +298,7 @@ int32 netData(const int32 port, const int32 io, const int32 data) {
                         serviceDescriptor[i].inputPosRead = 0;
                     serviceDescriptor[i].inputSize--;
                 }
-                TRACE_PRINT(IN_MSG, ("NET: " ADDRESS_FORMAT "  IN(%i)=%03xh (%c)" NLP, PCX, port, (result & 0xff),
-                            (32 <= (result & 0xff)) && ((result & 0xff) <= 127) ? (result & 0xff) : '?'));
+                sim_debug(IN_MSG, &net_dev, "NET: " ADDRESS_FORMAT "  IN(%i)=%03xh (%c)\n", PCX, port, (result & 0xff), (32 <= (result & 0xff)) && ((result & 0xff) <= 127) ? (result & 0xff) : '?');
                 return result;
             }
             else {          /* OUT  */
@@ -319,9 +313,9 @@ int32 netData(const int32 port, const int32 io, const int32 data) {
                         serviceDescriptor[i].outputPosWrite = 0;
                     serviceDescriptor[i].outputSize++;
                 }
-                TRACE_PRINT(OUT_MSG, ("NET: " ADDRESS_FORMAT " OUT(%i)=%03xh (%c)" NLP, PCX, port, data,
-                                      (32 <= data) && (data <= 127) ? data : '?'));
+                sim_debug(OUT_MSG, &net_dev, "NET: " ADDRESS_FORMAT " OUT(%i)=%03xh (%c)\n", PCX, port, data, (32 <= data) && (data <= 127) ? data : '?');
                 return 0;
             }
+        }
     return 0;
 }

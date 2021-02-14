@@ -1,6 +1,6 @@
 /* i7094_cpu.c: IBM 7094 CPU simulator
 
-   Copyright (c) 2003-2007, Robert M. Supnik
+   Copyright (c) 2003-2011, Robert M. Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,11 @@
 
    cpu          7094 central processor
 
+   31-Dec-11    RMS     Select traps have priority over protect traps
+                        Added SRI, SPI
+                        Fixed user mode and relocation from CTSS RPQ documentation
+   16-Jul-10    RMS     Fixed user mode protection (Dave Pitts)
+                        Fixed issues in storage nullification mode
    28-Apr-07    RMS     Removed clock initialization
    29-Oct-06    RMS     Added additional expanded core instructions
    17-Oct-06    RMS     Fixed the fix in halt IO wait loop
@@ -55,6 +60,9 @@
    protection, and relocation.  Additional state:
 
    USER                 user mode
+   RELOCM               relocation mode
+   USER_BUF             user mode buffer
+   RELOC_BUF            relocation buffer
    INST_BASE            instruction memory select (A vs B core)
    DATA_BASE            data memory select (A vs B core)
    IND_RELOC<0:6>       relocation value (block number)
@@ -119,8 +127,8 @@
         ch_flags[0..7]  flags for channels A..H
         chtr_enab       channel trap enables
         chtr_inht       channel trap inhibit due to trap (cleared by RCT)
-        chtr_inhi       channel trap inhibit due to XEC, ENAB, RCT, RDS,
-                        or WDS (cleared after one instruction)
+        chtr_inhi       channel trap inhibit due to XEC, ENB, RCT, LRI,
+                        LPI, SEA, SEB (cleared after one instruction)
 
       Channel traps are summarized in variable chtr_pend.
 
@@ -147,6 +155,8 @@
 #define HIST_CH_I       2                               /* include IO */
 
 #define HALT_IO_LIMIT   ((2 << 18) + 1)                 /* max wait to stop */
+
+#define EAMASK          (mode_storn? A704_MASK: AMASK)  /* eff addr mask */
 
 t_uint64 *M = NULL;                                     /* memory */
 t_uint64 AC = 0;                                        /* AC */
@@ -175,6 +185,9 @@ uint32 ind_dvc = 0;                                     /* divide check */
 uint32 ind_ioc = 0;                                     /* IO check */
 uint32 cpu_model = I_9X|I_94;                           /* CPU type */
 uint32 mode_user = 0;                                   /* (CTSS) user mode */
+uint32 mode_reloc = 0;                                  /* (CTSS) relocation mode */
+uint32 user_buf = 0;                                    /* (CTSS) user mode buffer */
+uint32 reloc_buf = 0;                                   /* (CTSS) reloc mode buffer */
 uint32 ind_reloc = 0;                                   /* (CTSS) relocation */
 uint32 ind_start = 0;                                   /* (CTSS) prot start */
 uint32 ind_limit = 0;                                   /* (CTSS) prot limit */
@@ -185,7 +198,6 @@ uint32 ht_pend = 0;                                     /* HTR pending */
 uint32 ht_addr = 0;                                     /* HTR address */
 uint32 stop_illop = 1;                                  /* stop on ill op */
 uint32 cpu_astop = 0;                                   /* address stop */
-static uint32 eamask = AMASK;                           /* (dynamic) addr mask */
 
 uint16 pcq[PCQ_SIZE] = { 0 };                           /* PC queue */
 int32 pcq_p = 0;                                        /* PC queue ptr */
@@ -304,6 +316,9 @@ REG cpu_reg[] = {
     { FLDATA (CHTR_INHI, chtr_inhi, 0) },
     { ORDATA (CHTR_ENAB, chtr_enab, 30) },
     { FLDATA (USERM, mode_user, 0) },
+    { FLDATA (RELOCM, mode_reloc, 0) },
+    { FLDATA (USERBUF, user_buf, 0) },
+    { FLDATA (RELOCBUF, reloc_buf, 0) },
     { FLDATA (IMEM, inst_base, BCORE_V) },
     { FLDATA (DMEM, data_base, BCORE_V) },
     { GRDATA (RELOC, ind_reloc, 8, VA_N_BLK, VA_V_BLK) },
@@ -569,8 +584,8 @@ const uint8 op_flags[1024] = {
  I_XNR|I_CT, 0         , 0         , 0         ,
  0         , 0         , 0         , 0         ,
  0         , 0         , 0         , 0         ,
- I_XN      , 0         , I_XNR|I_9X, I_XN|I_94 ,        /* -600 */
- 0         , 0         , 0         , 0         ,
+ I_XN      , I_CT      , I_XNR|I_9X, I_XN|I_94 ,        /* -600 */
+ I_CT      , 0         , 0         , 0         ,
  0         , 0         , 0         , 0         ,
  0         , 0         , 0         , 0         ,
  I_XNR|I_9X, 0         , 0         , 0         ,        /* -620 */
@@ -619,7 +634,6 @@ t_bool tracing;
 ch_set_map ();                                          /* set dispatch map */
 if (!(cpu_model & (I_94|I_CT)))                         /* ~7094? MTM always on */
     mode_multi = 1;
-eamask = mode_storn? A704_MASK: AMASK;                  /* set eff addr mask */
 inst_base = inst_base & ~AMASK;                         /* A/B sel is 1b */
 data_base = data_base & ~AMASK;
 ind_reloc = ind_reloc & VA_BLK;                         /* canonical form */
@@ -683,8 +697,12 @@ while (reason == SCPE_OK) {                             /* loop until error */
             chtr_inhi = 0;                              /* clear */
             chtr_pend = chtr_eval (NULL);               /* re-evaluate */
             }
+        else if (cpu_model & I_CT) {                    /* CTSS? */
+            mode_user = user_buf;                       /* load modes from buffers */
+            mode_reloc = reloc_buf;
+            }
         oldPC = PC;                                     /* save current PC */
-        PC = (PC + 1) & eamask;                         /* increment PC */
+        PC = (PC + 1) & EAMASK;                         /* increment PC */
         if (!ReadI (oldPC, &IR))                        /* get inst; trap? */
             continue;
         }
@@ -695,7 +713,7 @@ while (reason == SCPE_OK) {                             /* loop until error */
     XEC:
 
     tag = GET_TAG (IR);                                 /* get tag */
-    addr = (uint32) IR & eamask;                        /* get base addr */
+    addr = (uint32) IR & EAMASK;                        /* get base addr */
 
 /* Decrement format instructions */
 
@@ -788,15 +806,15 @@ while (reason == SCPE_OK) {                             /* loop until error */
             continue;
             }
         if (tag && (fl & I_X))                          /* tag and indexable? */
-            ea = (addr - get_xri (tag)) & eamask;       /* do indexing */
+            ea = (addr - get_xri (tag)) & EAMASK;       /* do indexing */
         else ea = addr;
         if (TST_IND (IR) && (fl & I_N)) {               /* indirect? */
             if (!ReadI (ea, &SR))                       /* get ind; trap? */
                 continue;
-            addr = (uint32) SR & eamask;                /* get address */
+            addr = (uint32) SR & EAMASK;                /* get address */
             tagi = GET_TAG (SR);                        /* get tag */
             if (tagi)                                   /* tag? */
-                ea = (addr - get_xri (tagi)) & eamask;  /* do indexing */
+                ea = (addr - get_xri (tagi)) & EAMASK;  /* do indexing */
             else ea = addr;
             }
         if ((fl & I_R) && !Read (ea, &SR))              /* read opnd; trap? */
@@ -901,7 +919,7 @@ while (reason == SCPE_OK) {                             /* loop until error */
         case 00054:                                     /* RFT */
             t = IR & RMASK;
             if ((SI & t) == 0)                          /* if ind off, skip */
-                PC = (PC + 1) & eamask;
+                PC = (PC + 1) & EAMASK;
             break;
 
         case 00055:                                     /* SIR */
@@ -911,7 +929,7 @@ while (reason == SCPE_OK) {                             /* loop until error */
         case 00056:                                     /* RNT */
             t = IR & RMASK;
             if ((SI & t) == t)                          /* if ind on, skip */
-                PC = (PC + 1) & eamask;
+                PC = (PC + 1) & EAMASK;
             break;
 
         case 00057:                                     /* RIR */
@@ -943,16 +961,22 @@ while (reason == SCPE_OK) {                             /* loop until error */
         case 00101:                                     /* (CTSS) TIA */
             if (prot_trap (0))                          /* not user mode? */
                 break;
-            PCQ_ENTRY;
-            PC = ea;
-            inst_base = 0;
+            if (mode_ttrap) {                           /* trap? */
+                WriteTA (TRAP_STD_SAV, oldPC);          /* save PC */
+                TrapXfr (TRAP_TRA_PC);                  /* trap */
+                }
+            else {
+                PCQ_ENTRY;
+                PC = ea;
+                inst_base = 0;
+                }
             break;
 
         case 00114: case 00115: case 00116: case 00117: /* CVR */
             sc = GET_CCNT (IR);
             SR = ea;
             while (sc) {
-                ea = (uint32) ((AC & 077) + SR) & eamask;
+                ea = (uint32) ((AC & 077) + SR) & EAMASK;
                 if (!Read (ea, &SR))
                     break;
                 AC = (AC & AC_S) | ((AC >> 6) & 0017777777777) |
@@ -1152,12 +1176,12 @@ while (reason == SCPE_OK) {                             /* loop until error */
             t2 = SR & MMASK;
             if (s1 ^ s2) {                              /* diff signs? */
                 if (s1)                                 /* AC < mem? skip 2 */
-                    PC = (PC + 2) & eamask;
+                    PC = (PC + 2) & EAMASK;
                 }
             else if (t1 == t2)                          /* equal? skip 1 */
-                PC = (PC + 1) & eamask;
+                PC = (PC + 1) & EAMASK;
             else if ((t1 < t2) ^ s1)                    /* AC < mem, AC +, or */
-                PC = (PC + 2) & eamask;                 /* AC > mem, AC -? */
+                PC = (PC + 2) & EAMASK;                 /* AC > mem, AC -? */
             break;
 
         case 00361:                                     /* ACL */
@@ -1208,7 +1232,7 @@ while (reason == SCPE_OK) {                             /* loop until error */
 
         case 00444:                                     /* OFT */
             if ((SI & SR) == 0)                         /* skip if ind off */
-                PC = (PC + 1) & eamask;
+                PC = (PC + 1) & EAMASK;
             break;
 
         case 00445:                                     /* RIS */
@@ -1217,7 +1241,7 @@ while (reason == SCPE_OK) {                             /* loop until error */
 
         case 00446:                                     /* ONT */
             if ((SI & SR) == SR)                        /* skip if ind on */
-                PC = (PC + 1) & eamask;
+                PC = (PC + 1) & EAMASK;
             break;
 
         case 00460:                                     /* LDA (704) */
@@ -1234,7 +1258,7 @@ while (reason == SCPE_OK) {                             /* loop until error */
 
         case 00520:                                     /* ZET */
             if ((SR & MMASK) == 0)                      /* skip if M 1-35 = 0 */
-                PC = (PC + 1) & eamask;
+                PC = (PC + 1) & EAMASK;
             break;
 
         case 00522:                                     /* XEC */
@@ -1265,6 +1289,9 @@ while (reason == SCPE_OK) {                             /* loop until error */
             if (prot_trap (0))                          /* user mode? */
                 break;
             ind_reloc = ((uint32) SR) & VA_BLK;
+            reloc_buf = 1;                              /* set mode buffer */
+            chtr_inhi = 1;                              /* delay traps */
+            chtr_pend = 0;                              /* no trap now */
             break;
 
         case 00564:                                     /* ENB */
@@ -1348,8 +1375,6 @@ while (reason == SCPE_OK) {                             /* loop until error */
             break;
 
         case 00760:                                     /* PSE */
-            if (prot_trap (0))                          /* user mode? */
-                break;
             reason = op_pse (ea);
             break;
 
@@ -1380,6 +1405,8 @@ while (reason == SCPE_OK) {                             /* loop until error */
 /* Negative instructions */
 
         case 01021:                                     /* ESNT */
+            if (prot_trap (0))                          /* user mode? */
+                break;
             mode_storn = 1;                             /* enter nullification */
             PCQ_ENTRY;
             PC = ea;                                    /* branch, no trap */
@@ -1400,7 +1427,7 @@ while (reason == SCPE_OK) {                             /* loop until error */
         case 01054:                                     /* LFT */
             t = (IR & RMASK) << 18;
             if ((SI & t) == 0)                          /* if ind off, skip */
-                PC = (PC + 1) & eamask;
+                PC = (PC + 1) & EAMASK;
             break;
 
         case 01055:                                     /* SIL */
@@ -1410,7 +1437,7 @@ while (reason == SCPE_OK) {                             /* loop until error */
         case 01056:                                     /* LNT */
             t = (IR & RMASK) << 18;
             if ((SI & t) == t)                          /* if ind on, skip */
-                PC = (PC + 1) & eamask;
+                PC = (PC + 1) & EAMASK;
             break;
 
         case 01057:                                     /* RIL */
@@ -1431,17 +1458,22 @@ while (reason == SCPE_OK) {                             /* loop until error */
         case 01101:                                     /* (CTSS) TIB */
             if (prot_trap (0))                          /* user mode? */
                 break;
-            PCQ_ENTRY;
-            PC = ea;
-            mode_user = 1;
-            inst_base = BCORE_BASE;
+            if (mode_ttrap) {                           /* trap? */
+                WriteTA (TRAP_STD_SAV, oldPC);          /* save PC */
+                TrapXfr (TRAP_TRA_PC);                  /* trap */
+                }
+            else {
+                PCQ_ENTRY;
+                PC = ea;
+                inst_base = BCORE_BASE;
+                }
             break;
 
         case 01114: case 01115: case 01116: case 01117: /* CAQ */
             sc = GET_CCNT (IR);
             SR = ea;
             while (sc) {
-                ea = (uint32) ((MQ >> 30) + SR) & eamask;
+                ea = (uint32) ((MQ >> 30) + SR) & EAMASK;
                 if (!Read (ea, &SR))
                     break;
                 MQ = ((MQ << 6) & DMASK) | (MQ >> 30);
@@ -1485,7 +1517,7 @@ while (reason == SCPE_OK) {                             /* loop until error */
             sc = GET_CCNT (IR);
             SR = ea;
             while (sc) {
-                ea = (uint32) ((MQ >> 30) + SR) & eamask;
+                ea = (uint32) ((MQ >> 30) + SR) & EAMASK;
                 if (!Read (ea, &SR))
                     break;
                 MQ = ((MQ << 6) & DMASK) | (SR >> 30);
@@ -1587,9 +1619,9 @@ while (reason == SCPE_OK) {                             /* loop until error */
         case 01340:                                     /* LAS */
             t = AC & AC_MMASK;                          /* AC Q,P,1-35 */
             if (t < SR)
-                PC = (PC + 2) & eamask;
+                PC = (PC + 2) & EAMASK;
             else if (t == SR)
-                PC = (PC + 1) & eamask;
+                PC = (PC + 1) & EAMASK;
             break;
 
         case 01400:                                     /* SBM */
@@ -1606,7 +1638,7 @@ while (reason == SCPE_OK) {                             /* loop until error */
 
         case 01520:                                     /* NZT */
             if ((SR & MMASK) != 0)
-                PC = (PC + 1) & eamask;
+                PC = (PC + 1) & EAMASK;
             break;
 
         case 01534:                                     /* LXD */
@@ -1624,10 +1656,19 @@ while (reason == SCPE_OK) {                             /* loop until error */
                 break;
             ind_start = ((uint32) SR) & VA_BLK;
             ind_limit = (GET_DEC (SR) & VA_BLK) | VA_OFF;
+            user_buf = 1;                               /* set mode buffer */
+            chtr_inhi = 1;                              /* delay traps */
+            chtr_pend = 0;                              /* no trap now */
             break;
 
         case 01600:                                     /* STQ */
             Write (ea, MQ);
+            break;
+
+        case 01601:                                     /* SRI (CTSS) */
+            SR = ind_reloc & VA_BLK;
+            /* add reloc mode in bit 1 */
+            Write (ea, SR);
             break;
 
         case 01602:                                     /* ORS */
@@ -1639,7 +1680,14 @@ while (reason == SCPE_OK) {                             /* loop until error */
             SR = (AC & MMASK) | ((AC & AC_S)? SIGN: 0);
             if (!Write (ea, SR))
                 break;
-            Write ((ea + 1) & eamask, MQ);
+            Write ((ea + 1) & EAMASK, MQ);
+            break;
+
+        case 01604:                                     /* SPI (CTSS) */
+            SR = (((t_uint64) (ind_limit & VA_BLK)) << INST_V_DEC) |
+                ((t_uint64) (ind_start & VA_BLK));
+            /* add prot mode in bit 2 */
+            Write (ea, SR);
             break;
 
         case 01620:                                     /* SLQ */
@@ -1687,8 +1735,6 @@ while (reason == SCPE_OK) {                             /* loop until error */
             break;                                      /* -xr -> AC decr */
 
         case 01760:                                     /* MSE */
-            if (prot_trap (0))                          /* user mode? */
-                break;
             reason = op_mse (ea);
             break;
 
@@ -1701,11 +1747,11 @@ while (reason == SCPE_OK) {                             /* loop until error */
                 data_base = BCORE_BASE;
             else if (ea == 043) {                       /* IFT? */
                 if (inst_base == 0)
-                    PC = (PC + 1) & eamask;
+                    PC = (PC + 1) & EAMASK;
                 }
             else if (ea == 044) {                       /* EFT? */
                 if (data_base == 0)
-                    PC = (PC + 1) & eamask;
+                    PC = (PC + 1) & EAMASK;
                 }
             else if (stop_illop)
                 reason = STOP_ILLEG;
@@ -1835,10 +1881,8 @@ while (reason == SCPE_OK) {                             /* loop until error */
 
         case 00640: case 00641: case 00642: case 00643: /* SCHx */
         case 01640: case 01641: case 01642: case 01643:
-            if (prot_trap (0))                          /* user mode? */
-                break;
-             ch = ((op & 03) << 1) | ((op >> 9) & 01);
-             if ((reason = ch_op_store (ch, &SR)) == SCPE_OK)
+            ch = ((op & 03) << 1) | ((op >> 9) & 01);
+            if ((reason = ch_op_store (ch, &SR)) == SCPE_OK)
                 Write (ea, SR);
             break;
 
@@ -1850,7 +1894,7 @@ while (reason == SCPE_OK) {                             /* loop until error */
             break;
 
         case 00762:                                     /* RDS */
-            if (prot_trap (0) || sel_trap (PC))
+            if (sel_trap (0) || prot_trap (PC))         /* select takes priority */
                 break;
             ch = GET_U_CH (IR);
             reason = ch_op_ds (ch, CHSL_RDS, GET_U_UNIT (ea));
@@ -1858,7 +1902,7 @@ while (reason == SCPE_OK) {                             /* loop until error */
             break;
 
         case 00764:                                     /* BSR */
-            if (prot_trap (0) || sel_trap (PC))
+            if (sel_trap (0) || prot_trap (PC))         /* select takes priority */
                 break;
             ch = GET_U_CH (IR);
             reason = ch_op_nds (ch, CHSL_BSR, GET_U_UNIT (ea));
@@ -1866,7 +1910,7 @@ while (reason == SCPE_OK) {                             /* loop until error */
             break;
 
         case 00766:                                     /* WRS */
-            if (prot_trap (0) || sel_trap (PC))
+            if (sel_trap (0) || prot_trap (PC))         /* select takes priority */
                 break;
             ch = GET_U_CH (IR);
             reason = ch_op_ds (ch, CHSL_WRS, GET_U_UNIT (ea));
@@ -1874,7 +1918,7 @@ while (reason == SCPE_OK) {                             /* loop until error */
             break;
 
         case 00770:                                     /* WEF */
-            if (prot_trap (0) || sel_trap (PC))
+            if (sel_trap (0) || prot_trap (PC))         /* select takes priority */
                 break;
             ch = GET_U_CH (IR);
             reason = ch_op_nds (ch, CHSL_WEF, GET_U_UNIT (ea));
@@ -1882,7 +1926,7 @@ while (reason == SCPE_OK) {                             /* loop until error */
             break;
 
         case 00772:                                     /* REW */
-            if (prot_trap (0) || sel_trap (PC))
+            if (sel_trap (0) || prot_trap (PC))         /* select takes priority */
                 break;
             ch = GET_U_CH (IR);
             reason = ch_op_nds (ch, CHSL_REW, GET_U_UNIT (ea));
@@ -1890,7 +1934,7 @@ while (reason == SCPE_OK) {                             /* loop until error */
             break;
 
         case 01764:                                     /* BSF */
-            if (prot_trap (0) || sel_trap (PC))
+            if (sel_trap (0) || prot_trap (PC))         /* select takes priority */
                 break;
             ch = GET_U_CH (IR);
             reason = ch_op_nds (ch, CHSL_BSF, GET_U_UNIT (ea));
@@ -1898,7 +1942,7 @@ while (reason == SCPE_OK) {                             /* loop until error */
             break;
 
         case 01772:                                     /* RUN */
-            if (prot_trap (0) || sel_trap (PC))
+            if (sel_trap (0) || prot_trap (PC))         /* select takes priority */
                 break;
             ch = GET_U_CH (IR);
             reason = ch_op_nds (ch, CHSL_RUN, GET_U_UNIT (ea));
@@ -1906,7 +1950,7 @@ while (reason == SCPE_OK) {                             /* loop until error */
             break;
 
         case 00776:                                     /* SDN */
-            if (prot_trap (0) || sel_trap (PC))
+            if (sel_trap (0) || prot_trap (PC))         /* select takes priority */
                 break;
             ch = GET_U_CH (IR);
             reason = ch_op_nds (ch, CHSL_SDN, GET_U_UNIT (ea));
@@ -1967,9 +2011,9 @@ if (tag) {
             r = r | XR[2];
         if (tag & 4)
             r = r | XR[4];
-        return r & eamask;
+        return r & EAMASK;
         }
-    return XR[tag] & eamask;
+    return XR[tag] & EAMASK;
     }
 return 0;
 }
@@ -1994,9 +2038,9 @@ if (tag) {
         if (tag & 4)
             r = r | XR[4];
         put_xr (tag, r);
-        return r & eamask;
+        return r & EAMASK;
         }
-    return XR[tag] & eamask;
+    return XR[tag] & EAMASK;
     }
 return 0;
 }
@@ -2006,7 +2050,7 @@ return 0;
 void put_xr (uint32 tag, uint32 dat)
 {
 tag = tag & INST_M_TAG;
-dat = dat & eamask;
+dat = dat & EAMASK;
 
 if (tag) {
     if (mode_multi) {
@@ -2071,7 +2115,8 @@ WriteP (pa, mem);
 mode_ctrap = 0;
 mode_strap = 0;
 mode_storn = 0;
-mode_user = 0;
+mode_user = user_buf = 0;
+mode_reloc = reloc_buf = 0;
 inst_base = 0;
 data_base = 0;
 return;
@@ -2123,7 +2168,8 @@ PC = newpc;
 mode_ctrap = 0;
 mode_strap = 0;
 mode_storn = 0;
-mode_user = 0;
+mode_user = user_buf = 0;
+mode_reloc = reloc_buf = 0;
 inst_base = 0;
 data_base = 0;
 return;
@@ -2133,12 +2179,11 @@ return;
 
 t_bool ReadI (uint32 va, t_uint64 *val)
 {
-if (mode_user) {
+if (mode_reloc)
     va = (va + ind_reloc) & AMASK;
-    if ((va < ind_start) || (va > ind_limit)) {
-        prot_trap (0);
-        return FALSE;
-        }
+if (mode_user && ((va < ind_start) || (va > ind_limit))) {
+    prot_trap (0);
+    return FALSE;
     }
 *val = M[va | inst_base];
 return TRUE;
@@ -2148,12 +2193,11 @@ return TRUE;
 
 t_bool Read (uint32 va, t_uint64 *val)
 {
-if (mode_user) {
+if (mode_reloc)
     va = (va + ind_reloc) & AMASK;
-    if ((va < ind_start) || (va > ind_limit))  {
-        prot_trap (0);
-        return FALSE;
-        }
+if (mode_user && ((va < ind_start) || (va > ind_limit))) {
+    prot_trap (0);
+    return FALSE;
     }
 *val = M[va | data_base];
 return TRUE;
@@ -2163,12 +2207,11 @@ return TRUE;
 
 t_bool Write (uint32 va, t_uint64 dat)
 {
-if (mode_user) {
+if (mode_reloc)
     va = (va + ind_reloc) & AMASK;
-    if ((va < ind_start) || (va > ind_limit))  {
-        prot_trap (0);
-        return FALSE;
-        }
+if (mode_user && ((va < ind_start) || (va > ind_limit))) {
+    prot_trap (0);
+    return FALSE;
     }
 M[va | data_base] = dat;
 return TRUE;
@@ -2193,7 +2236,8 @@ mode_storn = 0;
 if (cpu_model & (I_94|I_CT))
     mode_multi = 0;
 else mode_multi = 1;
-mode_user = 0;
+mode_user = user_buf = 0;
+mode_reloc = reloc_buf = 0;
 inst_base = 0;
 data_base = 0;
 ch_req = 0;
@@ -2222,8 +2266,7 @@ if (vptr == NULL)
     return SCPE_ARG;
 if ((sw & (SWMASK ('A') | SWMASK ('B')))? (ea > AMASK): (ea >= MEMSIZE))
     return SCPE_NXM;
-if ((sw & SWMASK ('B')) ||
-    ((sw & SWMASK ('V')) && mode_user && inst_base))
+if (sw & SWMASK ('B'))
     ea = ea | BCORE_BASE;
 *vptr = M[ea] & DMASK;
 return SCPE_OK;

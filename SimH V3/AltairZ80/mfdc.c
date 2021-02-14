@@ -130,9 +130,6 @@ static SECTOR_FORMAT sdata;
 #define UNIT_V_MFDC_VERBOSE     (UNIT_V_UF + 1) /* verbose mode, i.e. show error messages   */
 #define UNIT_MFDC_VERBOSE       (1 << UNIT_V_MFDC_VERBOSE)
 #define MFDC_CAPACITY           (77*16*MFDC_SECTOR_LEN) /* Default Micropolis Disk Capacity */
-#define IMAGE_TYPE_DSK          1               /* Flat binary "DSK" image file.            */
-#define IMAGE_TYPE_IMD          2               /* ImageDisk "IMD" image file.              */
-#define IMAGE_TYPE_CPT          3               /* CP/M Transfer "CPT" image file.          */
 
 static t_stat mfdc_reset(DEVICE *mfdc_dev);
 static t_stat mfdc_attach(UNIT *uptr, char *cptr);
@@ -163,10 +160,6 @@ static MTAB mfdc_mod[] = {
     { UNIT_MFDC_VERBOSE,            UNIT_MFDC_VERBOSE,  "VERBOSE",  "VERBOSE", NULL },
     { 0 }
 };
-
-#define TRACE_PRINT(level, args)    if(mfdc_dev.dctrl & level) {    \
-                                       printf args;                 \
-                                    }
 
 /* Debug Flags */
 static DEBTAB mfdc_dt[] = {
@@ -237,7 +230,6 @@ t_stat mfdc_reset(DEVICE *dptr)
 /* Attach routine */
 t_stat mfdc_attach(UNIT *uptr, char *cptr)
 {
-    char header[4];
     t_stat r;
     unsigned int i = 0;
 
@@ -258,16 +250,10 @@ t_stat mfdc_attach(UNIT *uptr, char *cptr)
     uptr->u3 = IMAGE_TYPE_DSK;
 
     if(uptr->capac > 0) {
-        fgets(header, 4, uptr->fileref);
-        if(!strcmp(header, "IMD")) {
-            uptr->u3 = IMAGE_TYPE_IMD;
-        } else if(!strcmp(header, "CPT")) {
-            printf("CPT images not yet supported\n");
-            uptr->u3 = IMAGE_TYPE_CPT;
+        r = assignDiskType(uptr);
+        if (r != SCPE_OK) {
             mfdc_detach(uptr);
-            return SCPE_OPENERR;
-        } else {
-            uptr->u3 = IMAGE_TYPE_DSK;
+            return r;
         }
     }
 
@@ -386,6 +372,7 @@ static uint8 MFDC_Read(const uint32 Addr)
 {
     uint8 cData;
     MFDC_DRIVE_INFO *pDrive;
+    int32 rtn;
 
     cData = 0x00;
 
@@ -411,7 +398,7 @@ static uint8 MFDC_Read(const uint32 Addr)
             cData |= (1 << 7);      /* Sector Flag */
             mfdc_info->xfr_flag = 1;    /* Drive has data */
             mfdc_info->datacount = 0;
-            TRACE_PRINT(STATUS_MSG, ("MFDC: " ADDRESS_FORMAT " RD Sector Register = 0x%02x" NLP, PCX, cData));
+            sim_debug(STATUS_MSG, &mfdc_dev, "MFDC: " ADDRESS_FORMAT " RD Sector Register = 0x%02x\n", PCX, cData);
             break;
         case 1:
             cData  = (mfdc_info->sel_drive & 0x3);  /* [1:0] selected drive */
@@ -423,15 +410,15 @@ static uint8 MFDC_Read(const uint32 Addr)
             cData |= (0 << 6); /* [6] PINTE from S-100 Bus */
             cData |= (mfdc_info->xfr_flag << 7); /* [7] Transfer Flag */
 
-            TRACE_PRINT(STATUS_MSG, ("MFDC: " ADDRESS_FORMAT " RD Status = 0x%02x" NLP, PCX, cData));
+            sim_debug(STATUS_MSG, &mfdc_dev, "MFDC: " ADDRESS_FORMAT " RD Status = 0x%02x\n", PCX, cData);
             break;
         case 2:
         case 3:
             if(mfdc_info->datacount == 0) {
                 unsigned int i, checksum;
                 unsigned long sec_offset;
-                unsigned int flags;
-                unsigned int readlen;
+                uint32 flags;
+                uint32 readlen;
 
                 /* Clear out unused portion of sector. */
                 memset(&sdata.u.unused[0], 0x00, 10);
@@ -440,10 +427,7 @@ static uint8 MFDC_Read(const uint32 Addr)
                 sdata.u.header[0] = pDrive->track;
                 sdata.u.header[1] = pDrive->sector;
 
-                TRACE_PRINT(RD_DATA_MSG, ("MFDC: " ADDRESS_FORMAT " RD Data T:%d S:[%d]" NLP,
-                    PCX,
-                    pDrive->track,
-                    pDrive->sector));
+                sim_debug(RD_DATA_MSG, &mfdc_dev, "MFDC: " ADDRESS_FORMAT " RD Data T:%d S:[%d]\n", PCX, pDrive->track, pDrive->sector);
 
 #ifdef USE_VGI
                 sec_offset = (pDrive->track * MFDC_SECTOR_LEN * 16) + \
@@ -482,10 +466,13 @@ static uint8 MFDC_Read(const uint32 Addr)
                         } else {
                             sim_fseek((pDrive->uptr)->fileref, sec_offset, SEEK_SET);
 #ifdef USE_VGI
-                            fread(sdata.raw, MFDC_SECTOR_LEN, 1, (pDrive->uptr)->fileref);
+                            rtn = sim_fread(sdata.raw, 1, MFDC_SECTOR_LEN, (pDrive->uptr)->fileref);
+                            if (rtn != MFDC_SECTOR_LEN)
 #else
-                            fread(sdata.u.data, 256, 1, (pDrive->uptr)->fileref);
+                            rtn = sim_fread(sdata.u.data, 1, 256, (pDrive->uptr)->fileref);
+                            if (rtn != 256)
 #endif /* USE_VGI */
+                                printf("%s: sim_fread error. Result = %d." NLP, __FUNCTION__, rtn);
                         }
                         break;
                     case IMAGE_TYPE_CPT:
@@ -515,8 +502,7 @@ static uint8 MFDC_Read(const uint32 Addr)
 
             mfdc_info->datacount++;
             if(mfdc_info->datacount == 270) {
-                TRACE_PRINT(RD_DATA_MSG, ("MFDC: " ADDRESS_FORMAT " Read sector [%d] complete" NLP,
-                    PCX, pDrive->sector));
+                sim_debug(RD_DATA_MSG, &mfdc_dev, "MFDC: " ADDRESS_FORMAT " Read sector [%d] complete\n", PCX, pDrive->sector);
                 mfdc_info->read_in_progress = FALSE;
             }
 
@@ -530,8 +516,8 @@ static uint8 MFDC_Read(const uint32 Addr)
 static uint8 MFDC_Write(const uint32 Addr, uint8 cData)
 {
     unsigned int sec_offset;
-    unsigned int flags = 0;
-    unsigned int writelen;
+    uint32 flags = 0;
+    uint32 writelen;
     MFDC_DRIVE_INFO *pDrive;
 
     pDrive = &mfdc_info->drive[mfdc_info->sel_drive];
@@ -570,10 +556,7 @@ static uint8 MFDC_Write(const uint32 Addr, uint8 cData)
                 mfdc_info->datacount ++;
 
                 if(mfdc_info->datacount == 270) {
-                    TRACE_PRINT(WR_DATA_MSG, ("MFDC: " ADDRESS_FORMAT " WR Data T:%d S:[%d]" NLP,
-                        PCX,
-                        pDrive->track,
-                        pDrive->sector));
+                    sim_debug(WR_DATA_MSG, &mfdc_dev, "MFDC: " ADDRESS_FORMAT " WR Data T:%d S:[%d]\n", PCX, pDrive->track, pDrive->sector);
 
                     if (!(pDrive->uptr->flags & UNIT_ATT)) {
                         if (pDrive->uptr->flags & UNIT_MFDC_VERBOSE)
@@ -603,9 +586,9 @@ static uint8 MFDC_Write(const uint32 Addr, uint8 cData)
                             } else {
                                 sim_fseek((pDrive->uptr)->fileref, sec_offset, SEEK_SET);
 #ifdef USE_VGI
-                                fwrite(sdata.raw, MFDC_SECTOR_LEN, 1, (pDrive->uptr)->fileref);
+                                sim_fwrite(sdata.raw, 1, MFDC_SECTOR_LEN, (pDrive->uptr)->fileref);
 #else
-                                fwrite(sdata.u.data, 256, 1, (pDrive->uptr)->fileref);
+                                sim_fwrite(sdata.u.data, 1, 256, (pDrive->uptr)->fileref);
 #endif /* USE_VGI */
                             }
                             break;
@@ -647,7 +630,7 @@ static void MFDC_Command(uint8 cData)
 
     switch(cCommand) {
         case MFDC_CMD_NOP:
-            TRACE_PRINT(CMD_MSG, ("MFDC: " ADDRESS_FORMAT " No Op." NLP, PCX));
+            sim_debug(CMD_MSG, &mfdc_dev, "MFDC: " ADDRESS_FORMAT " No Op.\n", PCX);
             break;
         case MFDC_CMD_SELECT:
             mfdc_info->sel_drive = cModifier & 0x03;
@@ -660,13 +643,11 @@ static void MFDC_Command(uint8 cData)
                 pDrive->ready = 0;
             }
 
-            TRACE_PRINT(CMD_MSG, ("MFDC: " ADDRESS_FORMAT " Select Drive: %d, Head: %s" NLP,
-                PCX, mfdc_info->sel_drive, (mfdc_info->head) ? "Upper" : "Lower"));
+            sim_debug(CMD_MSG, &mfdc_dev, "MFDC: " ADDRESS_FORMAT " Select Drive: %d, Head: %s\n", PCX, mfdc_info->sel_drive, (mfdc_info->head) ? "Upper" : "Lower");
             break;
         case MFDC_CMD_INTR:
             mfdc_info->int_enable = cModifier & 1;  /* 0=int disable, 1=enable */
-            TRACE_PRINT(CMD_MSG, ("MFDC: " ADDRESS_FORMAT " Interrupts %s." NLP,
-                PCX, mfdc_info->int_enable ? "Enabled" : "Disabled"));
+            sim_debug(CMD_MSG, &mfdc_dev, "MFDC: " ADDRESS_FORMAT " Interrupts %s.\n", PCX, mfdc_info->int_enable ? "Enabled" : "Disabled");
             break;
         case MFDC_CMD_STEP:
             if(cModifier & 1) { /* Step IN */
@@ -678,23 +659,22 @@ static void MFDC_Command(uint8 cData)
                 }
             }
 
-            TRACE_PRINT(SEEK_MSG, ("MFDC: " ADDRESS_FORMAT " Step %s, Track=%d." NLP,
-                PCX, (cModifier & 1) ? "IN" : "OUT", pDrive->track));
+            sim_debug(SEEK_MSG, &mfdc_dev, "MFDC: " ADDRESS_FORMAT " Step %s, Track=%d.\n", PCX, (cModifier & 1) ? "IN" : "OUT", pDrive->track);
 
             break;
         case MFDC_CMD_SET_WRITE:
-            TRACE_PRINT(CMD_MSG, ("MFDC: " ADDRESS_FORMAT " Set WRITE." NLP, PCX));
+            sim_debug(CMD_MSG, &mfdc_dev, "MFDC: " ADDRESS_FORMAT " Set WRITE.\n", PCX);
             mfdc_info->wr_latch = 1;    /* Allow writes for the current sector */
             mfdc_info->datacount = 0;   /* reset the byte counter */
             break;
         case MFDC_CMD_RESET:
-            TRACE_PRINT(CMD_MSG, ("MFDC: " ADDRESS_FORMAT " Reset Controller." NLP, PCX));
+            sim_debug(CMD_MSG, &mfdc_dev, "MFDC: " ADDRESS_FORMAT " Reset Controller.\n", PCX);
             mfdc_info->selected = 0;    /* de-select the drive */
             mfdc_info->wr_latch = 0;    /* Disable the write latch */
             mfdc_info->datacount = 0;   /* reset the byte counter */
             break;
         default:
-            TRACE_PRINT(CMD_MSG, ("MFDC: " ADDRESS_FORMAT " Unsupported command." NLP, PCX));
+            sim_debug(CMD_MSG, &mfdc_dev, "MFDC: " ADDRESS_FORMAT " Unsupported command.\n", PCX);
             break;
     }
 }

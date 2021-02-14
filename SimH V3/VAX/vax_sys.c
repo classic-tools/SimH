@@ -1,6 +1,6 @@
 /* vax_sys.c: VAX simulator interface
 
-   Copyright (c) 1998-2008, Robert M Supnik
+   Copyright (c) 1998-2011, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -23,9 +23,10 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   21-Mar-11    RMS     Modified string for STOP_BOOT message
    19-Nov-08    RMS     Moved bad block routine to I/O library
    03-Nov-05    RMS     Added 780 stop codes
-   04-Sep-05    RMS     Fixed missing assignment (found by Peter Schorn)
+   04-Sep-05    RMS     Fixed missing assignment (Peter Schorn)
    16-Aug-05    RMS     Fixed C++ declaration and cast problems
    15-Sep-04    RMS     Fixed bugs in character display and parse
    30-Sep-04    RMS     Fixed bugs in parsing indirect displacement modes
@@ -100,7 +101,7 @@ const char *sim_stop_messages[] = {
     "Infinite loop",
     "Sanity timer expired",
     "Software done",
-    "Reboot requested",
+    "Reboot request failed",
     "Unknown error",
     "Unknown abort code"
     };

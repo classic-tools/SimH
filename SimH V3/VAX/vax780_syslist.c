@@ -1,4 +1,4 @@
-/* vax_syslist.c: VAX device list
+/* vax780_syslist.c: VAX 780 device list
 
    Copyright (c) 1998-2008, Robert M Supnik
 
@@ -23,7 +23,7 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
-   17-May-06    RMS     Added CR11/CD11 support (from John Dundas)
+   17-May-06    RMS     Added CR11/CD11 support (John Dundas)
    01-Oct-04    RMS     Cloned from vax_sys.c
 */
 

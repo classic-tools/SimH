@@ -2,7 +2,7 @@
 
    Modified from the original NOVA simulator by Robert Supnik.
 
-   Copyright (c) 1998-2006, Charles E Owen
+   Copyright (c) 1998-2012, Charles E Owen
    Portions Copyright (c) 1993-2002, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
@@ -28,8 +28,9 @@
 
    cpu          Eclipse central processor
 
-   07-Jun-06    RMS     Fixed bug in DIVS (found by Mark Hittinger)
-   22-Sep-05    RMS     Fixed declarations (from Sterling Garwood)
+   25-Mar-12    RMS     Fixed declarations (Mark Pizzolato)
+   07-Jun-06    RMS     Fixed bug in DIVS (Mark Hittinger)
+   22-Sep-05    RMS     Fixed declarations (Sterling Garwood)
    25-Aug-05    RMS     Fixed DIVS overflow cases
    29-Nov-03    CEO     Corrected POPJ and Bit operations bugs
    26-Nov-03    CEO     Added FPU and PIT devices 
@@ -5957,12 +5958,12 @@ int32 Debug_Entry(int32 PC, int32 inst, int32 inst2, int32 AC0, int32 AC1, int32
     return 0;
 }
 
-int32 Debug_Dump(UNIT *uptr, int32 val, char *cptr, void *desc)
+t_stat Debug_Dump(UNIT *uptr, int32 val, char *cptr, void *desc)
 {
     return SCPE_OK;
 }
 
-int32 Dump_History (FILE *st, UNIT *uptr, int32 val, void *desc) 
+t_stat Dump_History (FILE *st, UNIT *uptr, int32 val, void *desc) 
 {
     char debmap[4], debion[4];
     t_value simeval[20];

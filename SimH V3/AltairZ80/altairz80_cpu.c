@@ -1,6 +1,6 @@
 /*  altairz80_cpu.c: MITS Altair CPU (8080 and Z80)
 
-    Copyright (c) 2002-2008, Peter Schorn
+    Copyright (c) 2002-2011, Peter Schorn
 
     Permission is hereby granted, free of charge, to any person obtaining a
     copy of this software and associated documentation files (the "Software"),
@@ -144,6 +144,8 @@ extern int32 simh_dev   (const int32 port, const int32 io, const int32 data);
 extern int32 sr_dev     (const int32 port, const int32 io, const int32 data);
 extern void install_ALTAIRbootROM(void);
 extern void do_SIMH_sleep(void);
+extern void prepareMemoryAccessMessage(const t_addr loc);
+extern void prepareInstructionMessage(const t_addr loc, const uint32 op);
 
 extern FILE *sim_deb;
 
@@ -189,6 +191,8 @@ uint8 GetByteDMA(const uint32 Addr);
 void PutByteDMA(const uint32 Addr, const uint32 Value);
 int32 getBankSelect(void);
 void setBankSelect(const int32 b);
+uint32 getClockFrequency(void);
+void setClockFrequency(const uint32 Value);
 uint32 getCommon(void);
 t_stat sim_load(FILE *fileref, char *cptr, char *fnam, int32 flag);
 uint32 sim_map_resource(uint32 baseaddr, uint32 size, uint32 resource_type,
@@ -1279,10 +1283,9 @@ static const uint8 cpTable[256] = {
     128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,128,
 };
 
-/* remove comments to generate table contents and define globally NEED_SIM_VM_INIT
-static void altairz80_init(void);
-void (*sim_vm_init) (void) = &altairz80_init;
-static void altairz80_init(void) {
+/* remove comments to generate table contents and add a call to
+ altairz80_print_tables in the altairz80_init
+static void altairz80_print_tables(void) {
 */
 /* parityTable */
 /*
@@ -1591,7 +1594,7 @@ uint32 sim_map_resource(uint32 baseaddr, uint32 size, uint32 resource_type,
                 printf("%s memory 0x%05x, handler=%p\n", unmap ? "Unmapping" : "  Mapping",
                     addr, routine);
             if (unmap) {
-                if (mmu_table[page].routine == routine) /* unmap only if it was mapped */
+                if (mmu_table[page].routine == routine) {   /* unmap only if it was mapped */
                     if (MEMORYSIZE < MAXBANKSIZE)
                         if (addr < MEMORYSIZE)
                             mmu_table[page] = RAM_PAGE;
@@ -1599,6 +1602,7 @@ uint32 sim_map_resource(uint32 baseaddr, uint32 size, uint32 resource_type,
                             mmu_table[page] = EMPTY_PAGE;
                     else
                         mmu_table[page] = RAM_PAGE;
+                }
             }
             else {
                 mmu_table[page] = ROM_PAGE;
@@ -1785,44 +1789,32 @@ static int32 sim_brk_lookup (const t_addr loc, const int32 btyp) {
     return (sim_brk_pend[0] && (loc == sim_brk_ploc[0])) ? MASK_BRK : FALSE;
 }
 
-static void prepareMemoryAccessMessage(t_addr loc) {
-    extern char memoryAccessMessage[];
-    sprintf(memoryAccessMessage, "Memory access breakpoint [%05xh]", loc);
-}
-
 #define PUSH(x) {                                                   \
     MM_PUT_BYTE(SP, (x) >> 8);                                      \
     MM_PUT_BYTE(SP, x);                                             \
 }
 
 #define CHECK_BREAK_BYTE(a)                                         \
-    if (sim_brk_summ && sim_brk_test((a) & 0xffff, SWMASK('M'))) {  \
-        reason = STOP_MEM;                                          \
-        prepareMemoryAccessMessage((a) & 0xffff);                   \
-        goto end_decode;                                            \
+    if (sim_brk_summ) {                                             \
+        if (sim_brk_test((a) & 0xffff, SWMASK('M'))) {              \
+            reason = STOP_MEM;                                      \
+            prepareMemoryAccessMessage((a) & 0xffff);               \
+            goto end_decode;                                        \
+        }                                                           \
+        sim_brk_pend[0] = FALSE;                                    \
     }
 
 #define CHECK_BREAK_TWO_BYTES_EXTENDED(a1, a2, iCode)               \
     if (sim_brk_summ) {                                             \
-        br1 = sim_brk_lookup((a1) & 0xffff, SWMASK('M'));           \
-        br2 = br1 ? FALSE : sim_brk_lookup((a2) & 0xffff, SWMASK('M'));\
-        if ((br1 == MASK_BRK) || (br2 == MASK_BRK)) {               \
-            sim_brk_pend[0] = FALSE;                                \
-        }                                                           \
-        else if (br1 || br2) {                                      \
+        int32 brl = sim_brk_lookup((a1) & 0xffff, SWMASK('M'));     \
+        if ((brl == TRUE) || (brl == FALSE) && (sim_brk_lookup((a2) \
+                & 0xffff, SWMASK('M')) == TRUE)) {                  \
             reason = STOP_MEM;                                      \
-            if (br1) {                                              \
-                prepareMemoryAccessMessage((a1) & 0xffff);          \
-            }                                                       \
-            else {                                                  \
-                prepareMemoryAccessMessage((a2) & 0xffff);          \
-            }                                                       \
+            prepareMemoryAccessMessage((brl ? (a1):(a2)) & 0xffff); \
             iCode;                                                  \
             goto end_decode;                                        \
         }                                                           \
-        else {                                                      \
-            sim_brk_pend[0] = FALSE;                                \
-        }                                                           \
+        sim_brk_pend[0] = FALSE;                                    \
     }
 
 #define CHECK_BREAK_TWO_BYTES(a1, a2) CHECK_BREAK_TWO_BYTES_EXTENDED(a1, a2,;)
@@ -1877,6 +1869,17 @@ t_stat sim_instr (void) {
     return result;
 }
 
+static int32 clockHasChanged = FALSE;
+
+uint32 getClockFrequency(void) {
+    return clockFrequency;
+}
+
+void setClockFrequency(const uint32 Value) {
+    clockFrequency = Value;
+    clockHasChanged = TRUE;
+}
+
 static t_stat sim_instr_mmu (void) {
     extern int32 sim_interval;
     extern t_bool sim_brk_pend[SIM_BKPT_N_SPC];
@@ -1908,7 +1911,7 @@ static t_stat sim_instr_mmu (void) {
     register uint32 tStates;
     uint32 tStatesInSlice; /* number of t-states in 10 mSec time-slice */
     uint32 startTime, now;
-    int32 br1, br2, tStateModifier = FALSE;
+    int32 tStateModifier = FALSE;
 
     switch_cpu_now = TRUE; /* hharte */
 
@@ -1926,22 +1929,29 @@ static t_stat sim_instr_mmu (void) {
         startTime = sim_os_msec();
         tStatesInSlice = sliceLength*clockFrequency;
     }
-    else { /* make sure that sim_os_msec() is not called later */
+    else /* make sure that sim_os_msec() is not called later */
         clockFrequency = startTime = tStatesInSlice = 0;
-    }
 
     /* main instruction fetch/decode loop */
     while (switch_cpu_now == TRUE) {        /* loop until halted    */
         if (sim_interval <= 0) {            /* check clock queue    */
 #if !UNIX_PLATFORM
-            if ((reason = sim_os_poll_kbd()) == SCPE_STOP) {   /* poll on platforms without reliable signalling */
+            if ((reason = sim_os_poll_kbd()) == SCPE_STOP)   /* poll on platforms without reliable signalling */
                 break;
-            }
 #endif
-            if ( (reason = sim_process_event()) )
+            if ((reason = sim_process_event()))
                 break;
-            else
-                specialProcessing = clockFrequency | timerInterrupt | keyboardInterrupt | sim_brk_summ;
+            if (clockHasChanged) {
+                clockHasChanged = FALSE;
+                tStates = 0;
+                if (rtc_avail) {
+                    startTime = sim_os_msec();
+                    tStatesInSlice = sliceLength*clockFrequency;
+                }
+                else /* make sure that sim_os_msec() is not called later */
+                    clockFrequency = startTime = tStatesInSlice = 0;
+            }
+            specialProcessing = clockFrequency | timerInterrupt | keyboardInterrupt | sim_brk_summ;
         }
 
         if (specialProcessing) { /* quick check for special processing */
@@ -1991,12 +2001,13 @@ static t_stat sim_instr_mmu (void) {
             }
 
             if (sim_brk_summ) {
-                if (sim_brk_lookup(PC, SWMASK('E')) == TRUE) {  /* breakpoint?      */
+                if (sim_brk_test(PC, (2u << SIM_BKPT_V_SPC) | SWMASK('E'))) {           /* breakpoint?              */
                     reason = STOP_IBKPT;                        /* stop simulation  */
                     break;
                 }
                 if (sim_brk_test(GetBYTE(PC), (1u << SIM_BKPT_V_SPC) | SWMASK('I'))) {  /* instruction breakpoint?  */
-                    reason = STOP_IBKPT;                                                /* stop simulation          */
+                    reason = STOP_INSTR;                                                /* stop simulation          */
+                    prepareInstructionMessage(PC, GetBYTE(PC));
                     break;
                 }
             }
@@ -3826,7 +3837,7 @@ static t_stat sim_instr_mmu (void) {
 
             case 0xdd:      /* DD prefix */
                 CHECK_CPU_8080;
-                switch (op = RAM_PP(PC)) {
+                switch (RAM_PP(PC)) {
 
                     case 0x09:      /* ADD IX,BC */
                         tStates += 15;
@@ -4712,7 +4723,7 @@ static t_stat sim_instr_mmu (void) {
 
             case 0xed:      /* ED prefix */
                 CHECK_CPU_8080;
-                switch (op = RAM_PP(PC)) {
+                switch (RAM_PP(PC)) {
 
                     case 0x40:      /* IN B,(C) */
                         tStates += 12;
@@ -5205,7 +5216,6 @@ static t_stat sim_instr_mmu (void) {
 
                     case 0xb0:      /* LDIR */
                         tStates -= 5;
-                        acu = HIGH_REGISTER(AF);
                         BC &= ADDRMASK;
                         if (BC == 0)
                             BC = 0x10000;
@@ -5456,7 +5466,7 @@ static t_stat sim_instr_mmu (void) {
 
             case 0xfd:      /* FD prefix */
                 CHECK_CPU_8080;
-                switch (op = RAM_PP(PC)) {
+                switch (RAM_PP(PC)) {
 
                     case 0x09:      /* ADD IY,BC */
                         tStates += 15;
@@ -6388,10 +6398,10 @@ static char *ramTypeToString[] = { "AZ80", "HRAM", "VRAM", "CRAM" };
 static t_stat chip_show(FILE *st, UNIT *uptr, int32 val, void *desc) {
     fprintf(st, cpu_unit.flags & UNIT_CPU_OPSTOP ? "ITRAP, " : "NOITRAP, ");
     if (chiptype <= MAX_CHIP_TYPE)
-        fprintf(st, chipTypeToString[chiptype]);
+        fprintf(st, "%s", chipTypeToString[chiptype]);
     fprintf(st, ", ");
     if (ramtype <= MAX_RAM_TYPE)
-        fprintf(st, ramTypeToString[ramtype]);
+        fprintf(st, "%s", ramTypeToString[ramtype]);
     return SCPE_OK;
 }
 
@@ -6452,6 +6462,7 @@ static void cpu_clear(void) {
         mmu_table[i] = EMPTY_PAGE;
     if (cpu_unit.flags & UNIT_CPU_ALTAIRROM)
         install_ALTAIRbootROM();
+    clockHasChanged = FALSE;
 }
 
 static t_stat cpu_clear_command(UNIT *uptr, int32 value, char *cptr, void *desc) {
@@ -6603,8 +6614,8 @@ static void cpu_set_chiptype_short(int32 value, uint32 need_cpu_clear) {
     extern REG *sim_PC;
     if ((chiptype == value) || (chiptype > MAX_CHIP_TYPE))
         return; /* nothing to do */
-    if ((chiptype == CHIP_TYPE_8080) && (value == CHIP_TYPE_Z80) ||
-        (chiptype == CHIP_TYPE_Z80) && (value == CHIP_TYPE_8080)) {
+    if (((chiptype == CHIP_TYPE_8080) && (value == CHIP_TYPE_Z80)) ||
+        ((chiptype == CHIP_TYPE_Z80) && (value == CHIP_TYPE_8080))) {
         chiptype = value;
         return;
     }
@@ -6783,7 +6794,7 @@ static t_stat cpu_set_memory(UNIT *uptr, int32 value, char *cptr, void *desc) {
         return SCPE_ARG;
     result = sscanf(cptr, "%i%n", &size, &i);
     if ((result == 1) && (cptr[i] == 'K') && ((cptr[i + 1] == 0) ||
-            (cptr[i + 1] == 'B') && (cptr[i + 2] == 0)))
+            ((cptr[i + 1] == 'B') && (cptr[i + 2] == 0))))
         return set_size(size);
     return SCPE_ARG;
 }
@@ -6791,6 +6802,7 @@ static t_stat cpu_set_memory(UNIT *uptr, int32 value, char *cptr, void *desc) {
 /* AltairZ80 Simulator initialization */
 void altairz80_init(void) {
     cpu_clear();
+/* altairz80_print_tables(); */
 }
 
 void (*sim_vm_init) (void) = &altairz80_init;

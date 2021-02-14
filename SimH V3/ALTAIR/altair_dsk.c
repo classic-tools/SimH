@@ -1,6 +1,6 @@
 /* altair_dsk.c: MITS Altair 88-DISK Simulator
 
-   Copyright (c) 1997-2005, Charles E. Owen
+   Copyright (c) 1997-2010, Charles E. Owen
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -218,8 +218,8 @@ int32 dsk10(int32 io, int32 data)
     cur_disk = data & 0x0F;
     if (data & 0x80) {
         cur_flags[cur_disk] = 0;                        /* Disable drive */
-        cur_sect[cur_disk = 0377];
-        cur_byte[cur_disk = 0377];
+        cur_sect[cur_disk] = 0377;
+        cur_byte[cur_disk] = 0377;
         return (0);
     }
     cur_flags[cur_disk] = 0x1A;                         /* Enable: head move true */
@@ -325,6 +325,8 @@ int32 dsk12(int32 io, int32 data)
                         cur_sect[cur_disk]);*/
         pos = DSK_TRACSIZE * cur_track[cur_disk];
         pos += DSK_SECTSIZE * cur_sect[cur_disk];
+        if ((uptr == NULL) || (uptr->fileref == NULL))
+            return 0;
         rtn = fseek(uptr -> fileref, pos, 0);
         rtn = fread(dskbuf, 137, 1, uptr -> fileref);
         cur_byte[cur_disk] = 1;

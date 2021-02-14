@@ -944,14 +944,14 @@ t_stat load_cr_boot (int drvno, int switches)
 #ifdef GUI_SUPPORT
 		remark_cmd(msg);
 #else
-		printf(msg);
+		printf("%s", msg);
 #endif
 	}
 
 	return SCPE_OK;
 }
 
-t_stat cr_boot (int unitno, DEVICE *dptr)
+t_stat cr_boot (int32 unitno, DEVICE *dptr)
 {
 	t_stat rval;
 	int i;

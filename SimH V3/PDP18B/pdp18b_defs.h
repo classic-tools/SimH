@@ -1,6 +1,6 @@
 /* pdp18b_defs.h: 18b PDP simulator definitions
 
-   Copyright (c) 1993-2008, Robert M Supnik
+   Copyright (c) 1993-2012, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -23,6 +23,8 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   18-Apr-12    RMS     Added clk_cosched prototype
+   22-May-10    RMS     Added check for 64b definitions
    30-Oct-06    RMS     Added infinite loop stop
    14-Jan-04    RMS     Revised IO device call interface
    18-Oct-03    RMS     Added DECtape off reel message
@@ -52,6 +54,10 @@
 #define _PDP18B_DEFS_H_ 0
 
 #include "sim_defs.h"                                   /* simulator defns */
+
+#if defined(USE_INT64) || defined(USE_ADDR64)
+#error "18b PDP's do not support 64b values!"
+#endif
 
 /* Models: only one should be defined
 
@@ -489,5 +495,7 @@ typedef struct {
 
 t_stat set_devno (UNIT *uptr, int32 val, char *cptr, void *desc);
 t_stat show_devno (FILE *st, UNIT *uptr, int32 val, void *desc);
+
+int32 clk_cosched (int32 wait);
 
 #endif
