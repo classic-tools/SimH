@@ -1,6 +1,6 @@
 /* vax_cpu1.c: VAX complex instructions
 
-   Copyright (c) 1998-2012, Robert M Supnik
+   Copyright (c) 1998-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -23,6 +23,11 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   13-Mar-17    RMS     Annotated fall through in switch
+   14-Jul-16    RMS     Corrected REI rule 9
+   21-Jun-16    RMS     Removed reserved check on SIRR (Mark Pizzolato)
+   18-Feb-16    RMS     Changed variables in MxPR to unsigned
+   29-Mar-15    RMS     Added model-specific IPR max
    15-Mar-12    RMS     Fixed potential integer overflow in LDPCTX (Mark Pizzolato)
    25-Nov-11    RMS     Added VEC_QBUS test in interrupt handler
    23-Mar-11    RMS     Revised idle design (Mark Pizzolato)
@@ -99,9 +104,7 @@ extern int32 fault_PC;
 extern int32 pcq[PCQ_SIZE];
 extern int32 pcq_p;
 extern int32 in_ie;
-extern int32 sim_interval;
 extern int32 ibcnt, ppc;
-extern FILE *sim_deb;
 extern DEVICE cpu_dev;
 
 extern int32 Test (uint32 va, int32 acc, int32 *status);
@@ -1215,7 +1218,7 @@ Rule    SRM formulation                     Comment
  6      tmp<25:24> LEQ tmp<23:22>           tmp<cur_mode> LEQ tmp<prv_mode>
  7      tmp<20:16> LEQ PSL<20:16>           tmp<ipl> LEQ PSL<ipl>
  8      tmp<31,29:28,21,15:8> = 0           tmp<mbz> = 0
- 9      tmp<31> = 1 => tmp<cur_mode> = 3, tmp<prv_mode> = 3>, tmp<fpd,is,ipl> = 0 
+ 9      tmp<31> = 1 => tmp<cur_mode> = 3, tmp<prv_mode> = 3>, tmp<fpd,is,ipl,dv,fu,iv> = 0 
 */
 
 int32 op_rei (int32 acc)
@@ -1439,13 +1442,13 @@ return 0;
 
 int32 op_mtpr (int32 *opnd)
 {
-int32 val = opnd[0];
-int32 prn = opnd[1];
+uint32 val = opnd[0];
+uint32 prn = opnd[1];
 int32 cc;
 
 if (PSL & PSL_CUR)                                      /* must be kernel */
     RSVD_INST_FAULT;
-if (prn > 63)                                           /* reg# > 63? fault */
+if (prn > MT_MAX)                                       /* reg# > max? fault */
     RSVD_OPND_FAULT;
 CC_IIZZ_L (val);                                        /* set cc's */
 switch (prn) {                                          /* case on reg # */
@@ -1523,15 +1526,14 @@ switch (prn) {                                          /* case on reg # */
         break;
 
     case MT_ASTLVL:                                     /* ASTLVL */
-        if (val > AST_MAX)                              /* > 4? fault */
-            RSVD_OPND_FAULT;
+        MT_AST_TEST (val);                              /* trim, test val */
         ASTLVL = val;
         break;
 
     case MT_SIRR:                                       /* SIRR */
-        if ((val > 0xF) || (val == 0))
-            RSVD_OPND_FAULT;
-        SISR = SISR | (1 << val);                       /* set bit in SISR */
+        val = val & 0xF;                                /* consider only 4b */
+        if (val != 0)                                   /* if not zero */
+            SISR = SISR | (1 << val);                   /* set bit in SISR */
         break;
 
     case MT_SISR:                                       /* SISR */
@@ -1540,6 +1542,7 @@ switch (prn) {                                          /* case on reg # */
 
     case MT_MAPEN:                                      /* MAPEN */
         mapen = val & 1;
+                                                        /* fall through */
     case MT_TBIA:                                       /* TBIA */
         zap_tb (1);                                     /* clr entire TLB */
         break;
@@ -1567,12 +1570,12 @@ return cc;
 
 int32 op_mfpr (int32 *opnd)
 {
-int32 prn = opnd[0];
+uint32 prn = opnd[0];
 int32 val;
 
 if (PSL & PSL_CUR)                                      /* must be kernel */
     RSVD_INST_FAULT;
-if (prn > 63)                                           /* reg# > 63? fault */
+if (prn > MT_MAX)                                       /* reg# > max? fault */
     RSVD_OPND_FAULT;
 switch (prn) {                                          /* case on reg# */
 

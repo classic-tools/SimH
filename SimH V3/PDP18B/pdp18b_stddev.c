@@ -1,6 +1,6 @@
 /* pdp18b_stddev.c: 18b PDP's standard devices
 
-   Copyright (c) 1993-2012, Robert M Supnik
+   Copyright (c) 1993-2016, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -29,6 +29,10 @@
    tto          teleprinter
    clk          clock
 
+   15-Mar-16    RMS     Added unix v0 terminal support
+   07-Mar-16    RMS     Revised for dynamically allocated memory
+   13-Sep-15    RMS     Added APIVEC register to PTR, CLK only
+   28-Mar-15    RMS     Revised to use sim_printf
    18-Apr-12    RMS     Added clk_cosched routine
                         Revised clk and tti scheduling
    18-Jun-07    RMS     Added UNIT_IDLE to console input, clock
@@ -83,10 +87,9 @@
 #define UNIT_V_PASCII   (UNIT_V_UF + 0)                 /* punch ASCII */
 #define UNIT_PASCII     (1 << UNIT_V_PASCII)
 
-extern int32 M[];
+extern int32 *M;
 extern int32 int_hwre[API_HLVL+1], PC, ASW;
-extern int32 sim_switches;
-extern int32 sim_is_running;
+extern int32 api_vec[API_HLVL][32];
 extern UNIT cpu_unit;
 
 int32 clk_state = 0;
@@ -182,6 +185,7 @@ REG clk_reg[] = {
 #endif
     { DRDATA (TIME, clk_unit.wait, 24), REG_NZ + PV_LEFT },
     { DRDATA (TPS, clk_tps, 8), PV_LEFT + REG_HRO },
+    { ORDATA (APIVEC, api_vec[API_CLK][INT_V_CLK], 6), REG_HRO },
     { NULL }
     };
 
@@ -229,6 +233,7 @@ REG ptr_reg[] = {
     { DRDATA (POS, ptr_unit.pos, T_ADDR_W), PV_LEFT },
     { DRDATA (TIME, ptr_unit.wait, 24), PV_LEFT },
     { FLDATA (STOP_IOE, ptr_stopioe, 0) },
+    { ORDATA (APIVEC, api_vec[API_PTR][INT_V_PTR], 6), REG_HRO },
     { NULL }
     };
 
@@ -308,11 +313,13 @@ DEVICE ptp_dev = {
 
 #define TTI_MASK        ((1 << TTI_WIDTH) - 1)
 #define TTUF_V_HDX      (TTUF_V_UF + 0)                 /* half duplex */
+#define TTUF_V_UNIX     (TTUF_V_UF + 1)
 #define TTUF_HDX        (1 << TTUF_V_HDX)
+#define TTUF_UNIX       (1 << TTUF_V_UNIX)
 
 DIB tti_dib = { DEV_TTI, 1, &tti_iors, { &tti } };
 
-UNIT tti_unit = { UDATA (&tti_svc, UNIT_IDLE+TT_MODE_KSR+TTUF_HDX, 0), 0 };
+UNIT tti_unit = { UDATA (&tti_svc, UNIT_IDLE+TT_MODE_KSR+TTUF_HDX, 0), KBD_POLL_WAIT };
 
 REG tti_reg[] = {
     { ORDATA (BUF, tti_unit.buf, TTI_WIDTH) },
@@ -325,16 +332,19 @@ REG tti_reg[] = {
     { FLDATA (FDPX, tti_fdpx, 0) },
 #endif
     { DRDATA (POS, tti_unit.pos, T_ADDR_W), PV_LEFT },
-    { DRDATA (TIME, tti_unit.wait, 24), PV_LEFT },
+    { DRDATA (TIME, tti_unit.wait, 24), PV_LEFT+REG_NZ },
     { NULL }
     };
 
 MTAB tti_mod[] = {
 #if !defined (KSR28)
-    { TT_MODE, TT_MODE_KSR, "KSR", "KSR", &tty_set_mode },
-    { TT_MODE, TT_MODE_7B,  "7b",  "7B",  &tty_set_mode },
-    { TT_MODE, TT_MODE_8B,  "8b",  "8B",  &tty_set_mode },
-    { TT_MODE, TT_MODE_7P,  "7b",  NULL,  NULL },
+    { TTUF_UNIX|TT_PAR|TT_MODE, TT_MODE_KSR, "KSR", "KSR", &tty_set_mode },
+    { TTUF_UNIX|TT_PAR|TT_MODE, TT_MODE_7B,  "7b",  "7B",  &tty_set_mode },
+    { TTUF_UNIX|TT_PAR|TT_MODE, TT_MODE_8B,  "8b",  "8B",  &tty_set_mode },
+    { TTUF_UNIX|TT_PAR|TT_MODE, TT_MODE_7P,  "7b",  NULL,  NULL },
+#if !defined (PDP15)
+    { TTUF_UNIX|TT_PAR|TT_MODE, TTUF_UNIX|TT_PAR_MARK|TT_MODE_7B, "Unix v0", "UNIX", &tty_set_mode },
+#endif
 #endif
     { TTUF_HDX, 0       , "full duplex", "FDX", NULL },
     { TTUF_HDX, TTUF_HDX, "half duplex", "HDX", NULL },
@@ -386,10 +396,13 @@ REG tto_reg[] = {
 
 MTAB tto_mod[] = {
 #if !defined (KSR28)
-    { TT_MODE, TT_MODE_KSR, "KSR", "KSR", &tty_set_mode },
-    { TT_MODE, TT_MODE_7B,  "7b",  "7B",  &tty_set_mode },
-    { TT_MODE, TT_MODE_8B,  "8b",  "8B",  &tty_set_mode },
-    { TT_MODE, TT_MODE_7P,  "7p",  "7P",  &tty_set_mode },
+    { TTUF_UNIX|TT_PAR|TT_MODE, TT_MODE_KSR, "KSR", "KSR", &tty_set_mode },
+    { TTUF_UNIX|TT_PAR|TT_MODE, TT_MODE_7B,  "7b",  "7B",  &tty_set_mode },
+    { TTUF_UNIX|TT_PAR|TT_MODE, TT_MODE_8B,  "8b",  "8B",  &tty_set_mode },
+    { TTUF_UNIX|TT_PAR|TT_MODE, TT_MODE_7P,  "7p",  "7P",  &tty_set_mode },
+#if !defined (PDP15)
+    { TTUF_UNIX|TT_PAR|TT_MODE, TTUF_UNIX|TT_PAR_MARK|TT_MODE_7B, "Unix v0", "UNIX", &tty_set_mode },
+#endif
 #endif
     { MTAB_XTD|MTAB_VDV, 0, "DEVNO", NULL, NULL, &show_devno },
     { 0 }
@@ -428,7 +441,7 @@ int32 t;
 
 t = sim_rtc_calb (clk_tps);                             /* calibrate clock */
 tmxr_poll = t;                                          /* set mux poll */
-sim_activate (&clk_unit, t);                            /* reactivate unit */
+sim_activate_after (uptr, 1000000/clk_tps);             /* reactivate unit */
 #if defined (PDP15)
 clk_task_upd (FALSE);                                   /* update task timer */
 #endif
@@ -453,7 +466,6 @@ int32 clk_task_upd (t_bool clr)
 {
 uint32 delta, val, iusec10;
 uint32 cur = sim_grtime ();
-uint32 old = clk_task_timer;
 double usec10;
 
 if (cur > clk_task_last)
@@ -495,6 +507,7 @@ t_stat clk_reset (DEVICE *dptr)
 {
 int32 t;
 
+sim_register_clock_unit (&clk_unit);                    /* declare clock unit */
 CLR_INT (CLK);                                          /* clear flag */
 if (!sim_is_running) {                                  /* RESET (not CAF)? */
     t = sim_rtc_init (clk_unit.wait);                   /* init calibration */
@@ -584,7 +597,7 @@ if ((temp = getc (ptr_unit.fileref)) == EOF) {          /* end of file? */
 #endif
     if (feof (ptr_unit.fileref)) {
         if (ptr_stopioe)
-            printf ("PTR end of file\n");
+            sim_printf ("PTR end of file\n");
         else return SCPE_OK;
         }
     else perror ("PTR I/O error");
@@ -594,7 +607,7 @@ if ((temp = getc (ptr_unit.fileref)) == EOF) {          /* end of file? */
 if (ptr_state == 0) {                                   /* ASCII */
     if (ptr_unit.flags & UNIT_RASCII) {                 /* want parity? */
         ptr_unit.buf = temp = temp & 0177;              /* parity off */
-        while (temp = temp & (temp - 1))
+        while ((temp = temp & (temp - 1)))
             ptr_unit.buf = ptr_unit.buf ^ 0200;         /* count bits */
         ptr_unit.buf = ptr_unit.buf ^ 0200;             /* set even parity */
         }
@@ -654,7 +667,7 @@ ptr_err = 0;                                             /* attach clrs error */
 ptr_unit.flags = ptr_unit.flags & ~(UNIT_RASCII|UNIT_KASCII);
 if (sim_switches & SWMASK ('A'))
     ptr_unit.flags = ptr_unit.flags | UNIT_RASCII;
-if (sim_switches & SWMASK ('K'))
+else if (sim_switches & SWMASK ('K'))
     ptr_unit.flags = ptr_unit.flags | UNIT_KASCII;
 return SCPE_OK;
 }
@@ -861,8 +874,8 @@ static const int32 boot_rom[] = {
 
 t_stat ptr_boot (int32 unitno, DEVICE *dptr)
 {
-int32 i, mask, wd;
-extern int32 sim_switches;
+size_t i;
+int32 mask, wd;
 
 #if defined (PDP7)
 if (sim_switches & SWMASK ('H'))                        /* hardware RIM load? */
@@ -994,7 +1007,7 @@ if (pulse & 001) {                                      /* KSF */
     }
 if (pulse & 002) {                                      /* KRS/KRB */
     CLR_INT (TTI);                                      /* clear flag */
-    dat = dat | tti_unit.buf & TTI_MASK;                /* return buffer */
+    dat = dat | (tti_unit.buf & TTI_MASK);              /* return buffer */
 #if defined (PDP15)
     if (pulse & 020)                                    /* KRS? */
         tti_fdpx = 1;
@@ -1014,8 +1027,7 @@ t_stat tti_svc (UNIT *uptr)
 #if defined (KSR28)                                     /* Baudot... */
 int32 in, c, out;
 
-sim_activate (uptr, KBD_WAIT (uptr->wait, clk_cosched (tmxr_poll)));
-                                                        /* continue poll */
+sim_activate (uptr, clk_cosched (tmxr_poll));           /* continue poll */
 if (tti_2nd) {                                          /* char waiting? */
     uptr->buf = tti_2nd;                                /* return char */
     tti_2nd = 0;                                        /* not waiting */
@@ -1050,14 +1062,21 @@ else {
 #else                                                   /* ASCII... */
 int32 c, out;
 
-sim_activate (uptr, KBD_WAIT (uptr->wait, clk_cosched (tmxr_poll)));
-                                                        /* continue poll */
+sim_activate (uptr, clk_cosched (tmxr_poll));           /* continue poll */
 if ((c = sim_poll_kbd ()) < SCPE_KFLAG)                 /* no char or error? */
     return c;
 out = c & 0177;                                         /* mask echo to 7b */
 if (c & SCPE_BREAK)                                     /* break? */
     c = 0;
 else c = sim_tt_inpcvt (c, TT_GET_MODE (uptr->flags) | TTUF_KSR);
+if (uptr->flags & TTUF_UNIX) {                          /* unix v0? */
+    if (c == 0215)                                      /* cr -> lf */
+        c = out = 0212;
+    else if (c == 0212)                                 /* lf -> cr */
+        c = out = 0215;
+    else if (c == 0233)                                 /* esc -> altmode */
+        c = 0375;
+    }
 if ((uptr->flags & TTUF_HDX) && !tti_fdpx && out &&     /* half duplex and */
     ((out = sim_tt_outcvt (out, TT_GET_MODE (uptr->flags) | TTUF_KSR)) >= 0)) {
     sim_putchar (out);                                  /* echo */
@@ -1089,7 +1108,7 @@ if (!sim_is_running) {                                  /* RESET (not CAF)? */
     tty_shift = 0;                                      /* clear state */
     tti_fdpx = 0;                                       /* clear dpx mode */
     }
-sim_activate (&tti_unit, KBD_WAIT (tti_unit.wait, tmxr_poll));
+sim_activate (&tti_unit, tmxr_poll);
 return SCPE_OK;
 }
 
@@ -1163,7 +1182,7 @@ return SCPE_OK;
 
 t_stat tty_set_mode (UNIT *uptr, int32 val, char *cptr, void *desc)
 {
-tti_unit.flags = (tti_unit.flags & ~TT_MODE) | val;
-tto_unit.flags = (tto_unit.flags & ~TT_MODE) | val;
+tti_unit.flags = (tti_unit.flags & ~(TTUF_UNIX|TT_PAR|TT_MODE)) | val;
+tto_unit.flags = (tto_unit.flags & ~(TTUF_UNIX|TT_PAR|TT_MODE)) | val;
 return SCPE_OK;
 }

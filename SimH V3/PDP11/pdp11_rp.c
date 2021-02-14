@@ -1,6 +1,6 @@
 /* pdp11_rp.c - RP04/05/06/07 RM02/03/05/80 Massbus disk controller
 
-   Copyright (c) 1993-2008, Robert M Supnik
+   Copyright (c) 1993-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,9 +25,12 @@
 
    rp           RH/RP/RM moving head disks
 
+   13-Mar-17    RMS     Annotated intentional fall through in switch
+   23-Oct-13    RMS     Revised for new boot setup routine
+   08-Dec-12    RMS     UNLOAD shouldn't set ATTN (Mark Pizzolato)
    17-May-07    RMS     CS1 DVA resides in device, not MBA
    21-Nov-05    RMS     Enable/disable device also enables/disables Massbus adapter
-   12-Nov-05	RMS     Fixed DriveClear, does not clear disk address
+   12-Nov-05    RMS     Fixed DriveClear, does not clear disk address
    16-Aug-05    RMS     Fixed C++ declaration and cast problems
    18-Mar-05    RMS     Added attached test to detach routine
    12-Sep-04    RMS     Cloned from pdp11_rp.c
@@ -309,9 +312,6 @@
 #define RP07_DEV        020042
 #define RP07_SIZE       (RP07_SECT * RP07_SURF * RP07_CYL * RP_NUMWD)
 
-#define RP_CTRL         0
-#define RM_CTRL         1
-
 struct drvtyp {
     int32       sect;                                   /* sectors */
     int32       surf;                                   /* surfaces */
@@ -346,7 +346,7 @@ uint16 rper3[RP_NUMDR] = { 0 };                         /* error status 3 */
 uint16 rpec1[RP_NUMDR] = { 0 };                         /* ECC correction 1 */
 uint16 rpec2[RP_NUMDR] = { 0 };                         /* ECC correction 2 */
 int32 rp_stopioe = 1;                                   /* stop on error */
-int32 rp_swait = 10;                                    /* seek time */
+int32 rp_swait = 26;                                    /* seek time */
 int32 rp_rwait = 10;                                    /* rotate time */
 static const char *rp_fname[CS1_N_FNC] = {
     "NOP", "UNLD", "SEEK", "RECAL", "DCLR", "RLS", "OFFS", "RETN",
@@ -354,8 +354,6 @@ static const char *rp_fname[CS1_N_FNC] = {
     "20", "21", "22", "23", "WRCHK", "25", "26", "27",
     "WRITE", "WRHDR", "32", "33", "READ", "RDHDR", "36", "37"
     };
-
-extern FILE *sim_deb;
 
 t_stat rp_mbrd (int32 *data, int32 ofs, int32 drv);
 t_stat rp_mbwr (int32 data, int32 ofs, int32 drv);
@@ -709,6 +707,13 @@ switch (fnc) {                                          /* case on function */
         return SCPE_OK;
 
     case FNC_UNLOAD:                                    /* unload */
+        if (drv_tab[dtype].ctrl == RM_CTRL) {           /* RM? */
+            rp_set_er (ER1_ILF, drv);                   /* not supported */
+            break;
+            }
+        rp_detach (uptr);                               /* detach unit */
+        return SCPE_OK;
+
     case FNC_RECAL:                                     /* recalibrate */
         dc = 0;                                         /* seek to 0 */
     case FNC_SEEK:                                      /* seek */
@@ -820,7 +825,7 @@ switch (fnc) {                                          /* case on function */
             mba_set_exc (rp_dib.ba);                    /* set exception */
             rp_update_ds (DS_ATA, drv);                 /* set attn */
             return SCPE_OK;
-            }
+            }                                           /* fall through */
     case FNC_WCHK:                                      /* write check */
     case FNC_READ:                                      /* read */
     case FNC_READH:                                     /* read headers */
@@ -1011,12 +1016,14 @@ return SCPE_OK;
 t_stat rp_detach (UNIT *uptr)
 {
 int32 drv;
+extern int32 sim_is_running;
 
 if (!(uptr->flags & UNIT_ATT))                          /* attached? */
     return SCPE_OK;
 drv = (int32) (uptr - rp_dev.units);                    /* get drv number */
 rpds[drv] = rpds[drv] & ~(DS_MOL | DS_RDY | DS_WRL | DS_VV | DS_OFM);
-rp_update_ds (DS_ATA, drv);                             /* request intr */
+if (!sim_is_running)                                    /* from console? */
+    rp_update_ds (DS_ATA, drv);                         /* request intr */
 return detach_unit (uptr);
 }
 
@@ -1076,7 +1083,6 @@ static const uint16 boot_rom[] = {
 t_stat rp_boot (int32 unitno, DEVICE *dptr)
 {
 int32 i;
-extern int32 saved_PC;
 extern uint16 *M;
 UNIT *uptr = rp_dev.units + unitno;
 
@@ -1087,7 +1093,7 @@ M[BOOT_CSR >> 1] = mba_get_csr (rp_dib.ba) & DMASK;
 if (drv_tab[GET_DTYPE (uptr->flags)].ctrl == RP_CTRL)
     M[BOOT_START >> 1] = 042102;                        /* "BD" */
 else M[BOOT_START >> 1] = 042122;                       /* "RD" */
-saved_PC = BOOT_ENTRY;
+cpu_set_boot (BOOT_ENTRY);
 return SCPE_OK;
 }
 

@@ -1,6 +1,6 @@
 /* nova_sys.c: NOVA simulator interface
 
-   Copyright (c) 1993-2012, Robert M. Supnik
+   Copyright (c) 1993-2017, Robert M. Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -23,9 +23,11 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   09-Mar-17    RMS     Fixed missing break in loader (COVERITY)
+                        Fixed overlook case in address parse (COVERITY)
    25-Mar-12    RMS     Fixed declaration (Mark Pizzolato)
    04-Jul-07    BKR     DEC's IOF/ION changed to DG's INTDS/INTEN mnemonic,
-                        Fixed QTY/ADCV device name,
+                        Fixed QTY/ADCV device name
                         RDSW changed to DDG's READS mnemonic,
                         fixed/enhanced 'load' command for DG-compatible binary tape format
    26-Mar-04    RMS     Fixed warning with -std=c99
@@ -78,9 +80,6 @@ extern int32 Usermap;
 extern int32 MapStat;
 
 #endif
-
-extern int32 sim_switches;
-
 
 /* SCP data structures
 
@@ -179,11 +178,11 @@ internal state machine:
 
 t_stat sim_load (FILE *fileref, char *cptr, char *fnam, int flag)
 {
-int32	data, csum, count, state, i;
-int32	origin;
-int	pos ;
-int	block_start ;
-int	done ;
+int32 data, csum, count, state, i;
+int32 origin;
+int pos;
+int block_start;
+int done;
 
 if ((*cptr != 0) || (flag != 0))
     return ( SCPE_ARG ) ;
@@ -196,7 +195,7 @@ for ( pos = 0 ; (! done) && ((i=getc(fileref)) != EOF) ; ++pos )
     switch (state) {
         case 0:                                         /* leader */
             count = i;
-            state = (count != 0) ;
+            state = (count != 0);
         if ( state )
         block_start = pos ;
             break;
@@ -207,8 +206,7 @@ for ( pos = 0 ; (! done) && ((i=getc(fileref)) != EOF) ; ++pos )
         case 2:                                         /* low origin */
             origin = i;
             state = 3;
-        break ;
-
+            break;
         case 3:                                         /* high origin */
             origin = (i << 8) | origin;
             csum = csum + origin;
@@ -219,35 +217,37 @@ for ( pos = 0 ; (! done) && ((i=getc(fileref)) != EOF) ; ++pos )
             state = 5;
             break;
         case 5:                                         /* high checksum */
-            csum = (csum + (i << 8)) & 0xFFFF ;
+            csum = (csum + (i << 8)) & 0xFFFF;
             if (count == 1)
                 {
                 /*  'start' block  */
                 /*  do any auto-start check or inhibit check  */
                 saved_PC = (origin & 077777) ;              /*  0B0 = auto-start program    */
                                                             /*  1B0 = do not auto start */
-                state	= 0 ;                               /*  indicate okay state */
-                done	= 1 ;                               /*  we're done! */
+                state = 0 ;                                 /*  indicate okay state */
+                done = 1 ;                                  /*  we're done! */
                 if ( ! (origin & 0x8000) )
                     {
-                    printf( "auto start @ %05o \n", (origin & 0x7FFF) ) ;
+                    sim_printf( "auto start @ %05o \n", (origin & 0x7FFF) ) ;
                     }
-                break ;
+                break;
                 }
-        if ( ((count & 0x8000) == 0) && (count > 1))
+            if ( ((count & 0x8000) == 0) && (count > 1))
             {
-            /*  'ignore' block  */
-            state = 8 ;
+                /*  'ignore' block  */
+                state = 8;
+                break;
             }
-        /*  'data' or 'repeat' block  */
-        count = 0200000 - count ;
-        if ( count <= 020 )
+
+            /*  'data' or 'repeat' block  */
+            count = 0200000 - count ;
+            if ( count <= 020 )
             {
-            /*  'data' block  */
-            state = 6 ;
-            break ;
+                /*  'data' block  */
+                state = 6;
+                break;
             }
-        /*  'repeat' block (multiple data)  */
+            /*  'repeat' block (multiple data)  */
 
             if (count > 020) {                           /* large block */
                 for (count = count - 1; count > 1; count--) {
@@ -268,9 +268,9 @@ for ( pos = 0 ; (! done) && ((i=getc(fileref)) != EOF) ; ++pos )
             break;
         case 7:                                         /* high data */
             data = (i << 8) | data;
-            csum = (csum + data) & 0xFFFF ;
+            csum = (csum + data) & 0xFFFF;
 
-            if (origin >= AMASK /* MEMSIZE? */)
+            if (origin >= AMASK)
                 return SCPE_NXM;
             M[origin] = data;
             origin = origin + 1;
@@ -278,8 +278,8 @@ for ( pos = 0 ; (! done) && ((i=getc(fileref)) != EOF) ; ++pos )
             if (count == 0) {
                 if ( csum )
                     {
-                    printf( "checksum error: block start at %d [0x%x] \n", block_start, block_start ) ;
-                    printf( "calculated: 0%o [0x%4x]\n", csum, csum ) ;
+                    sim_printf( "checksum error: block start at %d [0x%x] \n", block_start, block_start ) ;
+                    sim_printf( "calculated: 0%o [0x%4x]\n", csum, csum ) ;
                     if ( ! (sim_switches & SWMASK('I')) )
                         return SCPE_CSUM;
                     }
@@ -883,6 +883,7 @@ if (*cptr == '@') {                                     /* indirect? */
 if (*cptr == '.') {                                     /* relative? */
     pflag = pflag | A_PER;
     x = 1;                                              /* "index" is PC */
+    d = 0;                                              /* default disp is 0 */
     cptr++;
     }
 if (*cptr == '+') {                                     /* + sign? */

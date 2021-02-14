@@ -1,6 +1,6 @@
 /* i1401_mt.c: IBM 1401 magnetic tape simulator
 
-   Copyright (c) 1993-2011, Robert M. Supnik
+   Copyright (c) 1993-2016, Robert M. Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,8 @@
 
    mt           7-track magtape
 
+   20-Oct-16    RMS     Must call sim_tape_attach to use library (Mark Pizzolato)
+   03-Sep-13    RMS     Read TMK does not write GM+WM to memory
    19-Mar-11    RMS     Restored lost edit to insert EOF in memory on read EOF
                         Reverted multiple tape indicator implementation
    20-Jan-11    RMS     Fixed branch on END indicator per hardware (Van Snyder)
@@ -113,7 +115,6 @@ extern uint8 M[];                                       /* memory */
 extern int32 ind[64];
 extern int32 BS, iochk;
 extern UNIT cpu_unit;
-extern FILE *sim_deb;
 
 t_stat mt_reset (DEVICE *dptr);
 t_stat mt_boot (int32 unitno, DEVICE *dptr);
@@ -170,7 +171,7 @@ DEVICE mt_dev = {
     "MT", mt_unit, mt_reg, mt_mod,
     MT_NUMDR, 10, 31, 1, 8, 8,
     NULL, NULL, &mt_reset,
-    &mt_boot, NULL, NULL,
+    &mt_boot, &sim_tape_attach, &sim_tape_detach,
     NULL, DEV_DEBUG
     };
 
@@ -342,6 +343,8 @@ switch (mod) {
                 return STOP_WRAP;
                 }
             }
+        if (st == MTSE_TMK)                             /* if TMK, no GM+WM */
+            break;
         if (M[BS] != (BCD_GRPMRK + WM)) {               /* not GM+WM at end? */
             if (flag & MD_WM)                           /* LCA: clear WM */
                 M[BS] = BCD_GRPMRK;
@@ -469,7 +472,6 @@ return SCPE_OK;
 t_stat mt_boot (int32 unitno, DEVICE *dptr)
 {
 extern int32 saved_IS;
-extern int32 sim_switches;
 
 if ((sim_switches & SWMASK ('N')) == 0)                 /* unless -n */
     sim_tape_rewind (&mt_unit[unitno]);                 /* force rewind */

@@ -28,13 +28,256 @@
 #define _SIM_REV_H_     0
 
 #define SIM_MAJOR       3
-#define SIM_MINOR       9
+#define SIM_MINOR       10
 #define SIM_PATCH       0
 #define SIM_DELTA       0
+
+/* V3.10 revision history
+
+   V3.10 backports an significant number of modules and features from
+   the SimH 4.x master branch, as well as some unique new features.
+
+patch   date            module(s) and fix(es)
+
+  0     tbd             scp.c and supporting libraries
+                        - added sim_printf
+                        - added ATTACH -N switch
+                        - added v4 compatibility macros
+                        - integration with HP features
+
+                        All simulator families
+                        - revised to use sim_printf
+
+                        Eclipse/Nova
+                        - fixed bug in Eclipse signed divide
+                        - added parity to terminal output
+
+                        H316
+                        - added extended interrupts from Bob Armstrong
+                        - numerous fixes from Bob Armstrong
+
+                        HP2100/HP3000
+                        - split to separate source tree
+
+                        i1401
+                        - read cards from and output line printer to the console window
+
+                        i1620
+                        - added deferred IO and RELEASE button simulation
+                        - added SET TTY 1DIGIT
+                        - added SET LPT NOFF
+                        - numerous fixes from Tom McBride, Bob Armstrong, and Dave Wise
+
+                        i7094
+                        - fixed print chain selection
+
+                        Interdata
+                        - fixed bugs in TTP output mode selection
+                        - fixed bug in handling of OC to console display
+
+                        PDP1
+                        - added Expensive Typewriter ribbon color support
+                        - added ASCII output mode for paper tape punch
+
+                        PDP8
+                        - added multi-segment loader and new breakpoints from Dave Gesswein
+                        - changed RESET to clear L'AC, per schematics
+                        - added LS8E support for WPS8
+
+                        PDP10
+                        - added ITS RIM10 support to loader
+                        - fixed bugs in ITS 1PROCEED
+                        - numerous fixes from Tim Litt
+
+                        PDP11
+                        - added NOBEVENT support for 11/03, 11/23
+                        - changed CR11 priority level to BR6
+                        - fixed bug in CSM
+                        - fixed bugs in CR11
+                        - fixed RJS11 register block length
+                        - fixed RF11 CSR address in boot code
+                        - fixed MMR1 tracking of PC and floating point operations
+                        - UC15 support
+
+                        PDP18B
+                        - added RB09 to PDP7 for unix v0
+                        - added drum to PDP9
+                        - added commands to set/show 3-cycle databreak registers
+                        - added RP03 support
+                        - added unix v0 character type support
+                        - UC15 support
+
+                        SDS
+                        - implemented tape erase
+                        - bug fixes
+
+                        VAX
+                        - added unaligned IO support for VaxStation II Ultrix
+                        - fixed TODR to only increment if != 0
+                        - fixed compatibility mode checks in REI
+                        - fixed bug decimal instruction left shift routine
+                        - minor modularization improvements per 4.X
+*/
 
 /* V3.9 revision history
 
 patch   date            module(s) and fix(es)
+
+  1     not released    sim_console.h, sim_console.c:
+                        - added tab stop routines
+  
+                        h316_stddev.c:
+                        - fixed TTY output behavior (Bob Armstrong)
+
+                        h316_sys.c:
+                        - added symbolic names for IO devices
+                        - fixed handling of SMK and OTK
+  
+                        i1401_cpu.c:
+                        - fixed treatment of overflow (Ken Shirriff)
+
+                        i1401_lp.c:
+                        - fixed printer chain selection
+
+                        1401_sys.c
+                        - fixed d character printout (Van Snyder)
+
+                        1620_cd.c:
+                        - fixed WA card punch translations (Bob Armstrong)
+                        - fixed end of line processing on read (Bob Armstrong)
+
+                        1620_cpu.c:
+                        - fixed compare flows (Tom McBride)
+                        - fixed several bugs in add and compare (Bob Armstrong)
+                        - fixed handling of P field in K instruction (Bob Armstrong)
+
+                        1620_fp.c:
+                        - revised for simplified add_field
+
+                        i1620_lp.c:
+                        - fixed DN wraparound (Bob Armstrong)
+                        - fixed test on VFU 10 (Bob Armstrong)
+
+                        i1620_pt.c:
+                        - fixed translation of paper tape code X0C
+                        - fixed DN wraparound (Bob Armstrong)
+
+                        i1620_tty.c:
+                        - fixed DN wraparound (Bob Armstrong)
+
+                        id_pas.c:
+                        - poll PAS immediately after attach to pick up connect
+
+                        nova_cpu.c:
+                        - added clarifying braces (Dave Bryan)
+
+                        pdp1_dcs.c:
+                        - poll DCS immediately after attach to pick up connect
+
+                        pdp10_rp.c:
+                        - fixed incorrect copy/paste from pdp11_rp.c
+
+                        pdp10_tu.c:
+                        - fixed bug in read/write check reverse (Dave Bryan)
+
+                        pdp11_defs.h:
+                        - fixed base address for RQB, RQC, RQD
+                        - added address and IPL data for RS03/RS04
+                        - added cpu_set_boot prototype
+
+                        pdp11_cpu.c:
+                        - MMR1 does not track PC changes (Johnny Billquist)
+                        - added cpu_set_boot
+                        - fixed bug in CSM (John Dundas)
+
+                        pdp11_cpumod.c:
+                        - fixed model change to set memory size as last step
+
+                        pdp11_dc.c, pdp11_dl.c:
+                        - poll input immediately after attach to pick up connect
+
+                        pdp11_fp.c:
+                        - MMR1 does not track PC changes (Johnny Billquist)
+
+                        pdp11_hk.c:
+                        - rewrote error handling
+                        - rewrote interrupt handling
+                        - revised to use new boot setup routine
+
+                        pdp11_rf.c, pdp11_rx.c, pdp11_ry.c, pdp11_tc.c,
+                        pdp11_tm.c, pdp11_ts.c, pdp11_tu.c:
+                        - revised to use new boot setup routine
+
+                        pdp11_rh.c:
+                        - added third Massbus adapter, debug printouts
+
+                        pdp11_rk.c:
+                        - fixed behavior of RKDS with non-existant drives (Mark Pizzolato)
+                        - revised to use new boot setup routine
+
+                        pdp11_rp.c:
+                        - UNLOAD shouldn't set ATTN (Mark Pizzolato)
+                        - revised to use new boot setup routine
+
+                        pdp11_rs.c:
+                        - revised to use new boot setup routine
+
+                        pdp11_rq.c:
+                        - fixed bug in ABORT link walk loop (Dave Bryan)
+                        - revised to use new boot setup routine
+
+                        pdp11_sys.c:
+                        - added third Massbus adapter, RS03/RS04
+
+                        pdp11_ta.c:
+                        - fixed bug to set RDY on reset (Ian Hammond)
+                        - added CAPS-11 bootstrap (Ian Hammond)
+                        - revised to use new boot setup routine
+
+                        pdp11_tq.c:
+                        - fixed bug in ABORT link walk loop (Dave Bryan)
+                        - revised to use new boot setup routine
+
+                        pdp15_tt1.c:
+                        - poll TTIX immediately after attach to pick up connect
+
+                        pdp8_cpu.c:
+                        - fixed "boot in wrong field" bug (Dave Gesswein)
+
+                        pdp8_ct.c, pdp8_df.c, pdp8_dt.c, pdp8_rf.c, pdp8_rk.c,
+                        pdp8_rl.c, pdp8_rx.c, pdp8_td.c:
+                        - changed to use central cpu_setboot routine
+
+                        pdp8_rk.c:
+                        - raised RK_MIN so that RKLFMT will work (Mark Pizzolato)
+                        - changed to use central cpu_setboot routine
+
+                        pdp8_sys.c:
+                        - fixed recognition of initial field change (Dave Gesswein)
+
+                        pdp8_ttx.c:
+                        - poll TTIX immediately after attach to pick up connect (Mark Pizzolato)
+
+                        vax_mmu.c:
+                        - revised unaligned handling to allow model-specific non-memory routines
+
+                        vax_io.c:
+                        - added support for unaligned IO space references
+
+                        vax_sysdev.c:
+                        - added support for unaligned register space references
+
+                        vax780_defs.h, vaxmod_defs.h:
+                        - removed boot code for TQ (tape boot not supported)
+                        - fixed base address for RQB, RQC, RQD
+                        - reverted broken MBZ test for 11/780
+
+                        vax780_mba.c:
+                        - block interrupt if data transfer in progress (Mark Pizzolato)
+
+                        vax780_sbi.c:
+                        - removed boot table entry for TQ (tape boot not supported)
+
 
   0     01-May-2012     scp.c:
                         - added *nix READLINE support (Mark Pizzolato)
@@ -208,7 +451,7 @@ patch   date            module(s) and fix(es)
 
                         pdp11_io.c:
                         - fixed Qbus interrupts to treat all IO devices (except clock) as BR4
-			- fixed order of int_internal (Jordi Guillaumes i Pons)
+                        - fixed order of int_internal (Jordi Guillaumes i Pons)
 
                         ppd11_rf.c
                         - fixed bug in updating mem addr extension (Peter Schorn)
@@ -236,6 +479,7 @@ patch   date            module(s) and fix(es)
                         
                         pdp11_ts.c:
                         - fixed t_addr printouts for 64b big-endian systems (Mark Pizzolato)
+                        - fixed bug in read forward byte swapped (Mark Pizzolato)
 
                         pdp11_tu.c:
                         - fixed t_addr printouts for 64b big-endian systems (Mark Pizzolato)
@@ -358,7 +602,7 @@ patch   date            module(s) and fix(es)
 
                         vaxmod_def.h
                         - moved all Qbus devices to BR4; deleted RP definitions
-
+*/
 
 /* V3.8 revision history
 
@@ -711,7 +955,7 @@ patch   date            module(s) and fix(es)
 
                         vax_cmode.c, vax_io.c, vax780_uba.c:
                         - fixed declarations (Mark Pizzolato)
-
+*/
 
 /* V3.7 revision history 
 
@@ -983,7 +1227,7 @@ patch   date            module(s) and fix(es)
 
                         vax_syscm.c:
                         - fixed operand order in EIS instructions (W.F.J. Mueller)
-
+*/
 
 /* V3.6 revision history 
 
@@ -1157,7 +1401,7 @@ patch   date            module(s) and fix(es)
                           to support "denormal" argument from POLYH
                         - fixed EMODH to concatenate 15b of 16b extension
                         - fixed bug in reported VA on faulting cross-page write
-
+*/
 
 /* V3.5 revision history 
 
@@ -1294,6 +1538,7 @@ patch   date            module(s) and fix(es)
                         vaxmod_defs.h: added QDSS support
 
                         vax_io.c: revised autoconfiguration algorithm and interface
+*/
 
 /* V3.4 revision history 
 
@@ -1332,6 +1577,7 @@ patch   date            module(s) and fix(es)
                         - fixed error reporting
 
                         pdp11_tu.c: fixed error reporting
+*/
 
 /* V3.3 revision history 
 
@@ -1584,6 +1830,7 @@ patch   date            module(s) and fix(es)
                         vax_syslist.c:
                         - split from vax_sys.c
                         - removed PTR, PTP
+*/
 
 /* V3.2 revision history 
 
@@ -1783,6 +2030,7 @@ patch   date            module(s) and fix(es)
                         vax_cpu1.c:
                         - added PC read fault in EXTxV
                         - fixed PC write fault in INSV
+*/
 
 /* V3.1 revision history
 
@@ -1896,6 +2144,7 @@ patch   date            module(s) and fix(es)
                         id32_cpu.c:
                         - revised instruction decoding
                         - added instruction history
+*/
 
 /* V3.0 revision history 
 
@@ -2062,6 +2311,7 @@ patch   date            module(s) and fix(es)
                         id_pt.c: fixed type declaration (Mark Pizzolato)
 
                         gri_cpu.c: fixed bug in SC queue pointer management
+*/
 
 /* V2.10 revision history
 
@@ -2360,6 +2610,7 @@ patch   date            module(s) and fix(es)
                         - disabled by default
 
                         IBM 1620: first release
+*/
 
 /* V2.9 revision history
 

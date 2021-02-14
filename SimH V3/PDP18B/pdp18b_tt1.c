@@ -1,6 +1,6 @@
 /* pdp18b_ttx.c: PDP-9/15 additional terminals simulator
 
-   Copyright (c) 1993-2012, Robert M Supnik
+   Copyright (c) 1993-2016, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,9 @@
 
    ttix,ttox    LT15/LT19 terminal input/output
 
+   19-Sep-16    RMS     Limit connection poll to configured lines
+   13-Sep-15    RMS     Added APIVEC register
+   11-Oct-13    RMS     Poll TTIX immediately to pick up initial connect
    18-Apr-12    RMS     Revised to use clock coscheduling
    19-Nov-08    RMS     Revised for common TMXR show routines
    18-Jun-07    RMS     Added UNIT_IDLE flag
@@ -57,11 +60,12 @@ uint32 ttix_done = 0;                                   /* input flags */
 uint32 ttox_done = 0;                                   /* output flags */
 uint8 ttix_buf[TTX_MAXL] = { 0 };                       /* input buffers */
 uint8 ttox_buf[TTX_MAXL] = { 0 };                       /* output buffers */
-TMLN ttx_ldsc[TTX_MAXL] = { 0 };                        /* line descriptors */
+TMLN ttx_ldsc[TTX_MAXL] = { {0} };                      /* line descriptors */
 TMXR ttx_desc = { 1, 0, 0, ttx_ldsc };                  /* mux descriptor */
 #define ttx_lines ttx_desc.lines                        /* current number of lines */
 
 extern int32 int_hwre[API_HLVL+1];
+extern int32 api_vec[API_HLVL][32];
 extern int32 tmxr_poll;
 extern int32 stop_inst;
 
@@ -104,6 +108,10 @@ REG ttix_reg[] = {
     { FLDATA (INT, int_hwre[API_TTI1], INT_V_TTI1) },
     { DRDATA (TIME, ttix_unit.wait, 24), REG_NZ + PV_LEFT },
     { ORDATA (DEVNUM, ttix_dib.dev, 6), REG_HRO },
+    { DRDATA (LINES, ttx_desc.lines, 6), REG_HRO },
+#if defined (PDP15)
+    { ORDATA (APIVEC, api_vec[API_TTI1][INT_V_TTI1], 6), REG_HRO },
+#endif
     { NULL }
     };
 
@@ -128,7 +136,7 @@ DEVICE tti1_dev = {
     1, 10, 31, 1, 8, 8,
     &tmxr_ex, &tmxr_dep, &ttx_reset,
     NULL, &ttx_attach, &ttx_detach,
-    &ttix_dib, DEV_NET | DEV_DISABLE
+    &ttix_dib, DEV_MUX | DEV_DISABLE
     };
 
 /* TTOx data structures
@@ -163,6 +171,9 @@ REG ttox_reg[] = {
     { FLDATA (INT, int_hwre[API_TTO1], INT_V_TTO1) },
     { URDATA (TIME, ttox_unit[0].wait, 10, 24, 0,
               TTX_MAXL, PV_LEFT) },
+#if defined (PDP15)
+    { ORDATA (APIVEC, api_vec[API_TTO1][INT_V_TTO1], 6), REG_HRO },
+#endif
     { NULL }
     };
 
@@ -220,9 +231,9 @@ ln = tmxr_poll_conn (&ttx_desc);                        /* look for connect */
 if (ln >= 0)                                            /* got one? rcv enab */
     ttx_ldsc[ln].rcve = 1;
 tmxr_poll_rx (&ttx_desc);                               /* poll for input */
-for (ln = 0; ln < TTX_MAXL; ln++) {                     /* loop thru lines */
+for (ln = 0; ln < ttx_lines; ln++) {                    /* loop thru lines */
     if (ttx_ldsc[ln].conn) {                            /* connected? */
-        if (temp = tmxr_getc_ln (&ttx_ldsc[ln])) {      /* get char */
+        if ((temp = tmxr_getc_ln (&ttx_ldsc[ln]))) {    /* get char */
             if (temp & SCPE_BREAK)                      /* break? */
                 c = 0;
             else c = sim_tt_inpcvt (temp, TT_GET_MODE (ttox_unit[ln].flags) | TTUF_KSR);
@@ -258,7 +269,7 @@ if (ttix_done) {
     }
 else {
     CLR_INT (TTI1);
-	}
+    }
 return;
 }
 
@@ -396,7 +407,7 @@ t_stat r;
 r = tmxr_attach (&ttx_desc, uptr, cptr);                /* attach */
 if (r != SCPE_OK)                                       /* error */
     return r;
-sim_activate (uptr, tmxr_poll);                         /* start poll */
+sim_activate (uptr, 0);                                 /* start poll at once */
 return SCPE_OK;
 }
 
@@ -437,7 +448,7 @@ if (newln < ttx_lines) {
         if (ttx_ldsc[i].conn) {
             tmxr_linemsg (&ttx_ldsc[i], "\r\nOperator disconnected line\r\n");
             tmxr_reset_ln (&ttx_ldsc[i]);               /* reset line */
-			}
+            }
         ttox_unit[i].flags = ttox_unit[i].flags | UNIT_DIS;
         ttx_reset_ln (i);
         }

@@ -1,6 +1,6 @@
 /* pdp8_tt.c: PDP-8 console terminal simulator
 
-   Copyright (c) 1993-2012, Robert M Supnik
+   Copyright (c) 1993-2016, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,7 @@
 
    tti,tto      KL8E terminal input/output
 
+   25-Sep-16    RMS     Backported Dave Gesswein's fix to prevent data loss
    18-Apr-12    RMS     Revised to use clock coscheduling
    18-Jun-07    RMS     Added UNIT_IDLE flag to console input
    18-Oct-06    RMS     Synced keyboard to clock
@@ -45,7 +46,7 @@
 #include <ctype.h>
 
 extern int32 int_req, int_enable, dev_done, stop_inst;
-extern int32 tmxr_poll, sim_is_running;
+extern int32 tmxr_poll;
 
 int32 tti (int32 IR, int32 AC);
 int32 tto (int32 IR, int32 AC);
@@ -65,7 +66,7 @@ t_stat tty_set_mode (UNIT *uptr, int32 val, char *cptr, void *desc);
 
 DIB tti_dib = { DEV_TTI, 1, { &tti } };
 
-UNIT tti_unit = { UDATA (&tti_svc, UNIT_IDLE|TT_MODE_KSR, 0), 0 };
+UNIT tti_unit = { UDATA (&tti_svc, UNIT_IDLE|TT_MODE_KSR, 0), KBD_POLL_WAIT };
 
 REG tti_reg[] = {
     { ORDATA (BUF, tti_unit.buf, 8) },
@@ -73,7 +74,7 @@ REG tti_reg[] = {
     { FLDATA (ENABLE, int_enable, INT_V_TTI) },
     { FLDATA (INT, int_req, INT_V_TTI) },
     { DRDATA (POS, tti_unit.pos, T_ADDR_W), PV_LEFT },
-    { DRDATA (TIME, tti_unit.wait, 24), PV_LEFT },
+    { DRDATA (TIME, tti_unit.wait, 24), PV_LEFT+REG_NZ },
     { NULL }
     };
 
@@ -163,6 +164,7 @@ switch (IR & 07) {                                      /* decode IR<9:11> */
     case 6:                                             /* KRB */
         dev_done = dev_done & ~INT_TTI;                 /* clear flag */
         int_req = int_req & ~INT_TTI;
+        sim_activate_abs (&tti_unit, tti_unit.wait);    /* check soon for more input */
         return (tti_unit.buf);                          /* return buffer */
 
     default:
@@ -176,8 +178,7 @@ t_stat tti_svc (UNIT *uptr)
 {
 int32 c;
 
-sim_activate (uptr, KBD_WAIT (uptr->wait, clk_cosched (tmxr_poll)));
-                                                        /* continue poll */
+sim_activate (uptr, clk_cosched (tmxr_poll));           /* continue poll */
 if ((c = sim_poll_kbd ()) < SCPE_KFLAG)                 /* no char or error? */
     return c;
 if (c & SCPE_BREAK)                                     /* break? */
@@ -198,7 +199,7 @@ dev_done = dev_done & ~INT_TTI;                         /* clear done, int */
 int_req = int_req & ~INT_TTI;
 int_enable = int_enable | INT_TTI;                      /* set enable */
 if (!sim_is_running)                                    /* RESET (not CAF)? */
-    sim_activate (&tti_unit, KBD_WAIT (tti_unit.wait, tmxr_poll));
+    sim_activate (&tti_unit, tmxr_poll);
 return SCPE_OK;
 }
 

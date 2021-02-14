@@ -1,6 +1,6 @@
 /* vax780_defs.h: VAX 780 model-specific definitions file
 
-   Copyright (c) 2004-2011, Robert M Supnik
+   Copyright (c) 2004-2019, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -23,6 +23,14 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   23-Apr-19    RMS     Added hook for unpredictable indexed immediate .aw
+   18-May-17    RMS     Added model-specific AST validation test
+   19-Jan-17    RMS     Moved CR to BR6 (Mark Pizzolato)
+   29-Mar-15    RMS     Added model specific IPR max
+   16-Dec-14    RMS     Removed TQ boot code (780 VMB doesn't support tape boot)
+   05-Sep-14    RMS     Fixed SBR test (found by Mark Pizzolato)
+   29-Nov-13    RMS     Added system-specific unaligned routines
+   12-Dec-12    RMS     Fixed IO base address for RQB, RQC, RQD
    05-Nov-11    RMS     Added VEC_QMODE definition
    19-Nov-08    RMS     Moved I/O support routines to I/O library
    29-Apr-07    RMS     Modified model-specific reserved operand check macros
@@ -50,8 +58,8 @@
 #define FULL_VAX        1
 #endif
 
-#ifndef _VAX_780_DEFS_H_
-#define _VAX_780_DEFS_H_        1
+#ifndef VAX_780_DEFS_H_
+#define VAX_780_DEFS_H_        1
 
 /* Microcode constructs */
 
@@ -120,6 +128,7 @@
 #define MT_SBITA        53                              /* SBI timeout addr */
 #define MT_SBIQC        54                              /* SBI timeout clear */
 #define MT_MBRK         60                              /* microbreak */
+#define MT_MAX          63                              /* last valid IPR */
 
 /* Machine specific reserved operand tests */
 
@@ -131,15 +140,19 @@
 
 #define ML_PXBR_TEST(r) if (((((uint32)(r)) & 0x80000000) == 0) || \
                             ((((uint32)(r)) & 0x40000003) != 0)) RSVD_OPND_FAULT
-#define ML_SBR_TEST(r)  if ((((uint32)(r)) & 0xC0000003) != 0) RSVD_OPND_FAULT
+#define ML_SBR_TEST(r)  if ((((uint32)(r)) & 0x00000003) != 0) RSVD_OPND_FAULT
 
-/* 780 microcode patch 78 - only test xCBB<1:0> = 0 */
+/* 780 microcode patch 78 - test xCBB<1:0> = 0 */
 
 #define ML_PA_TEST(r)   if ((((uint32)(r)) & 0x00000003) != 0) RSVD_OPND_FAULT
 
 #define LP_AST_TEST(r)  if ((r) > AST_MAX) RSVD_OPND_FAULT
 #define LP_MBZ84_TEST(r) if ((((uint32)(r)) & 0xF8C00000) != 0) RSVD_OPND_FAULT
 #define LP_MBZ92_TEST(r) if ((((uint32)(r)) & 0x7FC00000) != 0) RSVD_OPND_FAULT
+
+#define MT_AST_TEST(r)  r = (r) & 07; \
+                        if ((r) > AST_MAX) RSVD_OPND_FAULT
+#define IDX_IMM_TEST
 
 /* Memory */
 
@@ -223,7 +236,7 @@
 
 #define DZ_MUXES        4                               /* max # of DZV muxes */
 #define DZ_LINES        8                               /* lines per DZV mux */
-#define VH_MUXES        4                               /* max # of DHQ muxes */
+#define VH_MUXES        4                               /* max # of DHU muxes */
 #define DLX_LINES       16                              /* max # of KL11/DL11's */
 #define DCX_LINES       16                              /* max # of DC11's */
 #define MT_MAXFR        (1 << 16)                       /* magtape max rec */
@@ -277,9 +290,9 @@ typedef struct {
 #define IOLN_XUB        010
 #define IOBA_RQB        (IOPAGEBASE + 000334 +  (020 * (DZ_MUXES / 2)))
 #define IOLN_RQB        004
-#define IOBA_RQC        (IOPAGEBASE + IOBA_RQB + IOLN_RQB)
+#define IOBA_RQC        (IOBA_RQB + IOLN_RQB)
 #define IOLN_RQC        004
-#define IOBA_RQD        (IOPAGEBASE + IOBA_RQC + IOLN_RQC)
+#define IOBA_RQD        (IOBA_RQC + IOLN_RQC)
 #define IOLN_RQD        004
 #define IOBA_RQ         (IOPAGEBASE + 012150)           /* UDA50 */
 #define IOLN_RQ         004
@@ -313,6 +326,9 @@ typedef struct {
 #define IOLN_PTP        004
 
 /* Interrupt assignments; within each level, priority is right to left */
+/* CD11 must be defined but is not allowed in the configuration */
+
+#define INT_V_CR        0                               /* BR6 */
 
 #define INT_V_DZRX      0                               /* BR5 */
 #define INT_V_DZTX      1
@@ -327,8 +343,8 @@ typedef struct {
 #define INT_V_LPT       0                               /* BR4 */
 #define INT_V_PTR       1
 #define INT_V_PTP       2
-#define INT_V_CR        3
 
+#define INT_CR          (1u << INT_V_CR)
 #define INT_DZRX        (1u << INT_V_DZRX)
 #define INT_DZTX        (1u << INT_V_DZTX)
 #define INT_HK          (1u << INT_V_HK)
@@ -341,8 +357,8 @@ typedef struct {
 #define INT_LPT         (1u << INT_V_LPT)
 #define INT_PTR         (1u << INT_V_PTR)
 #define INT_PTP         (1u << INT_V_PTP)
-#define INT_CR          (1u << INT_V_CR)
 
+#define IPL_CR          (0x16 - IPL_HMIN)
 #define IPL_DZRX        (0x15 - IPL_HMIN)
 #define IPL_DZTX        (0x15 - IPL_HMIN)
 #define IPL_HK          (0x15 - IPL_HMIN)
@@ -355,7 +371,6 @@ typedef struct {
 #define IPL_LPT         (0x14 - IPL_HMIN)
 #define IPL_PTR         (0x14 - IPL_HMIN)
 #define IPL_PTP         (0x14 - IPL_HMIN)
-#define IPL_CR          (0x14 - IPL_HMIN)
 
 /* Device vectors */
 
@@ -407,7 +422,6 @@ typedef struct {
 #define BOOT_HK         1                               /* for VMB */
 #define BOOT_RL         2
 #define BOOT_UDA        17
-#define BOOT_TK         18
 
 /* Function prototypes for virtual memory interface */
 
@@ -446,6 +460,14 @@ t_stat show_nexus (FILE *st, UNIT *uptr, int32 val, void *desc);
 
 void sbi_set_errcnf (void);
 int32 clk_cosched (int32 wait);
+
+/* Function prototypes for system-specific unaligned support
+   11/780 treats unaligned like aligned */
+
+#define ReadIOU(p,l)        ReadIO (p,l)
+#define ReadRegU(p,l)       ReadReg (p,l)
+#define WriteIOU(p,v,l)     WriteIO (p, v, l)
+#define WriteRegU(p,v,l)    WriteReg (p, v, l)
 
 #include "pdp11_io_lib.h"
 

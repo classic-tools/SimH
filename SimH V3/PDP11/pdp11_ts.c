@@ -1,6 +1,6 @@
 /* pdp11_ts.c: TS11/TSV05 magnetic tape simulator
 
-   Copyright (c) 1993-2012, Robert M Supnik
+   Copyright (c) 1993-2014, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,8 @@
 
    ts           TS11/TSV05 magtape
 
+   27-Oct-14    RMS     Fixed bug in read forward with byte swap
+   23-Oct-13    RMS     Revised for new boot setup routine
    19-Mar-12    RMS     Fixed declaration of cpu_opt (Mark Pizzolato)
    22-May-10    RMS     Fixed t_addr printouts for 64b big-endian systems
                         (Mark Pizzolato)
@@ -268,7 +270,6 @@ extern uint32 cpu_opt;
 
 extern int32 int_req[IPL_HLVL];
 extern UNIT cpu_unit;
-extern FILE *sim_deb;
 
 uint8 *tsxb = NULL;                                     /* xfer buffer */
 int32 tssr = 0;                                         /* status register */
@@ -284,7 +285,6 @@ int32 ts_bcmd = 0;                                      /* boot cmd */
 int32 ts_time = 10;                                     /* record latency */
 static uint16 cpy_buf[MAX_PLNT];                        /* copy buffer */
 
-DEVICE ts_dev;
 t_stat ts_rd (int32 *data, int32 PA, int32 access);
 t_stat ts_wr (int32 data, int32 PA, int32 access);
 t_stat ts_svc (UNIT *uptr);
@@ -490,7 +490,7 @@ do {
     fc = (fc - 1) & DMASK;                              /* decr wc */
     if (upd)
         msgrfc = fc;
-    if (st = sim_tape_sprecf (uptr, &tbc))              /* space rec fwd, err? */
+    if ((st = sim_tape_sprecf (uptr, &tbc)))            /* space rec fwd, err? */
         return ts_map_status (st);                      /* map status */
     msgxs0 = msgxs0 | XS0_MOT;                          /* tape has moved */
     } while (fc != 0);
@@ -533,7 +533,7 @@ do {
     fc = (fc - 1) & DMASK;                              /* decr wc */
     if (upd)
         msgrfc = fc;
-    if (st = sim_tape_sprecr (uptr, &tbc))              /* space rec rev, err? */
+    if ((st = sim_tape_sprecr (uptr, &tbc)))            /* space rec rev, err? */
         return ts_map_status (st);                      /* map status */
     msgxs0 = msgxs0 | XS0_MOT;                          /* tape has moved */
     } while (fc != 0);
@@ -583,7 +583,7 @@ msgxs0 = msgxs0 | XS0_MOT;                              /* tape has moved */
 if (cmdhdr & CMD_SWP) {                                 /* swapped? */
     for (i = 0; i < wbc; i++) {                         /* copy buffer */
         wa = tsba ^ 1;                                  /* apply OPP */
-        if (Map_WriteB (tsba, 1, &tsxb[i])) {           /* store byte, nxm? */
+        if (Map_WriteB (wa, 1, &tsxb[i])) {             /* store byte, nxm? */
             tssr = ts_updtssr (tssr | TSSR_NXM);        /* set error */
             return (XTC (XS0_RLS, TC4));
             }
@@ -619,7 +619,7 @@ if (st != MTSE_OK)                                      /* error? */
     return ts_map_status (st);
 if (fc == 0)                                            /* byte count */
     fc = 0200000;
-tsba = (cmdadh << 16) | cmdadl + fc;                    /* buf addr */
+tsba = ((cmdadh << 16) | cmdadl) + fc;                  /* buf addr */
 wbc = (tbc > fc)? fc: tbc;                              /* cap buf size */
 msgxs0 = msgxs0 | XS0_MOT;                              /* tape has moved */
 for (i = wbc; i > 0; i--) {                             /* copy buffer */
@@ -666,7 +666,7 @@ else {
         return TC5;
         }
     }
-if (st = sim_tape_wrrecf (uptr, tsxb, fc))              /* write rec, err? */
+if ((st = sim_tape_wrrecf (uptr, tsxb, fc)))            /* write rec, err? */
     return ts_map_status (st);                          /* return status */
 msgxs0 = msgxs0 | XS0_MOT;                              /* tape has moved */
 msgrfc = 0;
@@ -679,7 +679,7 @@ int32 ts_wtmk (UNIT *uptr)
 {
 t_stat st;
 
-if (st = sim_tape_wrtmk (uptr))                         /* write tmk, err? */
+if ((st = sim_tape_wrtmk (uptr)))                       /* write tmk, err? */
     return ts_map_status (st);                          /* return status */
 msgxs0 = msgxs0 | XS0_MOT;                              /* tape has moved */
 if (sim_tape_eot (&ts_unit))                            /* EOT on write? */
@@ -1150,8 +1150,7 @@ static const uint16 boot_rom[] = {
 
 t_stat ts_boot (int32 unitno, DEVICE *dptr)
 {
-int32 i;
-extern int32 saved_PC;
+size_t i;
 extern uint16 *M;
 
 sim_tape_rewind (&ts_unit);
@@ -1159,7 +1158,7 @@ for (i = 0; i < BOOT_LEN; i++)
     M[(BOOT_START >> 1) + i] = boot_rom[i];
 M[BOOT_CSR0 >> 1] = ts_dib.ba & DMASK;
 M[BOOT_CSR1 >> 1] = (ts_dib.ba & DMASK) + 02;
-saved_PC = BOOT_START;
+cpu_set_boot (BOOT_START);
 return SCPE_OK;
 }
  

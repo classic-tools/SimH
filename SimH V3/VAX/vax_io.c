@@ -1,6 +1,6 @@
 /* vax_io.c: VAX 3900 Qbus IO simulator
 
-   Copyright (c) 1998-2012, Robert M Supnik
+   Copyright (c) 1998-2019, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,9 @@
 
    qba          Qbus adapter
 
+   05-May-19    RMS     Added length parameter to ReadReg routines
+                        Revamped Qbus memory as Qbus peripheral
+   20-Dec-13    RMS     Added unaligned access routines
    25-Mar-12    RMS     Added parameter to int_ack prototype (Mark Pizzolata)
    28-May-08    RMS     Inlined physical memory routines
    25-Jan-08    RMS     Fixed declarations (Mark Pizzolato)
@@ -117,12 +120,11 @@ extern int32 PSL, SISR, trpirq, mem_err, crd_err, hlt_pin;
 extern int32 p1;
 extern int32 ssc_bto;
 extern jmp_buf save_env;
-extern int32 sim_switches;
-extern DEVICE *sim_devices[];
-extern FILE *sim_log;
 
 t_stat dbl_rd (int32 *data, int32 addr, int32 access);
 t_stat dbl_wr (int32 data, int32 addr, int32 access);
+t_stat cqm_rd(int32 *dat, int32 ad, int32 md);
+t_stat cqm_wr(int32 dat, int32 ad, int32 md);
 int32 eval_int (void);
 void cq_merr (int32 pa);
 void cq_serr (int32 pa);
@@ -205,6 +207,10 @@ int32 ReadQb (uint32 pa)
 {
 int32 idx, val;
 
+if (ADDR_IS_CQM (pa)) {                                /* Qbus memory? */
+    cqm_rd (&val, pa, READ);
+    return val;
+    }  
 idx = (pa & IOPAGEMASK) >> 1;
 if (iodispR[idx]) {
     iodispR[idx] (&val, pa, READ);
@@ -219,6 +225,10 @@ void WriteQb (uint32 pa, int32 val, int32 mode)
 {
 int32 idx;
 
+if (ADDR_IS_CQM (pa)) {                                /* Qbus memory? */
+    cqm_wr (val, pa, mode);
+    return;
+    }
 idx = (pa & IOPAGEMASK) >> 1;
 if (iodispW[idx]) {
     iodispW[idx] (val, pa, mode);
@@ -229,7 +239,7 @@ mem_err = 1;
 return;
 }
 
-/* ReadIO - read I/O space
+/* ReadIO - read I/O space - aligned access
 
    Inputs:
         pa      =       physical address
@@ -250,7 +260,49 @@ SET_IRQL;
 return iod;
 }
 
-/* WriteIO - write I/O space
+/* ReadIOU - read I/O space - unaligned access
+
+   Inputs:
+        pa      =       physical address
+        lnt     =       length (1, 2, 3 bytes)
+   Output:
+        data, not shifted
+
+Note that all of these cases are presented to the existing aligned IO routine:
+
+bo = 0, byte, word, or longword length
+bo = 2, word
+bo = 1, 2, 3, byte length
+
+All the other cases are end up at ReadIOU and WriteIOU, and they must turn
+the request into the exactly correct number of Qbus accesses AND NO MORE,
+because Qbus reads can have side-effects, and word read-modify-write is NOT
+the same as a byte write.
+
+Note that the sum of the pa offset and the length cannot be greater than 4.
+The read cases are:
+
+bo = 0, byte or word - read one word
+bo = 0, tribyte - read two words
+bo = 1, byte - read one word
+bo = 1, word or tribyte - read two words
+bo = 2, byte or word - read one word
+bo = 3, byte - read one word
+*/
+
+int32 ReadIOU (uint32 pa, int32 lnt)
+{
+int32 iod;
+
+iod = ReadQb (pa);                                      /* wd from Qbus */
+if ((lnt + (pa & 1)) <= 2)                              /* byte or (word & even) */
+    iod = iod << ((pa & 2)? 16: 0);                     /* one op */
+else iod = (ReadQb (pa + 2) << 16) | iod;               /* two ops, get 2nd wd */
+SET_IRQL;
+return iod;
+}
+
+/* WriteIO - write I/O space - aligned access
 
    Inputs:
         pa      =       physical address
@@ -269,6 +321,54 @@ else if (lnt == L_WORD)
 else {
     WriteQb (pa, val & 0xFFFF, WRITE);
     WriteQb (pa + 2, (val >> 16) & 0xFFFF, WRITE);
+    }
+SET_IRQL;
+return;
+}
+
+/* WriteIOU - write I/O space
+
+   Inputs:
+        pa      =       physical address
+        val     =       data to write, right justified in 32b longword
+        lnt     =       length (1, 2, or 3 bytes)
+   Outputs:
+        none
+
+The write cases are:
+
+bo = x, lnt = byte - write one byte
+bo = 0 or 2, lnt = word - write one word
+bo = 1, lnt = word - write two bytes
+bo = 0, lnt = tribyte - write word, byte
+bo = 1, lnt = tribyte - write byte, word
+*/
+
+void WriteIOU (uint32 pa, int32 val, int32 lnt)
+{
+switch (lnt) {
+case L_BYTE:                                            /* byte */
+    WriteQb (pa, val & BMASK, WRITEB);
+    break;
+
+case L_WORD:                                            /* word */
+    if (pa & 1) {                                       /* odd addr? */
+        WriteQb (pa, val & BMASK, WRITEB);
+        WriteQb (pa + 1, (val >> 8) & BMASK, WRITEB);
+        }
+    else WriteQb (pa, val & WMASK, WRITE);
+    break;
+
+case 3:                                                 /* tribyte */
+    if (pa & 1) {                                       /* odd addr? */
+        WriteQb (pa, val & BMASK, WRITEB);              /* byte then word */
+        WriteQb (pa + 1, (val >> 8) & WMASK, WRITE);
+        }
+    else {                                              /* even */
+        WriteQb (pa, val & WMASK, WRITE);               /* word then byte */
+        WriteQb (pa + 2, (val >> 16) & BMASK, WRITEB);
+        }
+    break;
     }
 SET_IRQL;
 return;
@@ -350,7 +450,7 @@ return 0;
    IPC          inter-processor communication register
 */
 
-int32 cqbic_rd (int32 pa)
+int32 cqbic_rd (int32 pa, int32 lnt)
 {
 int32 rg = (pa - CQBICBASE) >> 2;
 
@@ -382,10 +482,10 @@ int32 nval, rg = (pa - CQBICBASE) >> 2;
 if (lnt < L_LONG) {
     int32 sc = (pa & 3) << 3;
     int32 mask = (lnt == L_WORD)? 0xFFFF: 0xFF;
-    int32 t = cqbic_rd (pa);
+    int32 t = cqbic_rd (pa, lnt);
     nval = ((val & mask) << sc) | (t & ~(mask << sc));
     val = val << sc;
-	}
+    }
 else nval = val;
 switch (rg) {
 
@@ -414,7 +514,7 @@ return;
 /* IPC can be read as local register or as Qbus I/O
    Because of the W1C */
 
-int32 cqipc_rd (int32 pa)
+int32 cqipc_rd (int32 pa, int32 lnt)
 {
 return cq_ipc & CQIPC_MASK;                             /* IPC */
 }
@@ -454,7 +554,7 @@ return SCPE_OK;
    Write error: set DSER<0>, latch slave address, memory error interrupt
 */
 
-int32 cqmap_rd (int32 pa)
+int32 cqmap_rd (int32 pa, int32 lnt)
 {
 int32 ma = (pa & CQMAPAMASK) + cq_mbr;                  /* mem addr */
 
@@ -487,36 +587,58 @@ return;
 
 /* CQBIC Qbus memory read and write (reflects to main memory)
 
-   May give master or slave error, depending on where the failure occurs
+   Qbus memory is modeled like any other Qbus peripheral.
+   On read, it returns 16b, right justified.
+   On write, it handles either 16b or 8b writes.
+
+   Qbus memory may reflect to main memory or may be locally
+   implemented for graphics cards. If reflected to main memory,
+   the normal ReadW, WriteB, and WriteW routines cannot be used,
+   as that could create a recursive loop.
 */
 
-int32 cqmem_rd (int32 pa)
+t_stat cqm_rd (int32 *dat, int32 pa, int32 md)
 {
 int32 qa = pa & CQMAMASK;                               /* Qbus addr */
 uint32 ma;
 
-if (qba_map_addr (qa, &ma))                             /* map addr */
-    return M[ma >> 2];
+if (qba_map_addr (qa, &ma)) {                           /* in map? */
+    if (ADDR_IS_MEM (ma)) {                             /* real memory? */
+        *dat = (M[ma >> 2] >> ((pa & 2) ? 16 : 0)) & WMASK;
+        return SCPE_OK;                                 /* return word */
+        }                                               /* end if mem */
+    cq_serr (ma);
+    MACH_CHECK (MCHK_READ);                             /* mcheck */
+    }                                                   /* end if mapped */
+// insert graphics code here
 MACH_CHECK (MCHK_READ);                                 /* err? mcheck */
-return 0;
+return SCPE_OK;
 }
 
-void cqmem_wr (int32 pa, int32 val, int32 lnt)
+t_stat cqm_wr (int32 dat, int32 pa, int32 md)
 {
 int32 qa = pa & CQMAMASK;                               /* Qbus addr */
 uint32 ma;
 
-if (qba_map_addr (qa, &ma)) {                           /* map addr */
-    if (lnt < L_LONG) {
-        int32 sc = (pa & 3) << 3;
-        int32 mask = (lnt == L_WORD)? 0xFFFF: 0xFF;
-        int32 t = M[ma >> 2];
-        val = ((val & mask) << sc) | (t & ~(mask << sc));
-        }
-    M[ma >> 2] = val;
-    }
-else mem_err = 1;
-return;
+if (qba_map_addr (qa, &ma)) {                           /* in map? */
+    if (ADDR_IS_MEM (ma)) {                             /* real memory? */
+        if (md == WRITE) {                              /* word access? */
+            int32 sc = (ma & 2) << 3;                   /* aligned only */
+            M[ma >> 2] = (M[ma >> 2] & ~(WMASK << sc)) |
+                ((dat & WMASK) << sc);
+            }
+        else {                                          /* byte access */
+            int32 sc = (ma & 3) << 3;
+            M[ma >> 2] = (M[ma >> 2] & ~(BMASK << sc)) |
+                ((dat & BMASK) << sc);
+            }
+        }                                               /* end if mem */
+    else mem_err = 1;
+    return SCPE_OK;
+    }                                                   /* end if mapped */
+//insert graphics code here
+mem_err = 1;
+return SCPE_OK;
 }
 
 /* Map an address via the translation map */
@@ -632,7 +754,7 @@ if ((ba | bc) & 03) {                                   /* check alignment */
             if (!qba_map_addr (ba + i, &ma))            /* inv or NXM? */
                 return (bc - i);
             }
-        *buf = ReadB (ma);
+        *buf = (uint8)ReadB (ma);
         ma = ma + 1;
         }
     }
@@ -666,7 +788,7 @@ if ((ba | bc) & 03) {                                   /* check alignment */
             if (!qba_map_addr (ba + i, &ma))            /* inv or NXM? */
                 return (bc - i);
             }
-        *buf = ReadW (ma);
+        *buf = (uint16)ReadW (ma);
         ma = ma + 2;
         }
     }
@@ -792,7 +914,7 @@ init_ubus_tab ();                                       /* init bus tables */
 for (i = 0; (dptr = sim_devices[i]) != NULL; i++) {     /* loop thru dev */
     dibp = (DIB *) dptr->ctxt;                          /* get DIB */
     if (dibp && !(dptr->flags & DEV_DIS)) {             /* defined, enabled? */
-        if (r = build_ubus_tab (dptr, dibp))            /* add to bus tab */
+        if ((r = build_ubus_tab (dptr, dibp)))          /* add to bus tab */
             return r;
         }                                               /* end if enabled */
     }                                                   /* end for */

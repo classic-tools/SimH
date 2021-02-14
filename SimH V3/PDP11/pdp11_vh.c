@@ -1,6 +1,6 @@
 /* pdp11_vh.c: DHQ11 asynchronous terminal multiplexor simulator
 
-   Copyright (c) 2004-2012, John A. Dundas III
+   Copyright (c) 2004-2018, John A. Dundas III
    Portions derived from work by Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
@@ -26,6 +26,7 @@
 
    vh           DHQ11 asynch multiplexor for SIMH
 
+   28-May-18    RMS     Changed to avoid nested comment warnings (Mark Pizzolato)
    02-Jun-11    MP      Added debugging support to trace register, interrupt 
                         and data traffic (SET VH DEBUG[=REG;INT;XMT;RCV])
                         Added SET LOG and SET NOLOG support for logging mux
@@ -34,6 +35,7 @@
                         of lines available to be 8, 16, 24, or 32.
                         Fixed performance issue avoiding redundant polling
    03-Jan-10    JAD     Eliminate gcc warnings
+   24-Nov-08    JDB     Removed tmxr_send_buffered_data declaration (now in sim_tmxr.h)
    19-Nov-08    RMS     Revised for common TMXR show routines
    18-Jun-07    RMS     Added UNIT_IDLE flag
    29-Oct-06    RMS     Synced poll and clock
@@ -82,7 +84,6 @@ extern int32    int_req[IPL_HLVL];
 extern uint32    cpu_opt;
 #endif
 
-#include "sim_sock.h"
 #include "sim_tmxr.h"
 
 /* imports from pdp11_stddev.c: */
@@ -293,8 +294,8 @@ static TMLX vh_parm[VH_MUXES * VH_LINES] = { { 0 } };
 /* debugging bitmaps */
 #define DBG_REG  0x0001                                 /* trace read/write registers */
 #define DBG_INT  0x0002                                 /* display transfer requests */
-/* #define DBG_XMT  TMXR_DBG_XMT                           /* display Transmitted Data */
-/* #define DBG_RCV  TMXR_DBG_RCV                           /* display Received Data */
+// #define DBG_XMT  TMXR_DBG_XMT                           /* display Transmitted Data */
+// #define DBG_RCV  TMXR_DBG_RCV                           /* display Received Data */
 
 DEBTAB vh_debug[] = {
   {"REG",    DBG_REG},
@@ -713,7 +714,7 @@ static void vh_getc (   int32   vh  )
     uint32  i, c;
     TMLX    *lp;
 
-    for (i = 0; i < VH_LINES; i++) {
+    for (i = 0; i < (uint32)VH_LINES; i++) {
         lp = &vh_parm[(vh * VH_LINES) + i];
         while ((c = tmxr_getc_ln (lp->tmln)) != 0) {
             if (c & SCPE_BREAK) {

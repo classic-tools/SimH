@@ -1,6 +1,6 @@
 /* vax_sysdev.c: VAX 3900 system-specific logic
 
-   Copyright (c) 1998-2011, Robert M Supnik
+   Copyright (c) 1998-2019, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -30,8 +30,12 @@
    nvr          non-volatile ROM (no registers)
    csi          console storage input
    cso          console storage output
+   cmctl        memory controller
    sysd         system devices (SSC miscellany)
 
+   05-May-19    RMS     Added length to register read routines
+                        Removed Qbus memory space from register space
+   20-Dec-13    RMS     Added unaligned register space access routines
    23-Dec-10    RMS     Added power clear call to boot routine (Mark Pizzolato)
    25-Oct-05    RMS     Automated CMCTL extended memory
    16-Aug-05    RMS     Fixed C++ declaration and cast problems
@@ -186,7 +190,6 @@ extern UNIT cpu_unit;
 extern UNIT clk_unit;
 extern jmp_buf save_env;
 extern int32 p1;
-extern int32 sim_switches;
 extern int32 MSER;
 extern int32 tmr_poll;
 
@@ -214,6 +217,9 @@ int32 ssc_adsm[2] = { 0 };                              /* addr strobes */
 int32 ssc_adsk[2] = { 0 };
 int32 cdg_dat[CDASIZE >> 2];                            /* cache data */
 static uint32 rom_delay = 0;
+static const int32 insert[4] = {
+    0x00000000, 0x000000FF, 0x0000FFFF, 0x00FFFFFF
+    };
 
 t_stat rom_ex (t_value *vptr, t_addr exta, UNIT *uptr, int32 sw);
 t_stat rom_dep (t_value val, t_addr exta, UNIT *uptr, int32 sw);
@@ -229,8 +235,8 @@ t_stat cso_svc (UNIT *uptr);
 t_stat tmr_svc (UNIT *uptr);
 t_stat sysd_reset (DEVICE *dptr);
 
-int32 rom_rd (int32 pa);
-int32 nvr_rd (int32 pa);
+int32 rom_rd (int32 pa, int32 lnt);
+int32 nvr_rd (int32 pa, int32 lnt);
 void nvr_wr (int32 pa, int32 val, int32 lnt);
 int32 csrs_rd (void);
 int32 csrd_rd (void);
@@ -238,13 +244,13 @@ int32 csts_rd (void);
 void csrs_wr (int32 dat);
 void csts_wr (int32 dat);
 void cstd_wr (int32 dat);
-int32 cmctl_rd (int32 pa);
+int32 cmctl_rd (int32 pa, int32 lnt);
 void cmctl_wr (int32 pa, int32 val, int32 lnt);
-int32 ka_rd (int32 pa);
+int32 ka_rd (int32 pa, int32 lnt);
 void ka_wr (int32 pa, int32 val, int32 lnt);
-int32 cdg_rd (int32 pa);
+int32 cdg_rd (int32 pa, int32 lnt);
 void cdg_wr (int32 pa, int32 val, int32 lnt);
-int32 ssc_rd (int32 pa);
+int32 ssc_rd (int32 pa, int32 lnt);
 void ssc_wr (int32 pa, int32 val, int32 lnt);
 int32 tmr_tir_rd (int32 tmr, t_bool interp);
 void tmr_csr_wr (int32 tmr, int32 val);
@@ -256,14 +262,12 @@ int32 parity (int32 val, int32 odd);
 t_stat sysd_powerup (void);
 
 extern int32 intexc (int32 vec, int32 cc, int32 ipl, int ei);
-extern int32 cqmap_rd (int32 pa);
+extern int32 cqmap_rd (int32 pa, int32 lnt);
 extern void cqmap_wr (int32 pa, int32 val, int32 lnt);
-extern int32 cqipc_rd (int32 pa);
+extern int32 cqipc_rd (int32 pa, int32 lnt);
 extern void cqipc_wr (int32 pa, int32 val, int32 lnt);
-extern int32 cqbic_rd (int32 pa);
+extern int32 cqbic_rd (int32 pa, int32 lnt);
 extern void cqbic_wr (int32 pa, int32 val, int32 lnt);
-extern int32 cqmem_rd (int32 pa);
-extern void cqmem_wr (int32 pa, int32 val, int32 lnt);
 extern int32 iccs_rd (void);
 extern int32 todr_rd (void);
 extern int32 rxcs_rd (void);
@@ -522,7 +526,7 @@ for (i = 0; i < l; i++)
 return val + rom_loopval;
 }
 
-int32 rom_rd (int32 pa)
+int32 rom_rd (int32 pa, int32 lnt)
 {
 int32 rg = ((pa - ROMBASE) & ROMAMASK) >> 2;
 
@@ -579,7 +583,7 @@ return SCPE_OK;
 
 /* NVR: non-volatile RAM - stored in a buffered file */
 
-int32 nvr_rd (int32 pa)
+int32 nvr_rd (int32 pa, int32 lnt)
 {
 int32 rg = (pa - NVRBASE) >> 2;
 
@@ -921,7 +925,7 @@ return;
 struct reglink {                                        /* register linkage */
     uint32      low;                                    /* low addr */
     uint32      high;                                   /* high addr */
-    t_stat      (*read)(int32 pa);                      /* read routine */
+    int32       (*read)(int32 pa, int32 lnt);           /* read routine */
     void        (*write)(int32 pa, int32 val, int32 lnt); /* write routine */
     };
 
@@ -934,7 +938,6 @@ struct reglink regtable[] = {
     { KABASE, KABASE+KASIZE, &ka_rd, &ka_wr },
     { CQBICBASE, CQBICBASE+CQBICSIZE, &cqbic_rd, &cqbic_wr },
     { CQIPCBASE, CQIPCBASE+CQIPCSIZE, &cqipc_rd, &cqipc_wr },
-    { CQMBASE, CQMBASE+CQMSIZE, &cqmem_rd, &cqmem_wr },
     { CDGBASE, CDGBASE+CDGSIZE, &cdg_rd, &cdg_wr },
     { 0, 0, NULL, NULL }
     };
@@ -954,11 +957,25 @@ struct reglink *p;
 
 for (p = &regtable[0]; p->low != 0; p++) {
     if ((pa >= p->low) && (pa < p->high) && p->read)
-        return p->read (pa);
+        return p->read(pa, lnt);
     }
 ssc_bto = ssc_bto | SSCBTO_BTO | SSCBTO_RWT;
 MACH_CHECK (MCHK_READ);
 return 0;
+}
+
+/* ReadRegU - read register space, unaligned
+
+   Inputs:
+        pa      =       physical address
+        lnt     =       length in bytes (1, 2, or 3)
+   Output:
+        returned data, not shifted
+*/
+
+int32 ReadRegU (uint32 pa, int32 lnt)
+{
+return ReadReg (pa & ~03, L_LONG);
 }
 
 /* WriteReg - write register space
@@ -986,6 +1003,26 @@ MACH_CHECK (MCHK_WRITE);
 return;
 }
 
+/* WriteRegU - write register space, unaligned
+
+   Inputs:
+        pa      =       physical address
+        val     =       data to write, right justified in 32b longword
+        lnt     =       length (1, 2, or 3)
+   Outputs:
+        none
+*/
+
+void WriteRegU (uint32 pa, int32 val, int32 lnt)
+{
+int32 sc = (pa & 03) << 3;
+int32 dat = ReadReg (pa & ~03, L_LONG);
+
+dat = (dat & ~(insert[lnt] << sc)) | ((val & insert[lnt]) << sc);
+WriteReg (pa & ~03, dat, L_LONG);
+return;
+}
+
 /* CMCTL registers
 
    CMCTL00 - 15 configure memory banks 00 - 15.  Note that they are
@@ -999,7 +1036,7 @@ return;
    The CMCTL registers are cleared at power up.
 */
 
-int32 cmctl_rd (int32 pa)
+int32 cmctl_rd (int32 pa, int32 lnt)
 {
 int32 rg = (pa - CMCTLBASE) >> 2;
 
@@ -1062,7 +1099,7 @@ return;
 
 /* KA655 registers */
 
-int32 ka_rd (int32 pa)
+int32 ka_rd (int32 pa, int32 lnt)
 {
 int32 rg = (pa - KABASE) >> 2;
 
@@ -1096,7 +1133,7 @@ return ka_bdr & BDR_BRKENB;
 
 /* Cache diagnostic space */
 
-int32 cdg_rd (int32 pa)
+int32 cdg_rd (int32 pa, int32 lnt)
 {
 int32 t, row = CDG_GETROW (pa);
 
@@ -1133,9 +1170,9 @@ for ( ; val != 0; val = val >> 1) {
 return odd;
 }
 
-/* SSC registers - byte/word merges done in WriteReg */
+/* SSC registers - byte/word merges done in ssc_wr */
 
-int32 ssc_rd (int32 pa)
+int32 ssc_rd (int32 pa, int32 lnt)
 {
 int32 rg = (pa - SSCBASE) >> 2;
 
@@ -1221,7 +1258,7 @@ int32 rg = (pa - SSCBASE) >> 2;
 if (lnt < L_LONG) {                                     /* byte or word? */
     int32 sc = (pa & 3) << 3;                           /* merge */
     int32 mask = (lnt == L_WORD)? 0xFFFF: 0xFF;
-    int32 t = ssc_rd (pa);
+    int32 t = ssc_rd (pa, lnt);
     val = ((val & mask) << sc) | (t & ~(mask << sc));
     }
 
@@ -1491,6 +1528,8 @@ int32 machine_check (int32 p1, int32 opc, int32 cc, int32 delta)
 {
 int32 i, st1, st2, p2, hsir, acc;
 
+if (in_ie)                                              /* in exc? panic */
+    ABORT (STOP_INIE);
 if (p1 & 0x80)                                          /* mref? set v/p */
     p1 = p1 + mchk_ref;
 p2 = mchk_va + 4;                                       /* save vap */
@@ -1541,8 +1580,6 @@ return 0;                                               /* new cc = 0 */
 
 t_stat cpu_boot (int32 unitno, DEVICE *dptr)
 {
-extern t_stat load_cmd (int32 flag, char *cptr);
-extern FILE *sim_log;
 t_stat r;
 
 PC = ROMBASE;
@@ -1552,9 +1589,7 @@ conpsl = PSL_IS | PSL_IPL1F | CON_PWRUP;
 if (rom == NULL)
     return SCPE_IERR;
 if (*rom == 0) {                                        /* no boot? */
-    printf ("Loading boot code from ka655x.bin\n");
-    if (sim_log)
-        fprintf (sim_log, "Loading boot code from ka655x.bin\n");
+    sim_printf ("Loading boot code from ka655x.bin\n");
     r = load_cmd (0, "-R ka655x.bin");
     if (r != SCPE_OK)
         return r;

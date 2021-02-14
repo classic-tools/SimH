@@ -40,8 +40,8 @@
    30-Apr-02    RMS     Added CLR_TRAPS macro
 */
 
-#ifndef _VAX_DEFS_H
-#define _VAX_DEFS_H     0
+#ifndef VAX_DEFS_H
+#define VAX_DEFS_H     0
 
 #ifndef VM_VAX
 #define VM_VAX          0
@@ -377,7 +377,7 @@
 #define DR_F            0x80                            /* FPD ok flag */
 #define DR_NSPMASK      0x07                            /* #specifiers */
 #define DR_V_USPMASK    4
-#define DR_M_USPMASK    0x70                            /* #spec, sym_ */
+#define DR_M_USPMASK    0x7                             /* #spec, sym_ */
 #define DR_GETNSP(x)    ((x) & DR_NSPMASK)
 #define DR_GETUSP(x)    (((x) >> DR_V_USPMASK) & DR_M_USPMASK)
 
@@ -473,7 +473,7 @@
 #define PR_PACV         2                               /* pte ACV (780) */
 #define PR_PLNV         3                               /* pte len viol */
 #define PR_TNV          4                               /* TNV */
-/* #define PR_TB        5                               /* impossible */
+/* #define PR_TB        5                             *//* impossible */
 #define PR_PTNV         6                               /* pte TNV */
 #define PR_OK           7                               /* ok */
 #define MM_PARAM(w,p)   (((w)? 4: 0) | ((p) & 3))       /* fault param */
@@ -602,7 +602,7 @@ enum opcodes {
 #define STR_GETDPC(x)   (((x) >> STR_V_DPC) & STR_M_DPC)
 #define STR_GETCHR(x)   (((x) >> STR_V_CHR) & STR_M_CHR)
 #define STR_PACK(m,x)   ((((PC - fault_PC) & STR_M_DPC) << STR_V_DPC) | \
-                    (((m) & STR_M_CHR) << STR_V_CHR) | ((x) & STR_LNMASK))
+                        (((m) & STR_M_CHR) << STR_V_CHR) | ((x) & STR_LNMASK))
 
 /* Read and write */
 

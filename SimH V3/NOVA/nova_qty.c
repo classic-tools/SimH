@@ -1,6 +1,6 @@
 /* nova_qty.c: NOVA multiplexor (QTY/ALM) simulator
 
-   Copyright (c) 2000-2008, Robert M. Supnik
+   Copyright (c) 2000-2015, Robert M. Supnik
    Written by Bruce Ray and used with his gracious permission.
 
    Permission is hereby granted, free of charge, to any person obtaining a
@@ -26,7 +26,9 @@
 
    qty          multiplexor: QTY = 4060, ALM = 42xx
 
-   04-Jul-07    BKR     fixed QTY output line number calculation (affected higher line numbers),
+   28-Mar-15    RMS     Revised to use sim_printf
+   14-Mar-12    RMS     Fixed dangling else clauses
+   04-Jul-07    BKR     Fixed QTY output line number calculation (affected higher line numbers),
    25-Mar-04    RMS     Updated for V3.2
    12-Jan-04    BKR     Initial release
                         includes both original DG "quad" multiplexor (QTY)
@@ -105,8 +107,6 @@
 
 
 extern int32    int_req, dev_busy, dev_done, dev_disable ;
-extern int32    sim_switches ;
-extern FILE *   sim_log ;
 extern int32    tmxr_poll ;                             /* calibrated delay */
 
 t_stat  qty_setnl   ( UNIT * uptr, int32 val, char * cptr, void * desc ) ;
@@ -135,7 +135,7 @@ int32   qty_auto    = 0 ;                               /*  QTY auto disconnect 
 int32   qty_polls   = 0 ;                               /*  total 'qty_svc' polls       */
 
 
-TMLN    qty_ldsc[ QTY_MAX ] = { 0 } ;                   /*  QTY line descriptors        */
+TMLN    qty_ldsc[ QTY_MAX ] = { {0} } ;                 /*  QTY line descriptors        */
 TMXR    qty_desc    = { QTY_MAX, 0, 0, qty_ldsc } ;     /*  mux descriptor      */
 int32   qty_status[ QTY_MAX ] = { 0 } ;                 /*  QTY line status             */
                                                         /*  (must be at least 32 bits)  */
@@ -193,7 +193,7 @@ DEVICE  qty_dev =
         1, 10, 31, 1, 8, 8,
         NULL, NULL, &qty_reset,
         NULL, &qty_attach, &qty_detach,
-        &qty_dib, (DEV_DISABLE | DEV_DIS | DEV_NET)
+        &qty_dib, (DEV_DISABLE | DEV_DIS | DEV_MUX)
         };
 
 #define DG_RETURN( status, data )   (int32)(((status) << IOT_V_REASON) | ((data) & 0x0FFFF) )
@@ -222,7 +222,7 @@ DEVICE  qty_dev =
 #define QTY_LINE_RX_CHAR( line )    (qty_status[ (line) ] & QTY_S_DMASK)
 #define QTY_UNIT_ACTIVE( unitp )    ( (unitp)->conn )
 
-#define QTY_LINE_BITS( line, bits ) qty_status[ (line) ] & bits
+#define QTY_LINE_BITS( line, bits ) (qty_status[ (line) ] & bits)
 
 #define QTY_LINE_SET_BIT(   line, bit )  qty_status[ (line) ] |=  (bit)  ;
 #define QTY_LINE_CLEAR_BIT( line, bit )  qty_status[ (line) ] &= ~(bit)  ;
@@ -491,13 +491,11 @@ t_stat qty_attach( UNIT * unitp, char * cptr )
     if ( sim_switches & SWMASK('M') )                   /* modem control? */
         {
         qty_mdm = 1;
-        printf( "Modem control activated\n" ) ;
-        if ( sim_log ) fprintf( sim_log, "Modem control activated\n" ) ;
+        sim_printf( "Modem control activated\n" ) ;
         if ( sim_switches & SWMASK ('A') )              /* autodisconnect? */
             {
             qty_auto = 1 ;
-            printf( "Auto disconnect activated\n" ) ;
-            if ( sim_log ) fprintf( sim_log, "Auto disconnect activated\n" ) ;
+            sim_printf( "Auto disconnect activated\n" ) ;
             }
         }
     qty_polls = 0 ;
@@ -604,18 +602,20 @@ t_stat qty_common_svc( DIB * dibp, UNIT * unitp )
     ++qty_polls ;                                       /*  another time 'round the track  */
     newln = tmxr_poll_conn( &qty_desc ) ;               /*  anybody knocking at the door?  */
     if ( (newln >= 0) && qty_mdm )
+        {
         if ( newln >= qty_max )
-        {
-        return SCPE_IERR;                               /*  WTF - sanity check failed, over?  */
-        }
-    else
-        {
-        line = newln ;                                  /*  handle modem control  */
-        tmlnp =&qty_ldsc[ line ] ;
-        tmlnp->rcve = tmlnp->xmte = 1 ;
-        /*  do QTY_LINE_ bit fiddling and state machine
-         *  manipulation with modem control signals
-         */
+            {
+            return SCPE_IERR;                               /*  WTF - sanity check failed, over?  */
+            }
+        else
+            {
+            line = newln ;                                  /*  handle modem control  */
+            tmlnp =&qty_ldsc[ line ] ;
+            tmlnp->rcve = tmlnp->xmte = 1 ;
+            /*  do QTY_LINE_ bit fiddling and state machine
+             *  manipulation with modem control signals
+             */
+            }
         }
 
     tmxr_poll_rx( &qty_desc ) ;                         /*  poll input                          */
@@ -628,7 +628,7 @@ t_stat qty_common_svc( DIB * dibp, UNIT * unitp )
 
     sim_activate( unitp, tmxr_poll ) ;                  /*  restart the bubble machine          */
     return ( SCPE_OK ) ;
-    }   /*  end of 'qty_common_svc'  */
+    }                                                   /*  end of 'qty_common_svc'  */
 
 
     /*--------------------------------------------------------------*/
@@ -638,7 +638,7 @@ t_stat qty_common_svc( DIB * dibp, UNIT * unitp )
 t_stat qty_svc( UNIT * uptr )
     {
     return ( qty_common_svc(&qty_dib,uptr) ) ;
-    }   /*  end of 'qty_svc'  */
+    }                                                   /*  end of 'qty_svc'  */
 
 
     /*--------------------------------------------------------------*/
@@ -992,18 +992,20 @@ int32 alm( int32 pulse, int32 code, int32 AC )
 
     case ioDIC :    /*  get modem or receiver status  */
         if ( alm_line < qty_max )
+            {
             if ( alm_section )
-            {
-            /*  get modem section status  */
-            if ( qty_ldsc[ alm_line ].xmte )
                 {
-                iodata = 0035 ;                         /*  set CD, CTS, DSR, MDM flags  */
+                /*  get modem section status  */
+                if ( qty_ldsc[ alm_line ].xmte )
+                    {
+                    iodata = 0035 ;                     /*  set CD, CTS, DSR, MDM flags  */
+                    }
                 }
-            }
-        else
-            {
-            /*  get receiver section status  */
-            iodata = 0 ;                                /*  receiver error status - no errors by default  */
+            else
+                {
+                /*  get receiver section status  */
+                iodata = 0 ;                            /*  receiver error status - no errors by default  */
+                }
             }
         break ;
 

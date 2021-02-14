@@ -1,6 +1,6 @@
 /* i7094_io.c: IBM 7094 I/O subsystem (channels)
 
-   Copyright (c) 2003-2012, Robert M. Supnik
+   Copyright (c) 2003-2017, Robert M. Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,7 @@
 
    chana..chanh         I/O channels
 
+   13-Mar-17    RMS     Annotated fall through in switch
    19-Mar-12    RMS     Fixed declaration of breakpoint variables (Mark Pizzolato)
 
    Notes on channels and CTSS.
@@ -88,7 +89,6 @@ extern DEVICE mt_dev[NUM_CHAN];
 extern DEVICE drm_dev;
 extern DEVICE dsk_dev;
 extern DEVICE com_dev;
-extern uint32 sim_brk_summ;
 
 t_stat ch_reset (DEVICE *dptr);
 t_stat ch6_svc (UNIT *uptr);
@@ -111,7 +111,6 @@ t_stat ch9_wr_getw (uint32 ch);
 void ch9_eval_int (uint32 ch, uint32 iflags);
 DEVICE *ch_map_flags (uint32 ch, int32 fl);
 
-extern CTAB *sim_vm_cmd;
 extern t_stat ch_bkpt (uint32 ch, uint32 clc);
 
 const uint32 col_masks[12] = {                          /* row 9,8,..,0,11,12 */
@@ -132,8 +131,8 @@ const t_uint64 bit_masks[36] = {
     0000010000000, 0000020000000, 0000040000000,
     0000100000000, 0000200000000, 0000400000000,
     0001000000000, 0002000000000, 0004000000000,
-    0010000000000, 0020000000000, 0040000000000,
-    0100000000000, 0200000000000, 0400000000000
+    INT64_C(0010000000000), INT64_C(0020000000000), INT64_C(0040000000000),
+    INT64_C(0100000000000), INT64_C(0200000000000), INT64_C(0400000000000)
     };
 
 const DEV_CHAR dev_table[] = {
@@ -795,7 +794,7 @@ switch (ch_sta[ch]) {                                   /* case on chan state */
         if (ch_dev[ch].flags & DEV_7289) {              /* drum channel? */
             ir = ReadP (clc);                           /* read addr */
             ch_clc[ch] = CHAINC (clc);                  /* incr chan pc */
-            if (r = ch9_wr (ch, ir, 0))                 /* write to dev */
+            if ((r = ch9_wr (ch, ir, 0)))               /* write to dev */
                 return r;
             }
         else ch_clc[ch] = clc;                          /* set clc */
@@ -983,7 +982,7 @@ if (ch_dev[ch].flags & DEV_7909) {                      /* 7909 */
     case CH9_ICCA:
         csel = CH9D_COND (ch_wc[ch]);                   /* get C */
         if (csel == 0) ch_ar[ch] =                      /* C = 0? read SMS */
-            (ch_ar[ch] & 0777777770000) | ((t_uint64) ch_sms[ch]);
+            (ch_ar[ch] & INT64_C(0777777770000)) | ((t_uint64) ch_sms[ch]);
         else if (csel < 7) {                            /* else read cond cntr */
             sc = 6 * (6 - csel);
             ch_ar[ch] = (ch_ar[ch] & ~(((t_uint64) 077) << sc)) |
@@ -1003,7 +1002,7 @@ if (ch_dev[ch].flags & DEV_7909) {                      /* 7909 */
         return SCPE_OK;
 
     case CH9_SNS:                                       /* sense */
-        if (r = ch9_sel (ch, CHSL_SNS))                 /* send sense to dev */
+        if ((r = ch9_sel (ch, CHSL_SNS)))               /* send sense to dev */
             return r;
         ch_flags[ch] |= CHF_PRD;                        /* prepare to read */
         break;                                          /* next command */
@@ -1019,13 +1018,13 @@ if (ch_dev[ch].flags & DEV_7909) {                      /* 7909 */
             }
         ch_flags[ch] &= ~CHF_EOR;                       /* clear end */
         if (ch_op[ch] == CH9_CTLR) {                    /* CTLR? */
-            if (r = ch9_sel (ch, CHSL_RDS))             /* send read sel */
+            if ((r = ch9_sel (ch, CHSL_RDS)))           /* send read sel */
                 return r;
             ch_flags[ch] |= CHF_PRD;                    /* prep to read */
             ch_idf[ch] = 0;
             }
         else if (ch_op[ch] == CH9_CTLW) {               /* CTLW? */
-            if (r = ch9_sel (ch, CHSL_WRS))             /* end write sel */
+            if ((r = ch9_sel (ch, CHSL_WRS)))           /* end write sel */
                 return r;
             ch_flags[ch] |= CHF_PWR;                    /* prep to write */
             }
@@ -1035,7 +1034,7 @@ if (ch_dev[ch].flags & DEV_7909) {                      /* 7909 */
         if ((ch_wc[ch] == 0) || (ch_flags[ch] & CHF_EOR)) { /* wc == 0 or EOR? */
             if (ch_flags[ch] & (CHF_PRD|CHF_PWR|CHF_RDS|CHF_WRS)) {
                 ch_flags[ch] &= ~(CHF_PRD|CHF_PWR|CHF_RDS|CHF_WRS);
-                if (r = ch9_wr (ch, 0, CH9DF_STOP))     /* send stop */
+                if ((r = ch9_wr (ch, 0, CH9DF_STOP)))   /* send stop */
                     return r;
                 }
             if (ch_flags[ch] & CHF_EOR) {               /* EOR? */
@@ -1055,7 +1054,7 @@ if (ch_dev[ch].flags & DEV_7909) {                      /* 7909 */
             ch_flags[ch] &= ~CHF_EOR;                   /* ignore */
         else if (ch_flags[ch] & CHF_RDS)                /* read? */
             ch9_rd_putw (ch);
-        else if (r = ch9_wr_getw (ch))                  /* no, write */
+        else if ((r = ch9_wr_getw (ch)))                /* no, write */
             return r;
         if (ch_wc[ch] == 0)                             /* done? get next */
             break;
@@ -1164,7 +1163,7 @@ else {                                                  /* 7607 write */
 
     case CH6_IOCD:                                      /* IOCD */
         if (ch_wc[ch]) {                                /* wc > 0? */
-            if (r = ch6_wr_getw (ch, TRUE))             /* send wd to dev; err? */
+            if ((r = ch6_wr_getw (ch, TRUE)))           /* send wd to dev; err? */
                 return r;
             if (ch_wc[ch])                              /* more to do? */
                 return SCPE_OK;
@@ -1174,7 +1173,7 @@ else {                                                  /* 7607 write */
     case CH6_IOCP:                                      /* IOCP */
     case CH6_IOSP:                                      /* IOSP */
         if (ch_wc[ch]) {                                /* wc > 0? */
-            if (r = ch6_wr_getw (ch, FALSE))            /* send wd to dev; err? */
+            if ((r = ch6_wr_getw (ch, FALSE)))          /* send wd to dev; err? */
                 return r;
             if (ch_wc[ch])                              /* more to do? */
                 return SCPE_OK;
@@ -1184,7 +1183,7 @@ else {                                                  /* 7607 write */
     case CH6_IOCT:                                      /* IOCT */
     case CH6_IOST:                                      /* IOST */
         if (ch_wc[ch]) {                                /* wc > 0? */
-            if (r = ch6_wr_getw (ch, FALSE))            /* send wd to dev; err? */
+            if ((r = ch6_wr_getw (ch, FALSE)))          /* send wd to dev; err? */
                 return r;
             if (ch_wc[ch])                              /* more to do? */
                 return SCPE_OK;
@@ -1193,7 +1192,7 @@ else {                                                  /* 7607 write */
 
     case CH6_IORP:                                      /* IORP */
         if (!(ch_flags[ch] & CHF_EOR) && ch_wc[ch]) {   /* not EOR? (cdp, lpt) */
-            if (r = ch6_wr_getw (ch, TRUE))             /* send wd to dev; err? */
+            if ((r = ch6_wr_getw (ch, TRUE)))           /* send wd to dev; err? */
                 return r;
             if (ch_wc[ch])                              /* more to do? */
                 return SCPE_OK;
@@ -1203,7 +1202,7 @@ else {                                                  /* 7607 write */
 
     case CH6_IORT:                                      /* IORT */
         if (!(ch_flags[ch] & CHF_EOR) && ch_wc[ch]) {   /* not EOR? (cdp, lpt) */
-            if (r = ch6_wr_getw (ch, TRUE))             /* send wd to dev; err? */
+            if ((r = ch6_wr_getw (ch, TRUE)))           /* send wd to dev; err? */
                 return r;
             if (ch_wc[ch])                              /* more to do? */
                 return SCPE_OK;
@@ -1302,7 +1301,7 @@ switch (op) {                                           /* case on opcode */
 
     case CH6_IOST:                                      /* IOST */
         if (ch_flags[ch] & CHF_EOR)                     /* EOR set? immed ch req */
-            ch_req |= REQ_CH (ch);
+            ch_req |= REQ_CH (ch);                      /* fall through */
     case CH6_IOCT:                                      /* IOCT */
         if (ch_wc[ch] == 0) {                           /* wc 0? */
             if (ch_ld)                                  /* load? end now */
@@ -1313,7 +1312,7 @@ switch (op) {                                           /* case on opcode */
 
     case CH6_IOSP:                                      /* IOSP */
         if (ch_flags[ch] & CHF_EOR)                     /* EOR set? immed ch req */
-            ch_req |= REQ_CH (ch);
+            ch_req |= REQ_CH (ch);                      /* fall through */
     case CH6_IOCP:                                      /* IOCP */
         if (ch_wc[ch] == 0)                             /* wc 0? immed ch req */
             ch_req |= REQ_CH (ch);

@@ -1,6 +1,6 @@
 /* i1620_sys.c: IBM 1620 simulator interface
 
-   Copyright (c) 2002-2008, Robert M. Supnik
+   Copyright (c) 2002-2017, Robert M. Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -23,6 +23,8 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   25-May-17    RMS     Tweaks and corrections from Tom McBride
+   18-May-17    RMS     Changed fprint_val to handle undefined opcodes on stops
    19-Mar-12    RMS     Fixed declaration of CCT (Mark Pizzolato)
 */
 
@@ -39,7 +41,7 @@ extern DEVICE dp_dev;
 extern UNIT cpu_unit;
 extern REG cpu_reg[];
 extern uint8 M[MAXMEMSIZE];
-extern char cdr_to_alp[128], alp_to_cdp[256];
+extern int8 cdr_to_alp[128], alp_to_cdp[256];
 
 /* SCP data structures and interface routines
 
@@ -272,7 +274,7 @@ struct opc opcode[] = {
     { "TNS",  72+I_2,  0 }, { "TNF",  73+I_2,  0 },
     { "BBT",  90+I_2,  0 }, { "BMK",  91+I_2,  0 },
     { "ORF",  92+I_2,  0 }, { "ANDF", 93+I_2,  0 },
-    { "CPFL", 94+I_2,  0 }, { "EORF", 95+I_2,  0 },
+    { "CPLF", 94+I_2,  0 }, { "EORF", 95+I_2,  0 },
     { "OTD",  96+I_2,  0 }, { "DTO",  97+I_2,  0 },
     { NULL,   0, 0 }
     };
@@ -302,6 +304,34 @@ if ((cpu_unit.flags & IF_IDX) && flg) {                 /* indexing? */
 return;
 }
 
+/* Look up an opcode
+
+   Inputs:
+        op      =       opcode (decimal)
+        qv      =       Q value (full 5 digits)
+    Outputs:
+        *opcst  =       pointer to opcode string
+                        (NULL if not found)
+        *fl     =       opcode flags (optional)
+*/
+
+char *opc_lookup (uint32 op, uint32 qv, uint32 *fl)
+{
+uint32 i, opfl;
+
+for (i = 0; opcode[i].str != NULL; i++) {               /* find opcode */
+    opfl = opcode[i].opv & 0xFF0000;                    /* get flags */
+    if ((op == (opcode[i].opv & 0xFF)) &&               /* op match? */
+        ((qv == opcode[i].qv) ||                        /* q match or */
+        ((opfl != I_1E) && (opfl != I_0E)))) {          /* not needed? */
+            if (fl != NULL)
+                *fl = opfl;
+            return opcode[i].str;
+        }
+    }
+return NULL;
+}
+
 /* Symbolic decode
 
    Inputs:
@@ -322,6 +352,7 @@ t_stat fprint_sym (FILE *of, t_addr addr, t_value *val,
 {
 int32 pmp, qmp, i, c, d, any;
 uint32 op, qv, opfl;
+char *opstr;
 
 if (uptr == NULL)
     uptr = &cpu_unit;
@@ -382,19 +413,19 @@ for (i = qv = pmp = qmp = 0; i < ADDR_LEN; i++) {       /* test addr */
     }
 if ((val[0] | val[1]) & FLAG)                           /* flags force */
     pmp = qmp = 1;
-for (i = 0; opcode[i].str != NULL; i++) {               /* find opcode */
-    opfl = opcode[i].opv & 0xFF0000;
-    if ((op == (opcode[i].opv & 0xFF)) &&
-        ((qv == opcode[i].qv) ||
-        ((opfl != I_1E) && (opfl != I_0E))))
-        break;
-    }
-if (opcode[i].str == NULL)
+opstr = opc_lookup (op, qv, &opfl);                     /* find opcode */
+
+if (opstr == NULL) {                                    /* invalid opcode */
+    if ((sw & SIM_SW_STOP) != 0) {                      /* stop message? */
+        fprintf (of, "%02d", op);                       /* print numeric opcode */
+        return -(INST_LEN - 1);                         /* report success */
+        }
     return SCPE_ARG;
+    }
 if (I_GETQP (opfl) == I_M_QNP)                          /* Q no print? */
     qmp = 0;
 
-fprintf (of, "%s", opcode[i].str);                            /* print opcode */
+fprintf (of, ((sw & SIM_SW_STOP)? "%s": "%-4s"), opstr);/* print opcode */
 if (I_GETPP (opfl) == I_M_PP)                           /* P required? */
     fprint_addr (of, ' ', &val[I_P], I_M_QX);
 else if ((I_GETPP (opfl) == I_M_PCP) && (pmp || qmp))   /* P opt & needed? */
@@ -474,7 +505,8 @@ return SCPE_OK;
 t_stat parse_sym (char *cptr, t_addr addr, UNIT *uptr, t_value *val, int32 sw)
 {
 int32 i, qv, opfl, last;
-char t, la, *fptr, gbuf[CBUFSIZE];
+char la, *fptr, gbuf[CBUFSIZE];
+int8 t;
 
 while (isspace (*cptr))                                 /* absorb spaces */
     cptr++;

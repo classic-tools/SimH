@@ -1,6 +1,6 @@
 /* pdp11_rx.c: RX11/RX01 floppy disk simulator
 
-   Copyright (c) 1993-2008, Robert M Supnik
+   Copyright (c) 1993-2013, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,8 @@
 
    rx           RX11/RX01 floppy disk
 
+   23-Oct-13    RMS     Revised for new boot setup routine
+   03-Sep-13    RMS     Added explicit void * cast
    07-Jul-05    RMS     Removed extraneous externs
    12-Oct-02    RMS     Added autoconfigure support
    08-Oct-02    RMS     Added variable address support to bootstrap
@@ -124,7 +126,6 @@ uint8 rx_buf[RX_NUMBY] = { 0 };                         /* sector buffer */
 int32 rx_bptr = 0;                                      /* buffer pointer */
 int32 rx_enb = 1;                                       /* device enable */
 
-DEVICE rx_dev;
 t_stat rx_rd (int32 *data, int32 PA, int32 access);
 t_stat rx_wr (int32 data, int32 PA, int32 access);
 t_stat rx_svc (UNIT *uptr);
@@ -330,7 +331,7 @@ t_stat rx_svc (UNIT *uptr)
 {
 int32 i, func;
 uint32 da;
-int8 *fbuf = uptr->filebuf;
+int8 *fbuf = (int8 *) uptr->filebuf;
 
 func = RXCS_GETFNC (rx_csr);                            /* get function */
 switch (rx_state) {                                     /* case on state */
@@ -349,7 +350,7 @@ switch (rx_state) {                                     /* case on state */
         break;
 
     case FILL:                                          /* fill buffer */
-        rx_buf[rx_bptr] = rx_dbr;                       /* write next */
+        rx_buf[rx_bptr] = (uint8)rx_dbr;                /* write next */
         rx_bptr = rx_bptr + 1;
         if (rx_bptr < RX_NUMBY)                         /* more? set xfer */
             rx_csr = rx_csr | RXCS_TR;
@@ -522,14 +523,13 @@ static const uint16 boot_rom[] = {
 
 t_stat rx_boot (int32 unitno, DEVICE *dptr)
 {
-int32 i;
-extern int32 saved_PC;
+size_t i;
 extern uint16 *M;
 
 for (i = 0; i < BOOT_LEN; i++)
     M[(BOOT_START >> 1) + i] = boot_rom[i];
 M[BOOT_UNIT >> 1] = unitno & RX_M_NUMDR;
 M[BOOT_CSR >> 1] = rx_dib.ba & DMASK;
-saved_PC = BOOT_ENTRY;
+cpu_set_boot (BOOT_ENTRY);
 return SCPE_OK;
 }

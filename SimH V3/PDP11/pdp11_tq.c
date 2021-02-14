@@ -1,6 +1,6 @@
 /* pdp11_tq.c: TMSCP tape controller simulator
 
-   Copyright (c) 2002-2011, Robert M Supnik
+   Copyright (c) 2002-2018, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,9 @@
 
    tq           TQK50 tape controller
 
+   28-May-18    RMS     Changed to avoid nested comment warnings (Mark Pizzolato)
+   23-Oct-13    RMS     Revised for new boot setup routine
+   17-Mar-13    RMS     Fixed bug in ABORT link walk loop (Dave Bryan)
    17-Aug-11    RMS     Added CAPACITY modifier
    14-Jan-11    MP      Various fixes discovered while exploring Ultrix issue:
                         - Set UNIT_SXC flag when a tape mark is encountered 
@@ -238,8 +241,6 @@ static struct drvtyp drv_tab[] = {
 
 extern int32 int_req[IPL_HLVL];
 extern int32 tmr_poll, clk_tps;
-extern FILE *sim_deb;
-extern uint32 sim_taddr_64;
 
 uint8 *tqxb = NULL;                                     /* xfer buffer */
 uint32 tq_sa = 0;                                       /* status, addr */
@@ -786,8 +787,8 @@ else {                                                  /* valid cmd */
             tq_enqt (&uptr->pktq, pkt);                 /* do later */
             return OK;
             }
-/*      if (tq_cmf[cmd] & MD_CDL)                       /* clr cch lost? */
-/*          uptr->flags = uptr->flags & ~UNIT_CDL; */
+//      if (tq_cmf[cmd] & MD_CDL)                       /* clr cch lost? */
+//          uptr->flags = uptr->flags & ~UNIT_CDL;
         if ((mdf & MD_CSE) && (uptr->flags & UNIT_SXC)) /* clr ser exc? */
             uptr->flags = uptr->flags & ~UNIT_SXC;
         }
@@ -877,6 +878,7 @@ if (uptr = tq_getucb (lu)) {                            /* get unit */
                 tq_pkt[prv].link = tq_pkt[tpkt].link;   /* unlink */
                     break;
                 }
+            prv = tpkt;                                 /* no match, next */
             }
         }
     if (tpkt) {                                         /* found target? */
@@ -2145,14 +2147,13 @@ static const uint16 boot_rom[] = {
 t_stat tq_boot (int32 unitno, DEVICE *dptr)
 {
 int32 i;
-extern int32 saved_PC;
 extern uint16 *M;
 
 for (i = 0; i < BOOT_LEN; i++)
     M[(BOOT_START >> 1) + i] = boot_rom[i];
 M[BOOT_UNIT >> 1] = unitno & 3;
 M[BOOT_CSR >> 1] = tq_dib.ba & DMASK;
-saved_PC = BOOT_ENTRY;
+cpu_set_boot (BOOT_ENTRY);
 return SCPE_OK;
 }
 

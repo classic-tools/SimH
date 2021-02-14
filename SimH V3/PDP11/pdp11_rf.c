@@ -1,6 +1,6 @@
 /* pdp11_rf.c: RF11 fixed head disk simulator
 
-   Copyright (c) 2006-2012, Robert M Supnik
+   Copyright (c) 2006-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,10 @@
 
    rf           RF11 fixed head disk
 
+   13-Feb-17    RMS     Fixed CSR address in boot code (Paul Koning)
+   23-Oct-13    RMS     Revised for new boot setup routine
+   03-Sep-13    RMS     Added explicit void * cast
+                        Added WC to debug printout
    19-Mar-12    RMS     Fixed bug in updating mem addr extension (Peter Schorn)
    25-Dec-06    RMS     Fixed bug in unit mask (John Dundas)
    26-Jun-06    RMS     Cloned from RF08 simulator
@@ -110,7 +114,6 @@
 
 extern uint16 *M;
 extern int32 int_req[IPL_HLVL];
-extern FILE *sim_deb;
 
 uint32 rf_cs = 0;                                       /* status register */
 uint32 rf_cma = 0;
@@ -124,7 +127,6 @@ uint32 rf_time = 10;                                    /* inter-word time */
 uint32 rf_burst = 1;                                    /* burst mode flag */
 uint32 rf_stopioe = 1;                                  /* stop on error */
 
-DEVICE rf_dev;
 t_stat rf_rd (int32 *data, int32 PA, int32 access);
 t_stat rf_wr (int32 data, int32 PA, int32 access);
 int32 rf_inta (void);
@@ -266,8 +268,8 @@ switch ((PA >> 1) & 07) {                               /* decode PA<3:1> */
             rf_cs &= ~(RFCS_WCHK|RFCS_DPAR|RFCS_NED|RFCS_WLK|RFCS_MXFR|RFCS_DONE);
             CLR_INT (RF);
             if (DEBUG_PRS (rf_dev))
-                fprintf (sim_deb, ">>RF start: cs = %o, da = %o, ma = %o\n",
-                    update_rfcs (0, 0), GET_DEX (rf_dae) | rf_da, GET_MEX (rf_cs) | rf_cma);
+                fprintf (sim_deb, ">>RF start: cs = %o, da = %o, ma = %o, wc = %o\n",
+                    update_rfcs (0, 0), GET_DEX (rf_dae) | rf_da, GET_MEX (rf_cs) | rf_cma, rf_wc);
             }
         break;
 
@@ -321,7 +323,7 @@ t_stat rf_svc (UNIT *uptr)
 {
 uint32 ma, da, t;
 uint16 dat;
-uint16 *fbuf = uptr->filebuf;
+uint16 *fbuf = (uint16 *) uptr->filebuf;
 
 if ((uptr->flags & UNIT_BUF) == 0) {                    /* not buf? abort */
     update_rfcs (RFCS_NED|RFCS_DONE, 0);                /* nx disk */
@@ -365,7 +367,7 @@ do {
                 update_rfcs (0, RFDAE_NXM);
                 break;
                 }
-            fbuf[da] = dat;						       /* write word */
+            fbuf[da] = dat;                            /* write word */
             rf_dbr = dat;
             if (da >= uptr->hwmark)
                 uptr->hwmark = da + 1;
@@ -437,13 +439,13 @@ return SCPE_OK;
 
 #define BOOT_START      02000                           /* start */
 #define BOOT_ENTRY      (BOOT_START + 002)              /* entry */
-#define BOOT_CSR        (BOOT_START + 032)              /* CSR */
+#define BOOT_CSR        (BOOT_START + 010)              /* CSR */
 #define BOOT_LEN        (sizeof (boot_rom) / sizeof (uint16))
 
 static const uint16 boot_rom[] = {
     0043113,                        /* "FD" */
     0012706, BOOT_START,            /* MOV #boot_start, SP */
-    0012701, 0177472,               /* MOV #RFDAE+2, R1     ; csr block */
+    0012701, 0177472,               /* MOV #RFCS+12, R1     ; csr block */
     0005041,                        /* CLR -(R1)            ; clear dae */
     0005041,                        /* CLR -(R1),           ; clear da */
     0005041,                        /* CLR -(R1),           ; clear cma */
@@ -461,13 +463,12 @@ static const uint16 boot_rom[] = {
 
 t_stat rf_boot (int32 unitno, DEVICE *dptr)
 {
-int32 i;
-extern int32 saved_PC;
+size_t i;
 
 for (i = 0; i < BOOT_LEN; i++)
     M[(BOOT_START >> 1) + i] = boot_rom[i];
 M[BOOT_CSR >> 1] = (rf_dib.ba & DMASK) + 012;
-saved_PC = BOOT_ENTRY;
+cpu_set_boot (BOOT_ENTRY);
 return SCPE_OK;
 }
 

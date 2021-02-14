@@ -1,6 +1,6 @@
 /* pdp11_ry.c: RX211/RXV21/RX02 floppy disk simulator
 
-   Copyright (c) 1993-2008, Robert M Supnik
+   Copyright (c) 1993-2013, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,8 @@
 
    ry           RX211/RXV21/RX02 floppy disk
 
+   23-Oct-13    RMS     Revised for new boot setup routine
+   03-Sep-13    RMS     Added explicit void * cast
    15-May-06    RMS     Fixed bug in autosize attach (David Gesswein)
    07-Jul-05    RMS     Removed extraneous externs
    18-Feb-05    RMS     Fixed bug in boot code (Graham Toal)
@@ -155,7 +157,6 @@ int32 ry_swait = 10;                                    /* seek, per track */
 int32 ry_xwait = 1;                                     /* tr set time */
 uint8 rx2xb[RY_NUMBY] = { 0 };                          /* sector buffer */
 
-DEVICE ry_dev;
 t_stat ry_rd (int32 *data, int32 PA, int32 access);
 t_stat ry_wr (int32 data, int32 PA, int32 access);
 t_stat ry_svc (UNIT *uptr);
@@ -180,9 +181,9 @@ DIB ry_dib = {
 
 UNIT ry_unit[] = {
     { UDATA (&ry_svc, UNIT_DEN+UNIT_FIX+UNIT_ATTABLE+UNIT_BUFABLE+UNIT_MUSTBUF,
-			 RY_SIZE) },
+             RY_SIZE) },
     { UDATA (&ry_svc, UNIT_DEN+UNIT_FIX+UNIT_ATTABLE+UNIT_BUFABLE+UNIT_MUSTBUF,
-			 RY_SIZE) }
+             RY_SIZE) }
     };
 
 REG ry_reg[] = {
@@ -374,7 +375,7 @@ t_stat ry_svc (UNIT *uptr)
 int32 i, t, func, bps;
 static uint8 estat[8];
 uint32 ba, da;
-int8 *fbuf = uptr->filebuf;
+int8 *fbuf = (int8 *) uptr->filebuf;
 
 func = RYCS_GETFNC (ry_csr);                            /* get function */
 bps = (ry_csr & RYCS_DEN)? RY_NUMBY: RX_NUMBY;          /* get sector size */
@@ -473,59 +474,59 @@ switch (ry_state) {                                     /* case on state */
         sim_activate (uptr, ry_cwait * 100);            /* schedule operation */
         break;
 
-	case SDXFR:                                         /* erase disk */
-		for (i = 0; i < (int32) uptr->capac; i++)
+    case SDXFR:                                         /* erase disk */
+        for (i = 0; i < (int32) uptr->capac; i++)
             fbuf[i] = 0;
-		uptr->hwmark = (uint32) uptr->capac;
-		if (ry_csr & RYCS_DEN)
+        uptr->hwmark = (uint32) uptr->capac;
+        if (ry_csr & RYCS_DEN)
             uptr->flags = uptr->flags | UNIT_DEN;
-		else uptr->flags = uptr->flags & ~UNIT_DEN;
-		ry_done (0, 0);
-		break;
+        else uptr->flags = uptr->flags & ~UNIT_DEN;
+        ry_done (0, 0);
+        break;
 
 
-	case ESBA:
-		ry_ba = ry_dbr;                                 /* save WC */
-		ry_state = ESXFR;                               /* next state */
-		sim_activate (uptr, ry_cwait);                  /* schedule xfer */
-		return SCPE_OK;
+    case ESBA:
+        ry_ba = ry_dbr;                                 /* save WC */
+        ry_state = ESXFR;                               /* next state */
+        sim_activate (uptr, ry_cwait);                  /* schedule xfer */
+        return SCPE_OK;
 
-	case ESXFR:
-		estat[0] = ry_ecode;                            /* fill 8B status */
-		estat[1] = ry_wc;
-		estat[2] = ry_unit[0].TRACK;
-		estat[3] = ry_unit[1].TRACK;
-		estat[4] = ry_track;
-		estat[5] = ry_sector;
-		estat[6] = ((ry_csr & RYCS_DRV)? 0200: 0) |
-			       ((ry_unit[1].flags & UNIT_DEN)? 0100: 0) |
+    case ESXFR:
+        estat[0] = ry_ecode;                            /* fill 8B status */
+        estat[1] = ry_wc;
+        estat[2] = (uint8)ry_unit[0].TRACK;
+        estat[3] = (uint8)ry_unit[1].TRACK;
+        estat[4] = ry_track;
+        estat[5] = ry_sector;
+        estat[6] = ((ry_csr & RYCS_DRV)? 0200: 0) |
+                   ((ry_unit[1].flags & UNIT_DEN)? 0100: 0) |
                    ((uptr->flags & UNIT_ATT)? 0040: 0) |
                    ((ry_unit[0].flags & UNIT_DEN)? 0020: 0) |
                    ((ry_csr & RYCS_DEN)? 0001: 0);
-		estat[7] = uptr->TRACK;
-		t = Map_WriteB (ba, 8, estat);                  /* DMA to memory */
-		ry_done (t? RYES_NXM: 0, 0);                    /* done */
-		break;
+        estat[7] = (uint8)uptr->TRACK;
+        t = Map_WriteB (ba, 8, estat);                  /* DMA to memory */
+        ry_done (t? RYES_NXM: 0, 0);                    /* done */
+        break;
 
-	case CMD_COMPLETE:                                  /* command complete */
-		ry_done (0, 0);
-		break;
+    case CMD_COMPLETE:                                  /* command complete */
+        ry_done (0, 0);
+        break;
 
-	case INIT_COMPLETE:                                 /* init complete */
-		ry_unit[0].TRACK = 1;                           /* drive 0 to trk 1 */
-		ry_unit[1].TRACK = 0;                           /* drive 1 to trk 0 */
-		if ((uptr->flags & UNIT_BUF) == 0) {            /* not buffered? */
-			ry_done (RYES_ID, 0010);                    /* init done, error */
-			break;
-			}
-		da = CALC_DA (1, 1, bps);                       /* track 1, sector 1 */
-		for (i = 0; i < bps; i++)                       /* read sector */
-			rx2xb[i] = fbuf[da + i];
-		ry_done (RYES_ID, 0);                           /* set done */
-		if ((ry_unit[1].flags & UNIT_ATT) == 0)
+    case INIT_COMPLETE:                                 /* init complete */
+        ry_unit[0].TRACK = 1;                           /* drive 0 to trk 1 */
+        ry_unit[1].TRACK = 0;                           /* drive 1 to trk 0 */
+        if ((uptr->flags & UNIT_BUF) == 0) {            /* not buffered? */
+            ry_done (RYES_ID, 0010);                    /* init done, error */
+            break;
+            }
+        da = CALC_DA (1, 1, bps);                       /* track 1, sector 1 */
+        for (i = 0; i < bps; i++)                       /* read sector */
+            rx2xb[i] = fbuf[da + i];
+        ry_done (RYES_ID, 0);                           /* set done */
+        if ((ry_unit[1].flags & UNIT_ATT) == 0)
             ry_ecode = 0020;
-		break;
-		}                                               /* end case state */
+        break;
+        }                                               /* end case state */
 
 return SCPE_OK;
 }
@@ -678,8 +679,7 @@ static const uint16 boot_rom[] = {
 
 t_stat ry_boot (int32 unitno, DEVICE *dptr)
 {
-int32 i;
-extern int32 saved_PC;
+size_t i;
 extern uint16 *M;
 
 if ((ry_unit[unitno & RX_M_NUMDR].flags & UNIT_DEN) == 0)
@@ -688,7 +688,7 @@ for (i = 0; i < BOOT_LEN; i++)
     M[(BOOT_START >> 1) + i] = boot_rom[i];
 M[BOOT_UNIT >> 1] = unitno & RX_M_NUMDR;
 M[BOOT_CSR >> 1] = ry_dib.ba & DMASK;
-saved_PC = BOOT_ENTRY;
+cpu_set_boot (BOOT_ENTRY);
 return SCPE_OK;
 }
 

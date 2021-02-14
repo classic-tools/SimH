@@ -1,6 +1,6 @@
 /* i1401_cpu.c: IBM 1401 CPU simulator
 
-   Copyright (c) 1993-2011, Robert M. Supnik
+   Copyright (c) 1993-2017, Robert M. Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -23,6 +23,9 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   13-Mar-17    RMS     Fixed MTF length checking (COVERITY)
+   30-Jan-15    RMS     Fixed treatment of overflow (Ken Shirriff)
+   08-Oct-12    RMS     Clear storage and branch preserves B register (Van Snyder)
    19-Mar-11    RMS     Reverted multiple tape indicator implementation
    20-Jan-11    RMS     Fixed branch on EOT indicator per hardware (Van Snyder)
    07-Nov-10    RMS     Fixed divide not to clear word marks in quotient
@@ -35,10 +38,9 @@
    22-May-06    RMS     Fixed format error in CPU history (Peter Schorn)
    06-Mar-06    RMS     Fixed bug in divide (Van Snyder)
    22-Sep-05    RMS     Fixed declarations (Sterling Garwood)
-   01-Sep-05	RMS     Removed error stops in MCE
+   01-Sep-05    RMS     Removed error stops in MCE
    16-Aug-05    RMS     Fixed C++ declaration and cast problems
-   02-Jun-05    RMS     Fixed SSB-SSG clearing on RESET
-                        (Ralph Reinke)
+   02-Jun-05    RMS     Fixed SSB-SSG clearing on RESET (Ralph Reinke)
    14-Nov-04    WVS     Added column binary support, debug support
    06-Nov-04    RMS     Added instruction history
    12-Jul-03    RMS     Moved ASCII/BCD tables to included file
@@ -178,6 +180,14 @@ typedef struct {
                         PCQ_ENTRY; \
                         IS = AS;
 
+#define BRANCH_CS       if (ADDR_ERR (AS)) { \
+                            reason = STOP_INVBR; \
+                            break; \
+                            } \
+                        PCQ_ENTRY; \
+                        IS = AS;
+
+
 uint8 M[MAXMEMSIZE] = { 0 };                            /* main memory */
 int32 saved_IS = 0;                                     /* saved IS */
 int32 AS = 0;                                           /* AS */
@@ -197,11 +207,7 @@ int32 hst_lnt = 0;                                      /* history length */
 InstHistory *hst = NULL;                                /* instruction history */
 t_bool conv_old = 0;                                    /* old conversions */
 
-extern int32 sim_int_char;
 extern int32 sim_emax;
-extern t_value *sim_eval;
-extern FILE *sim_deb;
-extern uint32 sim_brk_types, sim_brk_dflt, sim_brk_summ; /* breakpoint info */
 
 t_stat cpu_ex (t_value *vptr, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_dep (t_value val, t_addr addr, UNIT *uptr, int32 sw);
@@ -229,8 +235,6 @@ extern t_stat inq_io (int32 flag, int32 mod);
 extern t_stat mt_io (int32 unit, int32 flag, int32 mod);
 extern t_stat dp_io (int32 fnc, int32 flag, int32 mod);
 extern t_stat mt_func (int32 unit, int32 flag, int32 mod);
-extern t_stat sim_activate (UNIT *uptr, int32 delay);
-extern t_stat fprint_sym (FILE *of, t_addr addr, t_value *val, UNIT *uptr, int32 sw);
 
 /* CPU data structures
 
@@ -322,7 +326,7 @@ const int32 op_table[64] = {
     L1 | L2 | L4 | L5,                                  /* write and read */
     L1 | L2 | L4 | L5,                                  /* punch */
     L1 | L4,                                            /* read and punch */
-    L1 | L2 | L4 | L5,                                  /* write and read */
+    L1 | L2 | L4 | L5,                                  /* write and punch */
     L1 | L2 | L4 | L5,                                  /* write, read, punch */
     L1,                                                 /* 10: read feed */
     L1,                                                 /* punch feed */
@@ -517,7 +521,6 @@ static const int32 mtf_mod[] = {
 
 t_stat sim_instr (void)
 {
-extern int32 sim_interval;
 int32 IS, ilnt, flags;
 int32 op, xa, t, wm, ioind, dev, unit;
 int32 a, b, i, k, asave, bsave;
@@ -718,7 +721,7 @@ CHECK_LENGTH:
    1            chained A and B
    2,3          invalid A-address
    4            chained B address
-   5,6          invalid B-address
+   5,6          invalid B-address - checked in fetch
    7            normal
    8+           normal + modifier
 */
@@ -770,9 +773,9 @@ CHECK_LENGTH:
    Instruction lengths:
 
    1            chained
-   2,3          invalid A-address
+   2,3          invalid A-address - checked in fetch
    4            self (B-address = A-address)
-   5,6          invalid B-address
+   5,6          invalid B-address - checked in fetch
    7            normal
    8+           normal + ignored modifier
 */
@@ -954,9 +957,11 @@ CHECK_LENGTH:
         M[BS] = b;                                      /* store result */
         MM (BS);
         if (b & WM) {                                   /* b wm? done */
-            if (qsign && (carry == 0))                  /* compl, no carry? */
+            if ((qsign != 0) && (carry == 0))           /* eff sub and no carry? */
                 M[bsave] = WM + ((b & ZONE) ^ ABIT) + sum_table[10 - t];
-            break;
+            if ((qsign == 0) && (carry != 0))           /* eff add and carry */
+                 ind[IN_OVF] = 1;                       /* overflow */
+             break;
             }
         do {
             if (a & WM)                                 /* A WM? char = 0 */
@@ -972,7 +977,8 @@ CHECK_LENGTH:
             if ((b & WM) && (qsign == 0)) {             /* last, no recomp? */
                 M[BS] = WM + sum_table[t] +             /* zone add */
                     (((a & ZONE) + b + (carry? ABIT: 0)) & ZONE);
-                ind[IN_OVF] = carry;                    /* ovflo if carry */
+                if (carry != 0)                         /* carry out? */
+                    ind[IN_OVF] = 1;                    /* ovflo if carry */
                 }
             else M[BS] = (b & WM) + sum_table[t];       /* normal add */
             MM (BS);
@@ -1004,7 +1010,7 @@ CHECK_LENGTH:
                 ind[IN_HGH] = col_table[b & CHAR] > col_table [a & CHAR];
                 ind[IN_LOW] = ind[IN_HGH] ^ 1;
                 }
-            MM (AS);                                /* decr pointers */
+            MM (AS);                                    /* decr pointers */
             MM (BS);
             } while ((wm & WM) == 0);                   /* stop on A, B WM */
         if ((a & WM) && !(b & WM)) {                    /* short A field? */
@@ -1022,7 +1028,7 @@ CHECK_LENGTH:
    WR           write and read                          if branch
    P            punch a card                            if branch
    RP           read and punch                          if branch
-   WP   :       write and punch                         if branch
+   WP           write and punch                         if branch
    WRP          write read and punch                    if branch
    RF           read feed (nop)
    PF           punch feed (nop)
@@ -1143,19 +1149,24 @@ CHECK_LENGTH:
 
    Instruction lengths:
 
-   1-3          invalid I/O address
+   1-3          invalid I/O address - checked here
    4            normal, d-character is unit
-   5            normal
+   5            normal, d-character is last character
    6+           normal, d-character is last character
 */
 
     case OP_MTF:                                        /* magtape function */
-        if (ilnt < 4)                                   /* too short? */
+        if (ilnt < 4) {                                 /* too short? */
             reason = STOP_INVL;
-        else if (ioind != BCD_PERCNT)                   /* valid dev addr? */
-            reason = STOP_INVA;
-        else if (reason = iomod (ilnt, D, mtf_mod))     /* valid modifier? */
             break;
+            }
+      if (ioind != BCD_PERCNT) {                        /* valid dev addr? */
+            reason = STOP_INVA;
+            break;
+            }
+        if (reason = iomod (ilnt, D, mtf_mod))          /* valid modifier? */
+            break;
+
         if (dev == IO_MT)                               /* BCD? */
             reason = mt_func (unit, 0, D);
         else if (dev == IO_MTB)                         /* binary? */
@@ -1191,9 +1202,9 @@ CHECK_LENGTH:
    Instruction lengths:
 
    1            chained
-   2,3          invalid A-address
+   2,3          invalid A-address - checked in fetch
    4            self (B-address = A-address)
-   5,6          invalid B-address
+   5,6          invalid B-address - checked in fetch
    7            normal
    8+           normal + ignored modifier
 */
@@ -1367,9 +1378,9 @@ CHECK_LENGTH:
    Instruction lengths:
 
    1            chained
-   2,3          invalid A-address
+   2,3          invalid A-address - checked in fetch
    4            self (B-address = A-address)
-   5,6          invalid B-address
+   5,6          invalid B-address - checked in fetch
    7            normal
    8+           normal + ignored modifier
 */
@@ -1444,9 +1455,9 @@ CHECK_LENGTH:
    Instruction lengths:
 
    1            chained
-   2,3          invalid A-address
+   2,3          invalid A-address - checked in fetch
    4            self (B-address = A-address)
-   5,6          invalid B-address
+   5,6          invalid B-address - checked in fetch
    7            normal
    8+           normal + ignored modifier
 */
@@ -1568,6 +1579,9 @@ CHECK_LENGTH:
    5,6          invalid B-address
    7            branch
    8+           one operand, branch ignored
+
+   Note that clear storage and branch does not overwrite the B register,
+   unlike all other branches
 */
 
     case OP_CS:                                         /* clear storage */
@@ -1577,7 +1591,7 @@ CHECK_LENGTH:
         if (BS < 0)                                     /* wrap if needed */
             BS = BS + MEMSIZE;
         if (ilnt == 7) {                                /* branch variant? */
-            BRANCH;
+            BRANCH_CS;                                  /* special branch */
             }
         break;
 
@@ -1904,8 +1918,6 @@ char *cptr = (char *) desc;
 t_value sim_eval[MAX_L + 1];
 t_stat r;
 InstHistory *h;
-extern t_stat fprint_sym (FILE *ofile, t_addr addr, t_value *val,
-    UNIT *uptr, int32 sw);
 
 if (hst_lnt == 0)                                       /* enabled? */
     return SCPE_NOFNC;

@@ -1,6 +1,6 @@
 /* pdp11_tu.c - PDP-11 TM02/TU16 TM03/TU45/TU77 Massbus magnetic tape controller
 
-   Copyright (c) 1993-2012, Robert M Supnik
+   Copyright (c) 1993-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,9 @@
 
    tu           TM02/TM03 magtape
 
+   28-Dec-17    RMS     Read tape mark must set Massbus EXC
+   13-Mar-17    RMS     Annotated fall through in switch
+   23-Oct-13    RMS     Revised for new boot setup routine
    18-Apr-11    MP      Fixed t_addr printouts for 64b big-endian systems
    17-May-07    RMS     CS1 DVA resides in device, not MBA
    29-Apr-07    RMS     Fixed bug in setting FCE on TMK Naoki Hamada)
@@ -238,9 +241,6 @@ static char *tu_fname[CS1_N_FNC] = {
     "20", "21", "22", "23", "WRCHKF", "25", "26", "WRCHKR",
     "WRITE", "31", "32", "33", "READF", "35", "36" "READR"
     };
-
-extern int32 sim_switches;
-extern FILE *sim_deb;
 
 t_stat tu_mbrd (int32 *data, int32 PA, int32 fmtr);
 t_stat tu_mbwr (int32 data, int32 PA, int32 fmtr);
@@ -490,7 +490,7 @@ switch (fnc) {                                          /* case on function */
         tutc = tutc & ~TC_FCS;                          /* clear fc status */
         tufs = tufs & ~(FS_SAT | FS_SSC | FS_ID | FS_ERR);
         sim_cancel (uptr);                              /* reset drive */
-        uptr->USTAT = 0;
+        uptr->USTAT = 0;                                /* fall through */
     case FNC_NOP:
         tucs1 = tucs1 & ~CS1_GO;                        /* no operation */
         return SCPE_OK;
@@ -647,12 +647,12 @@ switch (fnc) {                                          /* case on function */
     case FNC_SPACEF:                                    /* space forward */
         do {
             tufc = (tufc + 1) & 0177777;                /* incr fc */
-            if (st = sim_tape_sprecf (uptr, &tbc)) {    /* space rec fwd, err? */
+            if ((st = sim_tape_sprecf (uptr, &tbc))) {  /* space rec fwd, err? */
                 r = tu_map_err (drv, st, 0);            /* map error */
                 break;
                 }
             } while ((tufc != 0) && !sim_tape_eot (uptr));
-        if (tufc)
+        if (tufc != 0)
             tu_set_er (ER_FCE);
         else tutc = tutc & ~TC_FCS;
         break;
@@ -660,18 +660,18 @@ switch (fnc) {                                          /* case on function */
     case FNC_SPACER:                                    /* space reverse */
         do {
             tufc = (tufc + 1) & 0177777;                /* incr wc */
-            if (st = sim_tape_sprecr (uptr, &tbc)) {    /* space rec rev, err? */
+            if ((st = sim_tape_sprecr (uptr, &tbc))) {  /* space rec rev, err? */
                 r = tu_map_err (drv, st, 0);            /* map error */
                 break;
                 }
             } while (tufc != 0);
-        if (tufc)
+        if (tufc != 0)
             tu_set_er (ER_FCE);
         else tutc = tutc & ~TC_FCS;
         break;
 
     case FNC_WREOF:                                     /* write end of file */
-        if (st = sim_tape_wrtmk (uptr))                 /* write tmk, err? */
+        if ((st = sim_tape_wrtmk (uptr)))               /* write tmk, err? */
             r = tu_map_err (drv, st, 0);                /* map error */
         break;
 
@@ -687,9 +687,7 @@ switch (fnc) {                                          /* case on function */
         tufc = 0;                                       /* clear frame count */
         if ((uptr->UDENS == TC_1600) && sim_tape_bot (uptr))
             tufs = tufs | FS_ID;                        /* PE BOT? ID burst */
-        if (st = sim_tape_rdrecf (uptr, xbuf, &tbc, MT_MAXFR)) { /* read fwd */
-            if (st == MTSE_TMK)                         /* tmk also sets FCE */
-                tu_set_er (ER_FCE);
+        if ((st = sim_tape_rdrecf (uptr, xbuf, &tbc, MT_MAXFR))) {/* read fwd */
             r = tu_map_err (drv, st, 1);                /* map error */
             break;                                      /* done */
             }
@@ -736,10 +734,10 @@ switch (fnc) {                                          /* case on function */
             for (i = j = 0; j < xbc; j = j + 1) {
                 xbuf[i++] = wbuf[j] & 0377;
                 xbuf[i++] = (wbuf[j] >> 8) & 0377;
-				}
+                }
             tbc = xbc;
             }
-        if (st = sim_tape_wrrecf (uptr, xbuf, tbc))     /* write rec, err? */
+        if ((st = sim_tape_wrrecf (uptr, xbuf, tbc)))   /* write rec, err? */
             r = tu_map_err (drv, st, 1);                /* map error */
         else {
             tufc = (tufc + tbc) & 0177777;
@@ -751,9 +749,7 @@ switch (fnc) {                                          /* case on function */
     case FNC_READR:                                     /* read reverse */
     case FNC_WCHKR:                                     /* wcheck = read */
         tufc = 0;                                       /* clear frame count */
-        if (st = sim_tape_rdrecr (uptr, xbuf + 4, &tbc, MT_MAXFR)) { /* read rev */
-            if (st == MTSE_TMK)                         /* tmk also sets FCE */
-                tu_set_er (ER_FCE);
+        if ((st = sim_tape_rdrecr (uptr, xbuf + 4, &tbc, MT_MAXFR))) {/* read rev */
             r = tu_map_err (drv, st, 1);                /* map error */
             break;                                      /* done */
             }
@@ -793,7 +789,7 @@ if (DEBUG_PRS (tu_dev)) {
     fprintf (sim_deb, ">>TU%d DONE: fnc=%s, fc=%06o, fs=%06o, er=%06o, pos=",
              drv, tu_fname[fnc], tufc, tufs, tuer);
     fprint_val (sim_deb, uptr->pos, 10, T_ADDR_W, PV_LEFT);
-    fprintf (sim_deb, "\n");
+    fprintf (sim_deb, ", r=%d\n", r);
     }
 return SCPE_OK;
 }
@@ -847,7 +843,9 @@ if (flg & FS_ATA)
 return;
 }
 
-/* Map tape error status */
+/* Map tape error status
+
+   Note that tape mark on a data transfer sets FCE and Massbus EXC */
 
 t_stat tu_map_err (int32 drv, t_stat st, t_bool qdt)
 {
@@ -861,7 +859,11 @@ switch (st) {
         break;
 
     case MTSE_TMK:                                      /* end of file */
-        tufs = tufs | FS_TMK;
+        tufs = tufs | FS_TMK;                           /* set TMK status */
+        if (qdt) {                                      /* data transfer? */
+            tu_set_er (ER_FCE);                         /* set FCE */
+            mba_set_exc (tu_dib.ba);                    /* set exception*/
+            }
         break;
 
     case MTSE_IOERR:                                    /* IO error */
@@ -1036,15 +1038,14 @@ static const uint16 boot_rom[] = {
 
 t_stat tu_boot (int32 unitno, DEVICE *dptr)
 {
-int32 i;
-extern int32 saved_PC;
+size_t i;
 extern uint16 *M;
 
 for (i = 0; i < BOOT_LEN; i++)
     M[(BOOT_START >> 1) + i] = boot_rom[i];
 M[BOOT_UNIT >> 1] = unitno & (TU_NUMDR - 1);
 M[BOOT_CSR >> 1] = mba_get_csr (tu_dib.ba) & DMASK;
-saved_PC = BOOT_ENTRY;
+cpu_set_boot (BOOT_ENTRY);
 return SCPE_OK;
 }
 

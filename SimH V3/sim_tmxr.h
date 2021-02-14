@@ -1,6 +1,6 @@
 /* sim_tmxr.h: terminal multiplexor definitions
 
-   Copyright (c) 2001-2008, Robert M Supnik
+   Copyright (c) 2001-2019, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -26,6 +26,12 @@
    Based on the original DZ11 simulator by Thord Nilson, as updated by
    Arthur Krewat.
 
+   19-Mar-19    JDB     Added extension pointer to TMLN structure;
+                        added tmxr_read, tmxr_write, tmxr_show, tmxr_close global hooks;
+                        added tmxr_find_ldsc, tmxr_send_buffered_data, tmxr_init_line,
+                        tmxr_report_connection, and tmxr_disconnect_line globals
+   06-Aug-15    JDB     [4.0] Added modem control bits and functions
+   14-Dec-14    JDB     [4.0] Added include of "sim_sock.h" for SOCKET, etc.
    20-Nov-08    RMS     Added three new standardized SHOW routines
    27-May-08    JDB     Added lnorder to TMXR structure,
                         added tmxr_set_lnorder and tmxr_set_lnorder
@@ -40,17 +46,30 @@
                         added tmxr_rqln, tmxr_tqln
 */
 
-#ifndef _SIM_TMXR_H_
-#define _SIM_TMXR_H_    0
+#ifndef SIM_TMXR_H_
+#define SIM_TMXR_H_     0
+
+#include "sim_sock.h"
 
 #define TMXR_V_VALID    15
 #define TMXR_VALID      (1 << TMXR_V_VALID)
 #define TMXR_MAXBUF     256                             /* buffer size */
 #define TMXR_GUARD      12                              /* buffer guard */
 
+/* Modem Control Bits */
+
+#define TMXR_MDM_DTR        0x01    /* Data Terminal Ready */
+#define TMXR_MDM_RTS        0x02    /* Request To Send     */
+#define TMXR_MDM_DCD        0x04    /* Data Carrier Detect */
+#define TMXR_MDM_RNG        0x08    /* Ring Indicator      */
+#define TMXR_MDM_CTS        0x10    /* Clear To Send       */
+#define TMXR_MDM_DSR        0x20    /* Data Set Ready      */
+#define TMXR_MDM_INCOMING   (TMXR_MDM_DCD|TMXR_MDM_RNG|TMXR_MDM_CTS|TMXR_MDM_DSR)  /* Settable Modem Bits */
+#define TMXR_MDM_OUTGOING   (TMXR_MDM_DTR|TMXR_MDM_RTS)  /* Settable Modem Bits */
+
 struct tmln {
     SOCKET              conn;                           /* line conn */
-    uint32              ipad;                           /* IP address */
+    char                *ipad;                          /* IP address */
     uint32              cnms;                           /* conn time */
     int32               tsta;                           /* Telnet state */
     int32               rcve;                           /* rcv enable */
@@ -67,6 +86,7 @@ struct tmln {
     char                rxb[TMXR_MAXBUF];               /* rcv buffer */
     char                rbr[TMXR_MAXBUF];               /* rcv break */
     char                txb[TMXR_MAXBUF];               /* xmt buffer */
+    void                *exptr;                         /* extension pointer */
     };
 
 typedef struct tmln TMLN;
@@ -92,10 +112,12 @@ t_stat tmxr_open_master (TMXR *mp, char *cptr);
 t_stat tmxr_close_master (TMXR *mp);
 t_stat tmxr_attach (TMXR *mp, UNIT *uptr, char *cptr);
 t_stat tmxr_detach (TMXR *mp, UNIT *uptr);
+t_stat tmxr_set_modem_control_passthru (TMXR *mp);
+t_stat tmxr_set_get_modem_bits (TMLN *lp, int32 bits_to_set, int32 bits_to_clear, int32 *incoming_bits);
 t_stat tmxr_ex (t_value *vptr, t_addr addr, UNIT *uptr, int32 sw);
 t_stat tmxr_dep (t_value val, t_addr addr, UNIT *uptr, int32 sw);
-void tmxr_msg (SOCKET sock, char *msg);
-void tmxr_linemsg (TMLN *lp, char *msg);
+void tmxr_msg (SOCKET sock, const char *msg);
+void tmxr_linemsg (TMLN *lp, const char *msg);
 void tmxr_fconns (FILE *st, TMLN *lp, int32 ln);
 void tmxr_fstats (FILE *st, TMLN *lp, int32 ln);
 t_stat tmxr_set_log (UNIT *uptr, int32 val, char *cptr, void *desc);
@@ -109,6 +131,22 @@ t_stat tmxr_show_lnorder (FILE *st, UNIT *uptr, int32 val, void *desc);
 t_stat tmxr_show_summ (FILE *st, UNIT *uptr, int32 val, void *desc);
 t_stat tmxr_show_cstat (FILE *st, UNIT *uptr, int32 val, void *desc);
 t_stat tmxr_show_lines (FILE *st, UNIT *uptr, int32 val, void *desc);
+TMLN *tmxr_find_ldsc (UNIT *uptr, int32 val, TMXR *mp);
+int32 tmxr_send_buffered_data (TMLN *lp);
+void tmxr_init_line (TMLN *lp);
+void tmxr_report_connection (TMXR *mp, TMLN *lp, int32 line);
+void tmxr_disconnect_line (TMLN *lp);
+
+/* Extension interface */
+
+extern int32 (*tmxr_read)  (TMLN *lp, int32 length);
+extern int32 (*tmxr_write) (TMLN *lp, int32 length);
+extern void  (*tmxr_show)  (TMLN *lp, FILE *stream);
+extern void  (*tmxr_close) (TMLN *lp);
+
+/* V4.X shims */
+
+#define tmxr_set_console_units(rxuptr, txuptr)
 
 #endif
 

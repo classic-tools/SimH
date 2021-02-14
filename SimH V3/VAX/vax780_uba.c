@@ -1,6 +1,6 @@
 /* vax780_uba.c: VAX 11/780 Unibus adapter
 
-   Copyright (c) 2004-2012, Robert M Supnik
+   Copyright (c) 2004-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,7 @@
 
    uba                  DW780 Unibus adapter
 
+   13-Mar-17    RMS     Fixed bad test for UBA intr level (COVERITY)
    25-Mar-12    RMS     Added parameter to int_ack prototype (Mark Pizzolata)
    19-Nov-08    RMS     Moved I/O support routines to I/O library
    28-May-08    RMS     Inlined physical memory routines
@@ -179,11 +180,8 @@ int32 autcon_enb = 1;                                   /* autoconfig enable */
 extern int32 trpirq;
 extern int32 autcon_enb;
 extern jmp_buf save_env;
-extern DEVICE *sim_devices[];
 extern UNIT cpu_unit;
 extern uint32 nexus_req[NEXUS_HLVL];
-extern int32 sim_switches;
-extern FILE *sim_log, *sim_deb;
 
 t_stat uba_svc (UNIT *uptr);
 t_stat uba_reset (DEVICE *dptr);
@@ -303,7 +301,7 @@ t_stat uba_rdreg (int32 *val, int32 pa, int32 lnt)
 int32 idx, ofs;
 
 if ((pa & 3) || (lnt != L_LONG)) {                      /* unaligned or not lw? */
-    printf (">>UBA: invalid adapter read mask, pa = %X, lnt = %d\r\n", pa, lnt);
+    sim_printf (">>UBA: invalid adapter read mask, pa = %X, lnt = %d\r\n", pa, lnt);
     sbi_set_errcnf ();                                  /* err confirmation */
     return SCPE_OK;
     }
@@ -392,7 +390,7 @@ t_stat uba_wrreg (int32 val, int32 pa, int32 lnt)
 int32 idx, ofs, old_cr;
 
 if ((pa & 3) || (lnt != L_LONG)) {                      /* unaligned or not lw? */
-    printf (">>UBA: invalid adapter write mask, pa = %X, lnt = %d\r\n", pa, lnt);
+    sim_printf (">>UBA: invalid adapter write mask, pa = %X, lnt = %d\r\n", pa, lnt);
     sbi_set_errcnf ();                                  /* err confirmation */
     return SCPE_OK;
     }
@@ -525,7 +523,7 @@ if ((lnt == L_BYTE) ||                                  /* byte? */
         iod = iod << 16;
     }
 else {
-    printf (">>UBA: invalid read mask, pa = %x, lnt = %d\n", pa, lnt);
+    sim_printf (">>UBA: invalid read mask, pa = %x, lnt = %d\n", pa, lnt);
     sbi_set_errcnf ();                                  /* err confirmation */
     iod = 0;
     }
@@ -550,7 +548,7 @@ if (lnt == L_BYTE)                                      /* byte? DATOB */
 else if ((lnt == L_WORD) && ((pa & 1) == 0))            /* aligned word? */
      WriteUb (pa, val, WRITE);                          /* DATO */
 else {
-    printf (">>UBA: invalid write mask, pa = %x, lnt = %d\n", pa, lnt);
+    sim_printf (">>UBA: invalid write mask, pa = %x, lnt = %d\n", pa, lnt);
     sbi_set_errcnf ();                                  /* err confirmation */
     }
 SET_IRQL;                                               /* update ints */
@@ -584,7 +582,7 @@ int32 uba_get_ubvector (int32 lvl)
 int32 i, vec;
 
 vec = 0;
-if ((lvl == (IPL_UBA - IPL_HMIN)) && uba_int) {         /* UBA lvl, int? */
+if ((lvl == IPL_UBA) && uba_int) {                      /* UBA lvl, int? */
     vec = UBA_UVEC;                                     /* set flag */
     uba_int = 0;                                        /* clear int */
     }

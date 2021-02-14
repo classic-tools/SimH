@@ -1,6 +1,6 @@
 /* sim_console.c: simulator console I/O library
 
-   Copyright (c) 1993-2012, Robert M Supnik
+   Copyright (c) 1993-2019, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -23,6 +23,13 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   14-Jun-19    JDB     Fixed argument passing in "sim_show_console"
+   01-Mar-19    JDB     SET CONSOLE LOG now closes prior log before opening
+   27-Dec-18    JDB     Added missing fall through comment in ControlHandler
+   18-Mar-18    RMS     Fixed deboff not to close stdout or stderr (Dave Bryan)
+   31-Mar-15    RMS     Backported parity feature from GitHub master
+   10-Nov-14    JDB     Added -N option to SET CONSOLE LOG and SET CONSOLE DEBUG
+   02-Jan-14    RMS     Added tab stop routines
    18-Mar-12    RMS     Removed unused reference to sim_switches (Dave Bryan)
    20-Jan-11    MP      Added support for BREAK key on Windows
    30-Sep-06    RMS     Fixed non-printable characters in KSR mode
@@ -44,7 +51,7 @@
                         Added MacOS sleep (Peter Schorn)
    14-Jul-02    RMS     Added Windows priority control (Mark Pizzolato)
    20-May-02    RMS     Added Windows VT support (Fischer Franz)
-   01-Feb-02    RMS     Added VAX fix from Robert Alan Byer
+   01-Feb-02    RMS     Added VAX fix (Robert Alan Byer)
    19-Sep-01    RMS     More MacOS changes
    31-Aug-01    RMS     Changed int64 to t_int64 for Windoze
    20-Jul-01    RMS     Added MacOS support (Louis Chretien, Peter Schorn, Ben Supnik)
@@ -104,11 +111,6 @@ int32 sim_del_char = 0177;
 TMLN sim_con_ldsc = { 0 };                              /* console line descr */
 TMXR sim_con_tmxr = { 1, 0, 0, &sim_con_ldsc };         /* console line mux */
 
-extern volatile int32 stop_cpu;
-extern int32 sim_quiet, sim_deb_close;
-extern FILE *sim_log, *sim_deb;
-extern DEVICE *sim_devices[];
-
 /* Set/show data structures */
 
 static CTAB set_con_tab[] = {
@@ -162,10 +164,10 @@ if ((cptr == NULL) || (*cptr == 0))
     return SCPE_2FARG;
 while (*cptr != 0) {                                    /* do all mods */
     cptr = get_glyph_nc (cptr, gbuf, ',');              /* get modifier */
-    if (cvptr = strchr (gbuf, '='))                     /* = value? */
+    if ((cvptr = strchr (gbuf, '=')))                   /* = value? */
         *cvptr++ = 0;
     get_glyph (gbuf, gbuf, 0);                          /* modifier to UC */
-    if (ctptr = find_ctab (set_con_tab, gbuf)) {        /* match? */
+    if ((ctptr = find_ctab (set_con_tab, gbuf))) {      /* match? */
         r = ctptr->action (ctptr->arg, cvptr);          /* do the rest */
         if (r != SCPE_OK)
             return r;
@@ -190,8 +192,8 @@ if (*cptr == 0) {                                       /* show all */
     }
 while (*cptr != 0) {
     cptr = get_glyph (cptr, gbuf, ',');                 /* get modifier */
-    if (shptr = find_shtab (show_con_tab, gbuf))
-        shptr->action (st, dptr, uptr, shptr->arg, cptr);
+    if ((shptr = find_shtab (show_con_tab, gbuf)))
+        shptr->action (st, dptr, uptr, shptr->arg, NULL);
     else return SCPE_NOPARAM;
     }
 return SCPE_OK;
@@ -207,7 +209,8 @@ t_stat r;
 
 if ((cptr == NULL) || (*cptr == 0))
     return SCPE_2FARG;
-if (dptr->dradix == 16) rdx = 16;
+if (dptr->dradix == 16)
+    rdx = 16;
 else rdx = 8;
 val = (int32) get_uint (cptr, rdx, 0177, &r);
 if ((r != SCPE_OK) ||
@@ -268,8 +271,14 @@ if ((cptr == NULL) || (*cptr == 0))                     /* need arg */
 cptr = get_glyph_nc (cptr, gbuf, 0);                    /* get file name */
 if (*cptr != 0)                                         /* now eol? */
     return SCPE_2MARG;
-sim_set_logoff (0, NULL);                               /* close cur log */
-sim_log = sim_fopen (gbuf, "a");                        /* open log */
+
+sim_set_logoff (0, NULL);                               /* close the current log, if any */
+
+if (sim_switches & SWMASK ('N'))                        /* if a new log file is requested */
+    sim_log = sim_fopen (gbuf, "w");                    /*   then open an empty file for writing */
+else                                                    /* otherwise */
+    sim_log = sim_fopen (gbuf, "a");                    /*   open an existing file for appending */
+
 if (sim_log == NULL)                                    /* error? */
     return SCPE_OPENERR;
 if (!sim_quiet)
@@ -329,10 +338,14 @@ else if (strcmp (gbuf, "STDERR") == 0)                  /* debug to stderr? */
     sim_deb = stderr;
 else {
     cptr = get_glyph_nc (cptr, gbuf, 0);                /* reparse */
-    sim_deb = sim_fopen (gbuf, "a");                    /* open debug */
+
+    if (sim_switches & SWMASK ('N'))                    /* if a new log file is requested */
+        sim_deb = sim_fopen (gbuf, "w");                /*   then open an empty file for writing */
+    else                                                /* otherwise */
+        sim_deb = sim_fopen (gbuf, "a");                /*   open an existing file for appending */
+
     if (sim_deb == NULL)                                /* error? */
         return SCPE_OPENERR;
-    sim_deb_close = 1;                                  /* need close */
     }
 if (!sim_quiet)
     printf ("Debug output to \"%s\"\n", gbuf);
@@ -347,15 +360,14 @@ t_stat sim_set_deboff (int32 flag, char *cptr)
 {
 if (cptr && (*cptr != 0))                               /* now eol? */
     return SCPE_2MARG;
-if (sim_deb == NULL)                                    /* no log? */
+if (sim_deb == NULL)                                    /* no debug? */
     return SCPE_OK;
 if (!sim_quiet)
     printf ("Debug output disabled\n");
 if (sim_log)
     fprintf (sim_log, "Debug output disabled\n");
-if (sim_deb_close)                                      /* close if needed */
-    fclose (sim_deb);
-sim_deb_close = 0;
+if ((sim_deb != stdout) && (sim_deb != stderr))         /* don't close std channels! */
+    fclose(sim_deb);
 sim_deb = NULL;
 return SCPE_OK;
 }
@@ -483,7 +495,8 @@ t_stat sim_putchar_s (int32 c)
 {
 t_stat r;
 
-if (sim_log) fputc (c, sim_log);                        /* log file? */
+if (sim_log)                                            /* log file? */
+    fputc (c, sim_log);
 if (sim_con_tmxr.master == 0)                           /* not Telnet? */
     return sim_os_putchar (c);                          /* in-window version */
 if (sim_con_ldsc.conn == 0)                             /* no Telnet conn? */
@@ -502,12 +515,26 @@ int32 sim_tt_inpcvt (int32 c, uint32 mode)
 uint32 md = mode & TTUF_M_MODE;
 
 if (md != TTUF_MODE_8B) {
+    uint32 par_mode = (mode >> TTUF_W_MODE) & TTUF_M_PAR;
+    static int32 nibble_even_parity = 0x699600;   /* bit array indicating the even parity for each index (offset by 8) */
+
     c = c & 0177;
     if (md == TTUF_MODE_UC) {
         if (islower (c))
             c = toupper (c);
         if (mode & TTUF_KSR)
             c = c | 0200;
+        }
+    switch (par_mode) {
+        case TTUF_PAR_EVEN:
+            c |= (((nibble_even_parity >> ((c & 0xF) + 1)) ^ (nibble_even_parity >> (((c >> 4) & 0xF) + 1))) & 0x80);
+            break;
+        case TTUF_PAR_ODD:
+            c |= ((~((nibble_even_parity >> ((c & 0xF) + 1)) ^ (nibble_even_parity >> (((c >> 4) & 0xF) + 1)))) & 0x80);
+            break;
+        case TTUF_PAR_MARK:
+            c = c | 0200;
+            break;
         }
     }
 else c = c & 0377;
@@ -535,6 +562,59 @@ if (md != TTUF_MODE_8B) {
     }
 else c = c & 0377;
 return c;
+}
+
+/* Tab stop array handling
+
+   *desc points to a uint8 array of length val
+
+   Columns with tabs set are non-zero; columns without tabs are 0 */
+
+t_stat sim_tt_settabs (UNIT *uptr, int32 val, char *cptr, void *desc)
+{
+uint8 *temptabs, *tabs = (uint8 *) desc;
+int32 i, d;
+t_stat r;
+char gbuf[CBUFSIZE];
+
+if ((cptr == NULL) || (tabs == NULL) || (val <= 1))
+    return SCPE_IERR;
+if (*cptr == 0)
+    return SCPE_2FARG;
+if ((temptabs = (uint8 *)malloc (val)) == NULL)
+    return SCPE_MEM;
+for (i = 0; i < val; i++)
+    temptabs[i] = 0;
+do {
+    cptr = get_glyph (cptr, gbuf, ';');
+    d = (int32) get_uint (gbuf, 10, val, &r);
+    if ((r != SCPE_OK) || (d == 0)) {
+        free (temptabs);
+        return SCPE_ARG;
+        }
+    temptabs[d - 1] = 1;
+    } while (*cptr != 0);
+for (i = 0; i < val; i++)
+    tabs[i] = temptabs[i];
+free (temptabs);
+return SCPE_OK;
+}
+
+t_stat sim_tt_showtabs (FILE *st, UNIT *uptr, int32 val, void *desc)
+{
+uint8 *tabs = (uint8 *) desc;
+int32 i, any;
+
+if ((st == NULL) || (val == 0) || (desc == NULL))
+    return SCPE_IERR;
+for (i = any = 0; i < val; i++) {
+    if (tabs[i] != 0) {
+        fprintf (st, (any? ";%d": "%d"), i + 1);
+        any = 1;
+        }
+    }
+fprintf (st, (any? "\n": "no tabs set\n"));
+return SCPE_OK;
 }
 
 /* VMS routines, from Ben Thomas, with fixes from Robert Alan Byer */
@@ -671,6 +751,13 @@ static HANDLE std_input;
 static HANDLE std_output;
 static DWORD saved_mode;
 
+/* Note: This routine catches all the potential events which some aspect 
+         of the windows system can generate.  The CTRL_C_EVENT won't be 
+         generated by a  user typing in a console session since that 
+         session is in RAW mode.  In general, Ctrl-C on a simulator's
+         console terminal is a useful character to be passed to the 
+         simulator.  This code does nothing to disable or affect that. */
+
 static BOOL WINAPI
 ControlHandler(DWORD dwCtrlType)
     {
@@ -687,6 +774,8 @@ ControlHandler(DWORD dwCtrlType)
         case CTRL_LOGOFF_EVENT:     // User is logging off
             if (!GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &Mode))
                 return TRUE;        // Not our User, so ignore
+        /* fall through into simulation termination */
+
         case CTRL_SHUTDOWN_EVENT:   // System is shutting down
             int_handler(0);
             return TRUE;

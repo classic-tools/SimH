@@ -1,6 +1,6 @@
 /* id_fd.c: Interdata floppy disk simulator
 
-   Copyright (c) 2001-2012, Robert M Supnik
+   Copyright (c) 2001-2013, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,7 @@
 
    fd           M46-630 floppy disk
 
+   03-Sep-13    RMS     Added explicit void * cast
    19-Mar-12    RMS     Fixed macro naming conflict (Mark Pizzolato)
 
    A diskette consists of 77 tracks, each with 26 sectors of 128B.  The
@@ -115,7 +116,7 @@ uint32 fd_cmd = 0;                                      /* command */
 uint32 fd_db = 0;                                       /* data buffer */
 uint32 fd_bptr = 0;                                     /* buffer pointer */
 uint8 fdxb[FD_NUMBY] = { 0 };                           /* sector buffer */
-uint8 fd_es[FD_NUMDR][ES_SIZE] = { 0 };                 /* ext status */
+uint8 fd_es[FD_NUMDR][ES_SIZE] = { {0} };               /* ext status */
 uint32 fd_lrn = 0;                                      /* log rec # */
 uint32 fd_wdv = 0;                                      /* wd valid */
 uint32 fd_stopioe = 1;                                  /* stop on error */
@@ -226,7 +227,7 @@ switch (op) {                                           /* case IO op */
                 fd_sta = fd_sta | STA_BSY;              /* set busy */
                 }
             else fd_bptr = 0;                           /* just wrap */
-			}
+            }
         if ((ctab[fnc] & C_RD) && fd_arm)               /* if rd & arm, */
             SET_INT (v_FD);                             /* interrupt */
         return fd_db;                                   /* return buf */
@@ -306,7 +307,7 @@ return 0;
 t_stat fd_svc (UNIT *uptr)
 {
 uint32 i, u, tk, sc, crc, fnc, da;
-uint8 *fbuf = uptr->filebuf;
+uint8 *fbuf = (uint8 *) uptr->filebuf;
 
 u = uptr - fd_dev.units;                                /* get unit number */
 fnc = GET_FNC (uptr->FNC);                              /* get function */
@@ -366,7 +367,7 @@ switch (fnc) {                                          /* case on function */
         if ((uptr->flags & UNIT_BUF) == 0) {            /* not attached? */
             fd_es[u][0] = fd_es[u][0] | ES0_FLT;        /* set err */
             fd_es[u][1] = fd_es[u][1] | ES1_NRDY;
-			}
+            }
         for (i = 0; i < ES_SIZE; i++)                   /* copy to buf */
             fdxb[i] = fd_es[u][i];
         for (i = ES_SIZE; i < FD_NUMBY; i++)
@@ -377,7 +378,7 @@ switch (fnc) {                                          /* case on function */
         if ((uptr->flags & UNIT_BUF) == 0) {            /* not attached? */
             fd_done (u, STA_ERR, ES0_ERR | ES0_FLT, ES1_NRDY);
             return SCPE_OK;
-			}
+            }
         for (i = 0; i < FD_NUMBY; i++) fdxb[i] = 0;     /* clr buf */
         tk = GET_TRK (uptr->LRN);                       /* get track */
         sc = GET_SEC (uptr->LRN);                       /* get sector */

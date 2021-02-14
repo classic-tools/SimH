@@ -1,6 +1,6 @@
 /* i7094_cpu.c: IBM 7094 CPU simulator
 
-   Copyright (c) 2003-2011, Robert M. Supnik
+   Copyright (c) 2003-2017, Robert M. Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,7 @@
 
    cpu          7094 central processor
 
+   07-Sep-17    RMS     Fixed sim_eval declaration in history routine (COVERITY)
    31-Dec-11    RMS     Select traps have priority over protect traps
                         Added SRI, SPI
                         Fixed user mode and relocation from CTSS RPQ documentation
@@ -211,11 +212,6 @@ extern uint32 ch_sta[NUM_CHAN];
 extern uint32 ch_flags[NUM_CHAN];
 extern DEVICE mt_dev[NUM_CHAN];
 extern DEVICE ch_dev[NUM_CHAN];
-extern FILE *sim_deb;
-extern int32 sim_int_char;
-extern int32 sim_interval;
-extern int32 sim_switches;
-extern uint32 sim_brk_types, sim_brk_dflt, sim_brk_summ; /* breakpoint info */
 
 /* Forward and external declarations */
 
@@ -664,14 +660,14 @@ while (reason == SCPE_OK) {                             /* loop until error */
         }
 
     if (sim_interval <= 0) {                            /* intv cnt expired? */
-        if (reason = sim_process_event ())              /* process events */
+        if ((reason = sim_process_event ()))            /* process events */
             break;
         chtr_pend = chtr_eval (NULL);                   /* eval chan traps */
         }
 
     for (i = 0; ch_req && (i < NUM_CHAN); i++) {        /* loop thru channels */
         if (ch_req & REQ_CH (i)) {                      /* channel request? */
-            if (reason = ch_proc (i))
+            if ((reason = ch_proc (i)))
                 break;
             }
         chtr_pend = chtr_eval (NULL);
@@ -980,7 +976,7 @@ while (reason == SCPE_OK) {                             /* loop until error */
                 if (!Read (ea, &SR))
                     break;
                 AC = (AC & AC_S) | ((AC >> 6) & 0017777777777) |
-                    (SR & 0770000000000);
+                    (SR & INT64_C(0770000000000));
                 sc--;
                 }
             if ((sc == 0) && (IR & INST_T_CXR1))
@@ -1973,13 +1969,13 @@ while (reason == SCPE_OK) {                             /* loop until error */
             t_stat r;
             for (i = 0; (i < HALT_IO_LIMIT) && !ch_qidle (); i++) {
                 sim_interval = 0;
-                if (r = sim_process_event ())           /* process events */
+                if ((r = sim_process_event ()))         /* process events */
                     return r;
                 chtr_pend = chtr_eval (NULL);           /* eval chan traps */
                 while (ch_req) {                        /* until no ch req */
                     for (j = 0; j < NUM_CHAN; j++) {    /* loop thru channels */
                         if (ch_req & REQ_CH (j)) {      /* channel request? */
-                            if (r = ch_proc (j))
+                            if ((r = ch_proc (j)))
                                 return r;
                             }
                         chtr_pend = chtr_eval (NULL);
@@ -2405,14 +2401,12 @@ t_stat cpu_fprint_one_inst (FILE *st, uint32 pc, uint32 rpt, uint32 ea,
     t_uint64 ir, t_uint64 ac, t_uint64 mq, t_uint64 si, t_uint64 opnd)
 {
 int32 ch;
-t_value sim_eval;
-extern t_stat fprint_sym (FILE *ofile, t_addr addr, t_value *val,
-    UNIT *uptr, int32 sw);
+extern t_value *sim_eval;
 
-sim_eval = ir;
+sim_eval[0] = ir;
 if (pc & HIST_PC) {                                     /* instruction? */
     fputs ("CPU ", st);
-    fprintf (st, "%05o ", pc & AMASK);
+    fprintf (st, "%05o ", (int)(pc & AMASK));
     if (rpt == 0)
         fprintf (st, "       ");
     else if (rpt < 1000000)
@@ -2427,7 +2421,7 @@ if (pc & HIST_PC) {                                     /* instruction? */
     if (ir & INST_T_DEC)
         fprintf (st, "       ");
     else fprintf (st, "%05o  ", ea);
-    if (fprint_sym (st, pc & AMASK, &sim_eval, &cpu_unit, SWMASK ('M')) > 0) {
+    if (fprint_sym (st, pc & AMASK, sim_eval, &cpu_unit, SWMASK ('M')) > 0) {
         fputs ("(undefined) ", st);
         fprint_val (st, ir, 8, 36, PV_RZRO);
         }
@@ -2438,12 +2432,12 @@ if (pc & HIST_PC) {                                     /* instruction? */
         }
     fputc ('\n', st);                                   /* end line */
     }                                                   /* end if instruction */
-else if (ch = HIST_CH (pc)) {                           /* channel? */
+else if ((ch = HIST_CH (pc))) {                         /* channel? */
     fprintf (st, "CH%c ", 'A' + ch - 1);
-    fprintf (st, "%05o  ", pc & AMASK);
+    fprintf (st, "%05o  ", (int)(pc & AMASK));
     fputs ("                                              ", st);
-    fprintf (st, "%05o  ", ea & AMASK);
-    if (fprint_sym (st, pc & AMASK, &sim_eval, &cpu_unit,
+    fprintf (st, "%05o  ", (int)(ea & AMASK));
+    if (fprint_sym (st, pc & AMASK, sim_eval, &cpu_unit,
         (ch_dev[ch - 1].flags & DEV_7909)? SWMASK ('N'): SWMASK ('I')) > 0) {
         fputs ("(undefined) ", st);
         fprint_val (st, ir, 8, 36, PV_RZRO);

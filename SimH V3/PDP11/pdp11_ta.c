@@ -1,6 +1,6 @@
 /* pdp11_ta.c: PDP-11 cassette tape simulator
 
-   Copyright (c) 2007-2008, Robert M Supnik
+   Copyright (c) 2007-2016, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -24,7 +24,11 @@
    in this Software without prior written authorization from Robert M Supnik.
 
    ta           TA11/TU60 cassette tape
-
+   
+   10-Oct-16    RMS     Fixed bad register definitions (Mark Pizzolato)
+   23-Oct-13    RMS     Revised for new boot setup routine
+   06-Jun-13    RMS     Reset must set RDY (Ian Hammond)
+                        Added CAPS-11 bootstrap (Ian Hammond)
    06-Aug-07    RMS     Foward op at BOT skips initial file gap
 
    Magnetic tapes are represented as a series of variable records
@@ -106,7 +110,6 @@
 #define UST_GAP         01                              /* last op hit gap */
 
 extern int32 int_req[IPL_HLVL];
-extern FILE *sim_deb;
 
 uint32 ta_cs = 0;                                       /* control/status */
 uint32 ta_idb = 0;                                      /* input data buf */
@@ -123,13 +126,13 @@ static uint8 ta_fnc_tab[TACS_M_FNC + 1] = {
     OP_REV       , OP_FWD,        OP_FWD, 0
     };
 
-DEVICE ta_dev;
 t_stat ta_rd (int32 *data, int32 PA, int32 access);
 t_stat ta_wr (int32 data, int32 PA, int32 access);
 t_stat ta_svc (UNIT *uptr);
 t_stat ta_reset (DEVICE *dptr);
 t_stat ta_attach (UNIT *uptr, char *cptr);
 t_stat ta_detach (UNIT *uptr);
+t_stat ta_boot (int32 unitno, DEVICE *dptr);
 void ta_go (void);
 t_stat ta_map_err (UNIT *uptr, t_stat st);
 UNIT *ta_busy (void);
@@ -169,8 +172,8 @@ REG ta_reg[] = {
     { DRDATA (STIME, ta_stime, 24), PV_LEFT + REG_NZ },
     { DRDATA (CTIME, ta_ctime, 24), PV_LEFT + REG_NZ },
     { FLDATA (STOP_IOE, ta_stopioe, 0) },
-    { URDATA (UFNC, ta_unit[0].FNC, 8, 5, 0, TA_NUMDR, 0), REG_HRO },
-    { URDATA (UST, ta_unit[0].UST, 8, 2, 0, TA_NUMDR, 0), REG_HRO },
+    { URDATA (UFNC, ta_unit[0].FNC, 8, 5, 0, TA_NUMDR, REG_HRO) },
+    { URDATA (UST, ta_unit[0].UST, 8, 2, 0, TA_NUMDR, REG_HRO) },
     { URDATA (POS, ta_unit[0].pos, 10, T_ADDR_W, 0,
               TA_NUMDR, PV_LEFT | REG_RO) },
     { ORDATA (DEVADDR, ta_dib.ba, 32), REG_HRO },
@@ -196,8 +199,8 @@ DEVICE ta_dev = {
     "TA", ta_unit, ta_reg, ta_mod,
     TA_NUMDR, 10, 31, 1, 8, 8,
     NULL, NULL, &ta_reset,
-    NULL, &ta_attach, &ta_detach,
-    &ta_dib, DEV_DISABLE | DEV_DIS | DEV_DEBUG
+    &ta_boot, &ta_attach, &ta_detach,
+    &ta_dib, DEV_DISABLE | DEV_DIS | DEV_DEBUG | DEV_UBUS
     };
 
 /* I/O dispatch routines, I/O addresses 17777500 - 17777503
@@ -389,7 +392,7 @@ switch (uptr->FNC) {                                    /* case on function */
         else {
             if ((ta_bptr < TA_MAXFR) &&                 /* room in buf? */
                 ((uptr->pos + ta_bptr) < uptr->capac))  /* room on tape? */
-                ta_xb[ta_bptr++] = ta_odb;              /* store char */
+                ta_xb[ta_bptr++] = (uint8)ta_odb;       /* store char */
             ta_set_tr ();                               /* set tra req */
             sim_activate (uptr, ta_ctime);              /* sched next char */
             }
@@ -397,13 +400,13 @@ switch (uptr->FNC) {                                    /* case on function */
 
     case TACS_WRITE|TACS_3RD:                           /* write CRC */
         if (ta_bptr) {                                  /* anything to write? */
-           if (st = sim_tape_wrrecf (uptr, ta_xb, ta_bptr)) /* write, err? */
+           if ((st = sim_tape_wrrecf (uptr, ta_xb, ta_bptr)))/* write, err? */
                r = ta_map_err (uptr, st);               /* map error */
            }
         break;                                          /* op done */
 
     case TACS_WFG:                                      /* write file gap */
-        if (st = sim_tape_wrtmk (uptr))                 /* write tmk, err? */
+        if ((st = sim_tape_wrtmk (uptr)))               /* write tmk, err? */
             r = ta_map_err (uptr, st);                  /* map error */
         break;
 
@@ -413,7 +416,7 @@ switch (uptr->FNC) {                                    /* case on function */
         break;
 
     case TACS_SRB:                                      /* space rev blk */
-        if (st = sim_tape_sprecr (uptr, &tbc))          /* space rev, err? */
+        if ((st = sim_tape_sprecr (uptr, &tbc)))        /* space rev, err? */
             r = ta_map_err (uptr, st);                  /* map error */
          break;
 
@@ -425,7 +428,7 @@ switch (uptr->FNC) {                                    /* case on function */
         break;
 
     case TACS_SFB:                                      /* space fwd blk */
-        if (st = sim_tape_sprecf (uptr, &tbc))          /* space rev, err? */
+        if ((st = sim_tape_sprecf (uptr, &tbc)))        /* space rev, err? */
             r = ta_map_err (uptr, st);                  /* map error */
         ta_cs |= TACS_CRC;                              /* CRC sets, no err */
         break;
@@ -444,8 +447,8 @@ switch (uptr->FNC) {                                    /* case on function */
 ta_cs |= TACS_RDY;                                      /* set ready */
 ta_updsta (uptr);                                       /* update status */
 if (DEBUG_PRS (ta_dev))
-    fprintf (sim_deb, ">>TA done: op=%o, status = %o, pos=%d\n",
-             uptr->FNC, ta_cs, uptr->pos);
+    fprintf (sim_deb, ">>TA done: op=%o, status = %o, dstatus = %o, pos=%d\n",
+             uptr->FNC, ta_cs, uptr->UST, uptr->pos);
 return r;
 }
 
@@ -564,7 +567,7 @@ t_stat ta_reset (DEVICE *dptr)
 uint32 u;
 UNIT *uptr;
 
-ta_cs = 0;
+ta_cs = TACS_RDY;                                       /* init sets RDY */
 ta_idb = 0;
 ta_odb = 0;
 ta_write = 0;
@@ -609,4 +612,54 @@ r = sim_tape_detach (uptr);
 ta_updsta (NULL);
 uptr->UST = 0;
 return r;
+}
+
+/* Bootstrap routine */
+
+#define BOOT_START      01000                           /* start */
+#define BOOT_ENTRY      (BOOT_START)
+#define BOOT_CSR        (BOOT_START + 002)              /* CSR */
+#define BOOT_LEN        (sizeof (boot_rom) / sizeof (uint16))
+
+static const uint16 boot_rom[] = {
+0012700,                /* mov #tacs,r0 */
+0177500,
+0005010,                /* clr (r0) */
+0010701,                /* 3$: mov pc,r1 */
+0062701,                /* add #20-here,r1 */
+0000052,
+0012702,                /* mov #375,r2 */
+0000375,
+0112103,                /* movb (r1)+,r3 */
+0112110,                /* 5$: movb (r1)+,(r0) */
+0100413,                /* bmi 15$ */
+0130310,                /* 10$: bitb r3,(r0) */
+0001776,                /* beq 10$ */
+0105202,                /* incb r2 */
+0100772,                /* bmi 5$ */
+0116012,                /* movb 2(r0),r2 */
+0000002,
+0120337,                /* cmpb r3,@#0 */
+0000000,
+0001767,                /* beq 10$ */
+0000000,                /* 12$: halt */
+0000755,                /* br 3$ */
+0005710,                /* 15$: tst (r0) */
+0100774,                /* bmi 12$ */
+0005007,                /* clr pc */
+0017640,                /* $20: (data) */
+0002415,
+0112024
+};
+
+t_stat ta_boot (int32 unitno, DEVICE *dptr)
+{
+size_t i;
+extern uint16 *M;
+
+for (i = 0; i < BOOT_LEN; i++)
+    M[(BOOT_START >> 1) + i] = boot_rom[i];
+M[BOOT_CSR >> 1] = ta_dib.ba & DMASK;
+cpu_set_boot (BOOT_ENTRY);
+return SCPE_OK;
 }

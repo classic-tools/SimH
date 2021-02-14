@@ -1,6 +1,6 @@
 /* pdp18b_cpu.c: 18b PDP CPU simulator
 
-   Copyright (c) 1993-2008, Robert M Supnik
+   Copyright (c) 1993-2016, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,9 @@
 
    cpu          PDP-4/7/9/15 central processor
 
+   10-Mar-16    RMS     Added 3-cycle databreak set/show routines
+   07-Mar-16    RMS     Revised to allocate memory dynamically
+   28-Mar-15    RMS     Revised to use sim_printf
    28-Apr-07    RMS     Removed clock initialization
    26-Dec-06    RMS     Fixed boundary test in KT15/XVM (Andrew Warkentin)
    30-Oct-06    RMS     Added idle and infinite loop detection
@@ -330,7 +333,7 @@ typedef struct {
 #define ASW_DFLT        017720
 #endif
 
-int32 M[MAXMEMSIZE] = { 0 };                            /* memory */
+int32 *M = NULL;                                        /* memory */
 int32 LAC = 0;                                          /* link'AC */
 int32 MQ = 0;                                           /* MQ */
 int32 PC = 0;                                           /* PC */
@@ -378,13 +381,6 @@ REG *pcq_r = NULL;                                      /* PC queue reg ptr */
 int32 hst_p = 0;                                        /* history pointer */
 int32 hst_lnt = 0;                                      /* history length */
 InstHistory *hst = NULL;                                /* instruction history */
-
-extern int32 sim_int_char;
-extern int32 sim_interval;
-extern uint32 sim_brk_types, sim_brk_dflt, sim_brk_summ; /* breakpoint info */
-extern t_bool sim_idle_enab;
-extern DEVICE *sim_devices[];
-extern FILE *sim_log;
 
 t_bool build_dev_tab (void);
 t_stat cpu_ex (t_value *vptr, t_addr addr, UNIT *uptr, int32 sw);
@@ -440,7 +436,7 @@ static const int32 api_ffo[256] = {
  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
  };
 
-static const int32 api_vec[API_HLVL][32] = {
+int32 api_vec[API_HLVL][32] = {
  { ACH_PWRFL },                                         /* API 0 */
  { ACH_DTA, ACH_MTA, ACH_DRM, ACH_RF, ACH_RP, ACH_RB }, /* API 1 */
  { ACH_PTR, ACH_LPT, ACH_LPT },                         /* API 2 */
@@ -604,7 +600,7 @@ while (reason == 0) {                                   /* loop until halted */
     int32 link_init, fill;
 
     if (sim_interval <= 0) {                            /* check clock queue */
-        if (reason = sim_process_event ())
+        if ((reason = sim_process_event ()))
             break;
         api_int = api_eval (&int_pend);                 /* eval API */
         }
@@ -734,7 +730,7 @@ while (reason == 0) {                                   /* loop until halted */
     if (sim_brk_summ && sim_brk_test (PC, SWMASK ('E'))) { /* breakpoint? */
         reason = STOP_IBKPT;                            /* stop simulation */
         break;
-		}
+        }
     if (!usmd_defer)                                    /* no IOT? load usmd */
         usmd = usmd_buf;
     else usmd_defer = 0;                                /* cancel defer */
@@ -1557,7 +1553,7 @@ while (reason == 0) {                                   /* loop until halted */
                 }
             else if (pulse == 004) {                    /* ISA */
                 api_enb = (iot_data & SIGN)? 1: 0;
-                api_req = api_req | ((LAC >> 8) & 017);
+                api_req = api_req | ((LAC >> 8) & 017); /* swre levels only */
                 api_act = api_act | (LAC & 0377);
                 }
             break;
@@ -1650,7 +1646,7 @@ while (reason == 0) {                                   /* loop until halted */
                 }
             else if (pulse == 004) {                    /* ISA */
                 api_enb = (iot_data & SIGN)? 1: 0;
-                api_req = api_req | ((LAC >> 8) & 017);
+                api_req = api_req | ((LAC >> 8) & 017); /* swre levels only */
                 api_act = api_act | (LAC & 0377);
                 }
             else if (pulse == 021)                      /* ENB */
@@ -2058,15 +2054,15 @@ if (MMR & MM_RDIS)                                      /* reloc disabled? */
 else if ((MMR & MM_SH) &&                               /* shared enabled and */
     (ma >= g_base[gmode]) &&                            /* >= shared base and */
     (ma < (g_base[gmode] + slr_lnt[slr]))) {            /* < shared end? */
-	if (ma & 017400) {									/* ESAS? */
-		if ((rc == REL_W) && (MMR & MM_WP)) {			/* write and protected? */
-			prvn = trap_pending = 1;					/* set flag, trap */
-			return -1;
-			}
-		pa = (((MMR & MM_SBR_MASK) << 8) + ma) & DMASK; /* ESAS reloc */
-		}
-	else pa = RR + (ma & 0377);							/* no, ISAS reloc */
-	}
+    if (ma & 017400) {                                  /* ESAS? */
+        if ((rc == REL_W) && (MMR & MM_WP)) {           /* write and protected? */
+            prvn = trap_pending = 1;                    /* set flag, trap */
+            return -1;
+            }
+        pa = (((MMR & MM_SBR_MASK) << 8) + ma) & DMASK; /* ESAS reloc */
+        }
+    else pa = RR + (ma & 0377);                         /* no, ISAS reloc */
+    }
 else {
     if (ma > (BR | 0377)) {                             /* normal reloc, viol? */
         if (rc != REL_C)                                /* set flag, trap */
@@ -2103,6 +2099,10 @@ usmd = usmd_buf = usmd_defer = 0;
 memm = memm_init;
 nexm = prvn = trap_pending = 0;
 emir_pending = rest_pending = 0;
+if (M == NULL)
+    M = (int32 *) calloc (MEMSIZE, sizeof (int32));
+if (M == NULL)
+    return SCPE_MEM;
 pcq_r = find_reg ("PCQ", NULL, dptr);
 if (pcq_r)
     pcq_r->qptr = 0;
@@ -2255,10 +2255,10 @@ static const uint8 std_dev[] =
 for (i = 0; i < DEV_MAX; i++) {                         /* clr tables */
     dev_tab[i] = NULL;
     dev_iors[i] = NULL;
-	}
+    }
 for (i = 0; i < ((uint32) sizeof (std_dev)); i++)       /* std entries */
     dev_tab[std_dev[i]] = &bad_dev;
-for (i = p =  0; (dptr = sim_devices[i]) != NULL; i++) {        /* add devices */
+for (i = p = 0; (dptr = sim_devices[i]) != NULL; i++) { /* add devices */
     dibp = (DIB *) dptr->ctxt;                          /* get DIB */
     if (dibp && !(dptr->flags & DEV_DIS)) {             /* enabled? */
         if (dibp->iors)                                 /* if IORS, add */
@@ -2266,11 +2266,8 @@ for (i = p =  0; (dptr = sim_devices[i]) != NULL; i++) {        /* add devices *
         for (j = 0; j < dibp->num; j++) {               /* loop thru disp */
             if (dibp->dsp[j]) {                         /* any dispatch? */
                 if (dev_tab[dibp->dev + j]) {           /* already filled? */
-                    printf ("%s device number conflict at %02o\n",
+                    sim_printf ("%s device number conflict at %02o\n",
                             sim_dname (dptr), dibp->dev + j);
-                    if (sim_log)
-                        fprintf (sim_log, "%s device number conflict at %02o\n",
-                                 sim_dname (dptr), dibp->dev + j);
                     return TRUE;
                     }
                 dev_tab[dibp->dev + j] = dibp->dsp[j];  /* fill */
@@ -2279,6 +2276,31 @@ for (i = p =  0; (dptr = sim_devices[i]) != NULL; i++) {        /* add devices *
         }                                               /* end if enb */
     }                                                   /* end for i */
 return FALSE;
+}
+
+/* Set in memory 3-cycle databreak register */
+
+t_stat set_3cyc_reg (UNIT *uptr, int32 val, char *cptr, void *desc)
+{
+t_stat r;
+int32 newv;
+
+if (cptr == NULL)
+    return SCPE_ARG;
+newv = (int32) get_uint (cptr, 8, 0777777, &r);
+if (r != SCPE_OK)
+    return SCPE_ARG;
+M[val] = newv;
+return SCPE_OK;
+}
+
+/* Show in-memory 3-cycle databreak register */
+
+t_stat show_3cyc_reg (FILE *st, UNIT *uptr, int32 val, void *desc)
+{
+fprintf (st, "%s=", (char *) desc);
+fprint_val (st, (t_value) M[val], 8, 18, PV_RZRO);
+return SCPE_OK;
 }
 
 /* Set history */
@@ -2321,8 +2343,6 @@ char *cptr = (char *) desc;
 t_value sim_eval[2];
 t_stat r;
 InstHistory *h;
-extern t_stat fprint_sym (FILE *ofile, t_addr addr, t_value *val,
-    UNIT *uptr, int32 sw);
 
 if (hst_lnt == 0)                                       /* enabled? */
     return SCPE_NOFNC;

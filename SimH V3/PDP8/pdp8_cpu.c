@@ -1,6 +1,6 @@
 /* pdp8_cpu.c: PDP-8 CPU simulator
 
-   Copyright (c) 1993-2011, Robert M Supnik
+   Copyright (c) 1993-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,12 @@
 
    cpu          central processor
 
+   07-Sep-17    RMS     Fixed sim_eval declaration in history routine (COVERITY)
+   09-Mar-17    RMS     Fixed PCQ_ENTRY for interrupts (COVERITY)
+   13-Feb-17    RMS     RESET clear L'AC, per schematics
+   28-Jan-17    RMS     Renamed switch register variable to SR, per request
+   18-Sep-16    RMS     Added alternate dispatch table for non-contiguous devices
+   17-Sep-13    RMS     Fixed boot in wrong field problem (Dave Gesswein)
    28-Apr-07    RMS     Removed clock initialization
    30-Oct-06    RMS     Added idle and infinite loop detection
    30-Sep-06    RMS     Fixed SC value after DVI overflow (Don North)
@@ -191,7 +197,7 @@
 
 #define PCQ_SIZE        64                              /* must be 2**n */
 #define PCQ_MASK        (PCQ_SIZE - 1)
-#define PCQ_ENTRY       pcq[pcq_p = (pcq_p - 1) & PCQ_MASK] = MA
+#define PCQ_ENTRY(x)    pcq[pcq_p = (pcq_p - 1) & PCQ_MASK] = x
 #define UNIT_V_NOEAE    (UNIT_V_UF)                     /* EAE absent */
 #define UNIT_NOEAE      (1 << UNIT_V_NOEAE)
 #define UNIT_V_MSIZE    (UNIT_V_UF + 1)                 /* dummy mask */
@@ -223,11 +229,12 @@ int32 gtf = 0;                                          /* EAE gtf flag */
 int32 SC = 0;                                           /* EAE shift count */
 int32 UB = 0;                                           /* User mode Buffer */
 int32 UF = 0;                                           /* User mode Flag */
-int32 OSR = 0;                                          /* Switch Register */
+int32 SR = 0;                                           /* Switch Register */
 int32 tsc_ir = 0;                                       /* TSC8-75 IR */
 int32 tsc_pc = 0;                                       /* TSC8-75 PC */
 int32 tsc_cdf = 0;                                      /* TSC8-75 CDF flag */
 int32 tsc_enb = 0;                                      /* TSC8-75 enabled */
+int32 cpu_astop = 0;                                    /* address stop */
 int16 pcq[PCQ_SIZE] = { 0 };                            /* PC queue */
 int32 pcq_p = 0;                                        /* PC queue ptr */
 REG *pcq_r = NULL;                                      /* PC queue reg ptr */
@@ -239,13 +246,6 @@ int32 (*dev_tab[DEV_MAX])(int32 IR, int32 dat);         /* device dispatch */
 int32 hst_p = 0;                                        /* history pointer */
 int32 hst_lnt = 0;                                      /* history length */
 InstHistory *hst = NULL;                                /* instruction history */
-
-extern int32 sim_interval;
-extern int32 sim_int_char;
-extern uint32 sim_brk_types, sim_brk_dflt, sim_brk_summ; /* breakpoint info */
-extern DEVICE *sim_devices[];
-extern FILE *sim_log;
-extern t_bool sim_idle_enab;
 
 t_stat cpu_ex (t_value *vptr, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_dep (t_value val, t_addr addr, UNIT *uptr, int32 sw);
@@ -270,7 +270,7 @@ REG cpu_reg[] = {
     { ORDATA (AC, saved_LAC, 12) },
     { FLDATA (L, saved_LAC, 12) },
     { ORDATA (MQ, saved_MQ, 12) },
-    { ORDATA (SR, OSR, 12) },
+    { ORDATA (SR, SR, 12) },
     { GRDATA (IF, saved_PC, 8, 3, 12) },
     { GRDATA (DF, saved_DF, 8, 3, 12) },
     { GRDATA (IB, IB, 8, 3, 12) },
@@ -330,7 +330,8 @@ t_stat reason;
 
 /* Restore register state */
 
-if (build_dev_tab ()) return SCPE_STOP;                 /* build dev_tab */
+if (build_dev_tab ())                                   /* build dev_tab */
+    return SCPE_STOP;
 PC = saved_PC & 007777;                                 /* load local copies */
 IF = saved_PC & 070000;
 DF = saved_DF & 070000;
@@ -343,27 +344,39 @@ reason = 0;
 
 while (reason == 0) {                                   /* loop until halted */
 
+    if (cpu_astop != 0) {
+        cpu_astop = 0;
+        reason = SCPE_STOP;
+        break;
+        }
+
     if (sim_interval <= 0) {                            /* check clock queue */
-        if (reason = sim_process_event ())
+        if ((reason = sim_process_event ()))
             break;
         }
 
     if (int_req > INT_PENDING) {                        /* interrupt? */
         int_req = int_req & ~INT_ION;                   /* interrupts off */
         SF = (UF << 6) | (IF >> 9) | (DF >> 12);        /* form save field */
+        PCQ_ENTRY (IF | PC);                            /* save old PC with IF */
         IF = IB = DF = UF = UB = 0;                     /* clear mem ext */
-        PCQ_ENTRY;                                      /* save old PC */
         M[0] = PC;                                      /* save PC in 0 */
         PC = 1;                                         /* fetch next from 1 */
         }
 
     MA = IF | PC;                                       /* form PC */
-    if (sim_brk_summ && sim_brk_test (MA, SWMASK ('E'))) { /* breakpoint? */
+    if (sim_brk_summ && 
+        sim_brk_test (MA, (1u << SIM_BKPT_V_SPC) | SWMASK ('E'))) { /* breakpoint? */
         reason = STOP_IBKPT;                            /* stop simulation */
         break;
-		}
+        }
 
     IR = M[MA];                                         /* fetch instruction */
+    if (sim_brk_summ && 
+        sim_brk_test (IR, (2u << SIM_BKPT_V_SPC) | SWMASK ('I'))) { /* breakpoint? */
+        reason = STOP_OPBKPT;                            /* stop simulation */
+        break;
+        }
     PC = (PC + 1) & 07777;                              /* increment PC */
     int_req = int_req | INT_NO_ION_PENDING;             /* clear ION delay */
     sim_interval = sim_interval - 1;
@@ -559,7 +572,7 @@ switch ((IR >> 7) & 037) {                              /* decode IR<0:4> */
    as usual. */
 
     case 020:                                           /* JMS, dir, zero */
-        PCQ_ENTRY;
+        PCQ_ENTRY (MA);
         MA = IR & 0177;                                 /* dir addr, page zero */
         if (UF) {                                       /* user mode? */
             tsc_ir = IR;                                /* save instruction */
@@ -581,7 +594,7 @@ switch ((IR >> 7) & 037) {                              /* decode IR<0:4> */
         break;
 
     case 021:                                           /* JMS, dir, curr */
-        PCQ_ENTRY;
+        PCQ_ENTRY (MA);
         MA = (MA & 007600) | (IR & 0177);               /* dir addr, curr page */
         if (UF) {                                       /* user mode? */
             tsc_ir = IR;                                /* save instruction */
@@ -603,7 +616,7 @@ switch ((IR >> 7) & 037) {                              /* decode IR<0:4> */
         break;
 
     case 022:                                           /* JMS, indir, zero */
-        PCQ_ENTRY;
+        PCQ_ENTRY (MA);
         MA = IF | (IR & 0177);                          /* dir addr, page zero */
         if ((MA & 07770) != 00010)                      /* indirect; autoinc? */
             MA = M[MA];
@@ -628,7 +641,7 @@ switch ((IR >> 7) & 037) {                              /* decode IR<0:4> */
         break;
 
     case 023:                                           /* JMS, indir, curr */
-        PCQ_ENTRY;
+        PCQ_ENTRY (MA);
         MA = (MA & 077600) | (IR & 0177);               /* dir addr, curr page */
         if ((MA & 07770) != 00010)                      /* indirect; autoinc? */
             MA = M[MA];
@@ -661,7 +674,7 @@ switch ((IR >> 7) & 037) {                              /* decode IR<0:4> */
 
 
     case 024:                                           /* JMP, dir, zero */
-        PCQ_ENTRY;
+        PCQ_ENTRY (MA);
         MA = IR & 0177;                                 /* dir addr, page zero */
         if (UF) {                                       /* user mode? */
             tsc_ir = IR;                                /* save instruction */
@@ -680,7 +693,7 @@ switch ((IR >> 7) & 037) {                              /* decode IR<0:4> */
 /* If JMP direct, also check for idle (KSF/JMP *-1) and infinite loop */
 
     case 025:                                           /* JMP, dir, curr */
-        PCQ_ENTRY;
+        PCQ_ENTRY (MA);
         MA = (MA & 007600) | (IR & 0177);               /* dir addr, curr page */
         if (UF) {                                       /* user mode? */
             tsc_ir = IR;                                /* save instruction */
@@ -711,7 +724,7 @@ switch ((IR >> 7) & 037) {                              /* decode IR<0:4> */
         break;
 
     case 026:                                           /* JMP, indir, zero */
-        PCQ_ENTRY;
+        PCQ_ENTRY (MA);
         MA = IF | (IR & 0177);                          /* dir addr, page zero */
         if ((MA & 07770) != 00010)                      /* indirect; autoinc? */
             MA = M[MA];
@@ -731,7 +744,7 @@ switch ((IR >> 7) & 037) {                              /* decode IR<0:4> */
         break;
 
     case 027:                                           /* JMP, indir, curr */
-        PCQ_ENTRY;
+        PCQ_ENTRY (MA);
         MA = (MA & 077600) | (IR & 0177);               /* dir addr, curr page */
         if ((MA & 07770) != 00010)                      /* indirect; autoinc? */
             MA = M[MA];
@@ -912,7 +925,7 @@ switch ((IR >> 7) & 037) {                              /* decode IR<0:4> */
                 }
             else {
                 if (IR & 04)                            /* OSR */
-                    LAC = LAC | OSR;
+                    LAC = LAC | SR;
                 if (IR & 02)                            /* HLT */
                     reason = STOP_HALT;
                 }
@@ -1362,6 +1375,7 @@ return reason;
 
 t_stat cpu_reset (DEVICE *dptr)
 {
+saved_LAC = 0;
 int_req = (int_req & ~INT_ION) | INT_NO_CIF_PENDING;
 saved_DF = IB = saved_PC & 070000;
 UF = UB = gtf = emode = 0;
@@ -1369,8 +1383,18 @@ pcq_r = find_reg ("PCQ", NULL, dptr);
 if (pcq_r)
     pcq_r->qptr = 0;
 else return SCPE_IERR;
-sim_brk_types = sim_brk_dflt = SWMASK ('E');
+sim_brk_types = SWMASK ('E') | SWMASK('I');
+sim_brk_dflt = SWMASK ('E');
 return SCPE_OK;
+}
+
+/* Set PC for boot (PC<14:12> will typically be 0) */
+
+void cpu_set_bootpc (int32 pc)
+{
+saved_PC = pc;                                          /* set PC, IF */
+saved_DF = IB = pc & 070000;                            /* set IB, DF */
+return;
 }
 
 /* Memory examine */
@@ -1485,19 +1509,31 @@ for (i = 0; i < ((uint32) sizeof (std_dev)); i++)       /* std entries */
 for (i = 0; (dptr = sim_devices[i]) != NULL; i++) {     /* add devices */
     dibp = (DIB *) dptr->ctxt;                          /* get DIB */
     if (dibp && !(dptr->flags & DEV_DIS)) {             /* enabled? */
-        for (j = 0; j < dibp->num; j++) {               /* loop thru disp */
-            if (dibp->dsp[j]) {                         /* any dispatch? */
-                if (dev_tab[dibp->dev + j]) {           /* already filled? */
-                    printf ("%s device number conflict at %02o\n",
+        if (dibp->dsp_tbl) {                            /* dispatch table? */
+            DIB_DSP *dspp = dibp->dsp_tbl;              /* set ptr */
+            for (j = 0; j < dibp->num; j++, dspp++) {   /* loop thru tbl */
+                if (dspp->dsp) {                        /* any dispatch? */
+                    if (dev_tab[dspp->dev]) {           /* already filled? */
+                        sim_printf ("%s device number conflict at %02o\n",
                             sim_dname (dptr), dibp->dev + j);
-                    if (sim_log)
-                        fprintf (sim_log, "%s device number conflict at %02o\n",
-                                 sim_dname (dptr), dibp->dev + j);
-                     return TRUE;
-                    }
-                dev_tab[dibp->dev + j] = dibp->dsp[j];  /* fill */
-                }                                       /* end if dsp */
-            }                                           /* end for j */
+                        return TRUE;
+                        }
+                    dev_tab[dspp->dev] = dspp->dsp;     /* fill */
+                    }                                   /* end if dsp */
+                }                                       /* end for j */
+            }                                           /* end if dsp_tbl */
+        else {                                          /* inline dispatches */
+            for (j = 0; j < dibp->num; j++) {           /* loop thru disp */
+                if (dibp->dsp[j]) {                     /* any dispatch? */
+                    if (dev_tab[dibp->dev + j]) {       /* already filled? */
+                        sim_printf ("%s device number conflict at %02o\n",
+                            sim_dname (dptr), dibp->dev + j);
+                        return TRUE;
+                        }
+                    dev_tab[dibp->dev + j] = dibp->dsp[j]; /* fill */
+                    }                                   /* end if dsp */
+                }                                       /* end for j */
+            }                                           /* end else */
         }                                               /* end if enb */
     }                                                   /* end for i */
 return FALSE;
@@ -1541,10 +1577,8 @@ t_stat cpu_show_hist (FILE *st, UNIT *uptr, int32 val, void *desc)
 int32 l, k, di, lnt;
 char *cptr = (char *) desc;
 t_stat r;
-t_value sim_eval;
+extern t_value *sim_eval;
 InstHistory *h;
-extern t_stat fprint_sym (FILE *ofile, t_addr addr, t_value *val,
-    UNIT *uptr, int32 sw);
 
 if (hst_lnt == 0)                                       /* enabled? */
     return SCPE_NOFNC;
@@ -1566,8 +1600,8 @@ for (k = 0; k < lnt; k++) {                             /* print specified */
         if (h->ir < 06000)
             fprintf (st, "%05o  ", h->ea);
         else fprintf (st, "       ");
-        sim_eval = h->ir;
-        if ((fprint_sym (st, h->pc & ADDRMASK, &sim_eval, &cpu_unit, SWMASK ('M'))) > 0)
+        sim_eval[0] = h->ir;
+        if ((fprint_sym (st, h->pc & ADDRMASK, sim_eval, &cpu_unit, SWMASK ('M'))) > 0)
             fprintf (st, "(undefined) %04o", h->ir);
         if (h->ir < 04000)
             fprintf (st, "  [%04o]", h->opnd);

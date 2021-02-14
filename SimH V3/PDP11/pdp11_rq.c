@@ -1,6 +1,6 @@
 /* pdp11_rq.c: MSCP disk controller simulator
 
-   Copyright (c) 2002-2010, Robert M Supnik
+   Copyright (c) 2002-2018, Robert M Supnik
    Derived from work by Stephen F. Shirron
 
    Permission is hereby granted, free of charge, to any person obtaining a
@@ -26,6 +26,9 @@
 
    rq           RQDX3 disk controller
 
+   28-May-18    RMS     Changed to avoid nested comment warnings (Mark Pizzolato)
+   23-Oct-13    RMS     Revised for new boot setup routine
+   17-Mar-13    RMS     Fixed bug in ABORT link walk loop (Dave Bryan)
    14-Jan-09    JH      Added support for RD32 disc drive
    18-Jun-07    RMS     Added UNIT_IDLE flag to timer thread
    31-Oct-05    RMS     Fixed address width for large files
@@ -222,7 +225,7 @@ struct rqpkt {
    RD52 17      8       512     8       1       4*8     60480
    RD32 17      6       820     6       1       4*8     83204
 x  RD33 17      7       1170    ?       ?       ?       138565
-   RD53 17      7       1024    7       1       5*8     138672
+   RD53 17      8       1024    8       1       5*8     138672
    RD54 17      15      1225    15      1       7*8     311200
 
    The simulator also supports larger drives that only existed
@@ -563,9 +566,6 @@ static struct drvtyp drv_tab[] = {
 extern int32 int_req[IPL_HLVL];
 extern int32 tmr_poll, clk_tps;
 extern UNIT cpu_unit;
-extern FILE *sim_deb;
-extern uint32 sim_taddr_64;
-extern int32 sim_switches;
 
 uint16 *rqxb = NULL;                                    /* xfer buffer */
 int32 rq_itime = 200;                                   /* init time, except */
@@ -1205,7 +1205,7 @@ if (cp->csta < CST_UP) {                                /* still init? */
             if ((cp->saw & SA_S4H_LF)
                 && cp->perr) rq_plf (cp, cp->perr);
             cp->perr = 0;
-			}
+            }
         break;
         }                                               /* end switch */  
                       
@@ -1371,6 +1371,7 @@ if (uptr = rq_getucb (cp, lu)) {                        /* get unit */
                 cp->pak[prv].link = cp->pak[tpkt].link;
                 break;
                 }
+            prv = tpkt;                                 /* no match, next */
             }
         }
     if (tpkt) {                                         /* found target? */
@@ -1421,9 +1422,9 @@ if ((uptr = rq_getucb (cp, lu)) &&                      /* valid lu? */
     (tpkt = uptr->cpkt) &&                              /* queued pkt? */
     (GETP32 (tpkt, CMD_REFL) == ref) &&                 /* match ref? */
     (GETP (tpkt, CMD_OPC, OPC) >= OP_ACC)) {            /* rd/wr cmd? */
-	cp->pak[pkt].d[GCS_STSL] = cp->pak[tpkt].d[RW_WBCL];
-	cp->pak[pkt].d[GCS_STSH] = cp->pak[tpkt].d[RW_WBCH];
-	}
+    cp->pak[pkt].d[GCS_STSL] = cp->pak[tpkt].d[RW_WBCL];
+    cp->pak[pkt].d[GCS_STSH] = cp->pak[tpkt].d[RW_WBCH];
+    }
 else {
     cp->pak[pkt].d[GCS_STSL] = 0;                       /* return 0 */
     cp->pak[pkt].d[GCS_STSH] = 0;
@@ -1654,7 +1655,7 @@ if (bc & 1)                                             /* odd byte cnt? */
     return (ST_HST | SB_HST_OC);
 if (bc & 0xF0000000)                                    /* 'reasonable' bc? */
     return (ST_CMD | I_BCNT);
-/* if (lbn & 0xF0000000) return (ST_CMD | I_LBN);       /* 'reasonable' lbn? */
+// if (lbn & 0xF0000000) return (ST_CMD | I_LBN);       /* 'reasonable' lbn? */
 if (lbn >= maxlbn) {                                    /* accessing RCT? */
     if (lbn >= (maxlbn + drv_tab[dtyp].rcts))           /* beyond copy 1? */
         return (ST_CMD | I_LBN);                        /* lbn err */
@@ -2495,7 +2496,6 @@ static const uint16 boot_rom[] = {
 t_stat rq_boot (int32 unitno, DEVICE *dptr)
 {
 int32 i;
-extern int32 saved_PC;
 extern uint16 *M;
 DIB *dibp = (DIB *) dptr->ctxt;
 
@@ -2503,7 +2503,7 @@ for (i = 0; i < BOOT_LEN; i++)
     M[(BOOT_START >> 1) + i] = boot_rom[i];
 M[BOOT_UNIT >> 1] = unitno & 3;
 M[BOOT_CSR >> 1] = dibp->ba & DMASK;
-saved_PC = BOOT_ENTRY;
+cpu_set_boot (BOOT_ENTRY);
 return SCPE_OK;
 }
 

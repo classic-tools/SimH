@@ -1,6 +1,6 @@
 /* sim_defs.h: simulator definitions
 
-   Copyright (c) 1993-2008, Robert M Supnik
+   Copyright (c) 1993-2019, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -23,9 +23,18 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   26-Oct-19    RMS     Removed MTAB_VAL definition
+   23-Jun-17    RMS     Added #include sim_rev.h (Mark Pizzolato)
+   25-Sep-16    RMS     Removed KBD_WAIT and friends
+   08-Mar-16    RMS     Added shutdown invisible switch
+   03-Feb-16    JDB     [4.0] Added "help_base" and "message" fields to sim_ctab
+   24-Dec-14    JDB     Added T_ADDR_FMT
+   14-Dec-14    JDB     Extended sim_device for compatibility
+   04-Nov-14    JDB     Added UNIT.dynflags field for tape density support
+   05-Feb-13    JDB     Added REG_V_UF and REG_UFMASK for VM-specific register flags
    21-Jul-08    RMS     Removed inlining support
    28-May-08    RMS     Added inlining support
-   28-Jun-07    RMS     Added IA64 VMS support (from Norm Lastovica)
+   28-Jun-07    RMS     Added IA64 VMS support (Norm Lastovica)
    18-Jun-07    RMS     Added UNIT_IDLE flag
    18-Mar-07    RMS     Added UNIT_TEXT flag
    07-Mar-07    JDB     Added DEBUG_PRJ macro
@@ -103,6 +112,7 @@
 #ifndef _SIM_DEFS_H_
 #define _SIM_DEFS_H_    0
 
+#include "sim_rev.h"
 #include <stddef.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -157,10 +167,18 @@ typedef uint32          t_value;
 #if defined (USE_INT64) && defined (USE_ADDR64)         /* 64b address */
 typedef t_uint64        t_addr;
 #define T_ADDR_W        64
+#define T_ADDR_FMT      LL_FMT
 #else                                                   /* 32b address */
 typedef uint32          t_addr;
 #define T_ADDR_W        32
+#define T_ADDR_FMT      ""
 #endif                                                  /* end 64b address */
+
+#if defined (_WIN32)
+#define LL_FMT "I64"
+#else
+#define LL_FMT "ll"
+#endif
 
 /* Stubs for inlining */
 
@@ -189,6 +207,7 @@ typedef uint32          t_addr;
 #define SIM_SW_REST     (1u << 27)                      /* attach/restore */
 #define SIM_SW_REG      (1u << 28)                      /* register value */
 #define SIM_SW_STOP     (1u << 29)                      /* stop message */
+#define SIM_SW_SHUT     (1u << 30)                      /* shutdown */
 
 /* Simulator status codes
 
@@ -246,6 +265,8 @@ typedef uint32          t_addr;
 #define SCPE_BREAK      0020000                         /* tti break flag */
 #define SCPE_DOFAILED   0040000                         /* fail in DO, not subproc */
 
+#define SCPE_NOMESSAGE  0                               /* 4.x compatiblity */
+
 /* Print value format codes */
 
 #define PV_RZRO         0                               /* right, zero fill */
@@ -255,12 +276,9 @@ typedef uint32          t_addr;
 /* Default timing parameters */
 
 #define KBD_POLL_WAIT   5000                            /* keyboard poll */
-#define KBD_MAX_WAIT    500000
 #define SERIAL_IN_WAIT  100                             /* serial in time */
 #define SERIAL_OUT_WAIT 100                             /* serial output */
 #define NOQUEUE_WAIT    10000                           /* min check time */
-#define KBD_LIM_WAIT(x) (((x) > KBD_MAX_WAIT)? KBD_MAX_WAIT: (x))
-#define KBD_WAIT(w,s)   ((w)? w: KBD_LIM_WAIT (s))
 
 /* Convert switch letter to bit mask */
 
@@ -300,6 +318,10 @@ struct sim_device {
     t_stat              (*msize)(struct sim_unit *up, int32 v, char *cp, void *dp);
                                                         /* mem size routine */
     char                *lname;                         /* logical name */
+    void                *help;                          /* (4.0 dummy) help routine */
+    void                *attach_help;                   /* (4.0 dummy) help attach routine*/
+    void                *help_context;                  /* (4.0 dummy) help context */
+    void                *description;                   /* (4.0 dummy) description */
     };
 
 /* Device flags */
@@ -323,6 +345,12 @@ struct sim_device {
 #define DEV_RAW         (1 << DEV_V_RAW)
 #define DEV_RAWONLY     (1 << DEV_V_RAWONLY)
 
+#define DEV_DISK        0                               /* (4.0 dummy) */
+#define DEV_TAPE        0                               /* (4.0 dummy) */
+#define DEV_MUX         (DEV_NET)                       /* (4.0 dummy) */
+#define DEV_DISPLAY     0                               /* (4.0 dummy) */
+#define DEV_ETHER       0                               /* (4.0 dummy) */
+
 #define DEV_UFMASK_31   (((1u << DEV_V_RSV) - 1) & ~((1u << DEV_V_UF_31) - 1))
 #define DEV_UFMASK      (((1u << DEV_V_RSV) - 1) & ~((1u << DEV_V_UF) - 1))
 #define DEV_RFLAGS      (DEV_UFMASK|DEV_DIS)            /* restored flags */
@@ -345,6 +373,7 @@ struct sim_unit {
     uint32              hwmark;                         /* high water mark */
     int32               time;                           /* time out */
     uint32              flags;                          /* flags */
+    uint32              dynflags;                       /* dynamic flags */
     t_addr              capac;                          /* capacity */
     t_addr              pos;                            /* file position */
     int32               buf;                            /* buffer */
@@ -353,6 +382,8 @@ struct sim_unit {
     int32               u4;                             /* device specific */
     int32               u5;                             /* device specific */
     int32               u6;                             /* device specific */
+    void                *up7;                           /* (4.0 dummy) */
+    void                *up8;                           /* (4.0 dummy) */
     };
 
 /* Unit flags */
@@ -381,6 +412,13 @@ struct sim_unit {
 #define UNIT_UFMASK     (((1u << UNIT_V_RSV) - 1) & ~((1u << UNIT_V_UF) - 1))
 #define UNIT_RFLAGS     (UNIT_UFMASK|UNIT_DIS)          /* restored flags */
 
+/* Unit dynamic flags (dynflags) (from 4.0) */
+
+/* These flags are only set dynamically */
+
+#define UNIT_V_DF_TAPE  3               /* Bit offset for Tape Density reservation */
+#define UNIT_W_DF_TAPE  3               /* Bits Reserved for Tape Density */
+
 /* Register data structure */
 
 struct sim_reg {
@@ -394,6 +432,8 @@ struct sim_reg {
     uint32              qptr;                           /* circ q ptr */
     };
 
+/* Register flags */
+
 #define REG_FMT         00003                           /* see PV_x */
 #define REG_RO          00004                           /* read only */
 #define REG_HIDDEN      00010                           /* hidden */
@@ -405,6 +445,10 @@ struct sim_reg {
 #define REG_FIT         01000                           /* fit access to size */
 #define REG_HRO         (REG_RO | REG_HIDDEN)           /* hidden, read only */
 
+#define REG_V_UF        16                              /* device specific */
+#define REG_UFMASK      (~((1u << REG_V_UF) - 1))       /* user flags mask */
+#define REG_VMFLAGS     (REG_VMIO | REG_UFMASK)         /* call VM routine if any of these are set */
+
 /* Command tables, base and alternate formats */
 
 struct sim_ctab {
@@ -413,6 +457,9 @@ struct sim_ctab {
                                                         /* action routine */
     int32               arg;                            /* argument */
     char                *help;                          /* help string */
+    const char          *help_base;                     /* [4.0] structured help base */
+    void                (*message)(const char *unechoed_cmdline, t_stat stat);
+                                                        /* [4.0] message printing routine */
     };
 
 struct sim_c1tab {
@@ -443,14 +490,13 @@ struct sim_mtab {
     t_stat              (*disp)(FILE *st, struct sim_unit *up, int32 v, void *dp);
                                                         /* display routine */
     void                *desc;                          /* value descriptor */
-                                                        /* REG * if MTAB_VAL */
-                                                        /* int * if not */
+    void                *help;                          /* [4.0] help */
     };
 
 #define MTAB_XTD        (1u << UNIT_V_RSV)              /* ext entry flag */
 #define MTAB_VDV        001                             /* valid for dev */
 #define MTAB_VUN        002                             /* valid for unit */
-#define MTAB_VAL        004                             /* takes a value */
+// #define MTAB_VAL        004                             /* REMOVED */
 #define MTAB_NMO        010                             /* only if named */
 #define MTAB_NC         020                             /* no UC conversion */
 #define MTAB_SHP        040                             /* show takes parameter */
@@ -487,7 +533,7 @@ struct sim_debtab {
 
 /* The following macros define structure contents */
 
-#define UDATA(act,fl,cap) NULL,act,NULL,NULL,NULL,0,0,(fl),(cap),0,0
+#define UDATA(act,fl,cap) NULL,act,NULL,NULL,NULL,0,0,(fl),0,(cap),0,0
 
 #if defined (__STDC__) || defined (_WIN32)
 #define ORDATA(nm,loc,wd) #nm, &(loc), 8, (wd), 0, 1
@@ -528,5 +574,73 @@ typedef struct sim_debtab DEBTAB;
 #include "sim_console.h"
 #include "sim_timer.h"
 #include "sim_fio.h"
+#include "sim_sock.h"
+
+/* V4 compatibility definitions
+
+   The SCP API for version 4.0 introduces a number of "pointer-to-const"
+   parameter qualifiers that were not present in the 3.x versions.  To maintain
+   compatibility with the earlier versions, the new qualifiers are expressed as
+   "CONST" rather than "const".  This allows macro removal of the qualifiers
+   when compiling for SIMH 3.x.
+*/
+
+
+#if defined (__STDC__) || defined (_WIN32)
+#define ORDATAD(nm,loc,wd,desc) #nm, &(loc), 8, (wd), 0, 1
+#define DRDATAD(nm,loc,wd,desc) #nm, &(loc), 10, (wd), 0, 1
+#define HRDATAD(nm,loc,wd,desc) #nm, &(loc), 16, (wd), 0, 1
+#define FLDATAD(nm,loc,pos,desc) #nm, &(loc), 2, 1, (pos), 1
+#define GRDATAD(nm,loc,rdx,wd,pos,desc) #nm, &(loc), (rdx), (wd), (pos), 1
+#define BRDATAD(nm,loc,rdx,wd,dep,desc) #nm, (loc), (rdx), (wd), 0, (dep)
+#define URDATAD(nm,loc,rdx,wd,off,dep,fl,desc) \
+        #nm, &(loc), (rdx), (wd), (off), (dep), ((fl) | REG_UNIT)
+#define ORDATADF(nm,loc,wd,desc) #nm, &(loc), 8, (wd), 0, 1
+#define DRDATADF(nm,loc,wd,desc) #nm, &(loc), 10, (wd), 0, 1
+#define HRDATADF(nm,loc,wd,desc) #nm, &(loc), 16, (wd), 0, 1
+#define FLDATADF(nm,loc,pos,desc) #nm, &(loc), 2, 1, (pos), 1
+#define GRDATADF(nm,loc,rdx,wd,pos,desc) #nm, &(loc), (rdx), (wd), (pos), 1
+#define BRDATADF(nm,loc,rdx,wd,dep,desc) #nm, (loc), (rdx), (wd), 0, (dep)
+#define URDATADF(nm,loc,rdx,wd,off,dep,fl,desc) \
+        #nm, &(loc), (rdx), (wd), (off), (dep), ((fl) | REG_UNIT)
+#else
+#define ORDATAD(nm,loc,wd) "nm", &(loc), 8, (wd), 0, 1
+#define DRDATAD(nm,loc,wd) "nm", &(loc), 10, (wd), 0, 1
+#define HRDATAD(nm,loc,wd) "nm", &(loc), 16, (wd), 0, 1
+#define FLDATAD(nm,loc,pos) "nm", &(loc), 2, 1, (pos), 1
+#define GRDATAD(nm,loc,rdx,wd,pos) "nm", &(loc), (rdx), (wd), (pos), 1
+#define BRDATAD(nm,loc,rdx,wd,dep) "nm", (loc), (rdx), (wd), 0, (dep)
+#define URDATAD(nm,loc,rdx,wd,off,dep,fl) \
+    "nm", &(loc), (rdx), (wd), (off), (dep), ((fl) | REG_UNIT)
+#define ORDATADF(nm,loc,wd) "nm", &(loc), 8, (wd), 0, 1
+#define DRDATADF(nm,loc,wd) "nm", &(loc), 10, (wd), 0, 1
+#define HRDATADF(nm,loc,wd) "nm", &(loc), 16, (wd), 0, 1
+#define FLDATADF(nm,loc,pos) "nm", &(loc), 2, 1, (pos), 1
+#define GRDATADF(nm,loc,rdx,wd,pos) "nm", &(loc), (rdx), (wd), (pos), 1
+#define BRDATADF(nm,loc,rdx,wd,dep) "nm", (loc), (rdx), (wd), 0, (dep)
+#define URDATADF(nm,loc,rdx,wd,off,dep,fl) \
+    "nm", &(loc), (rdx), (wd), (off), (dep), ((fl) | REG_UNIT)
+#endif
+
+#ifndef INT64_C
+#define INT64_C(x)      (x##LL)
+#endif
+
+#ifdef PF_USER
+#undef PF_USER
+#endif /* PF_USER */
+#ifdef I_POP
+#undef I_POP
+#endif /* I_POP */
+#ifdef CONST
+#undef CONST
+#endif /* CONST */
+#define CONST
+#ifndef PRIORITY_ABOVE_NORMAL
+#define PRIORITY_ABOVE_NORMAL 0
+#endif
+#define sim_os_set_thread_priority(prio)
+
+#define BRK_TYP_DYN_STEPOVER 0
 
 #endif

@@ -1,6 +1,6 @@
 /* pdp8_dt.c: PDP-8 DECtape simulator
 
-   Copyright (c) 1993-2011, Robert M Supnik
+   Copyright (c) 1993-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,7 +25,9 @@
 
    dt           TC08/TU56 DECtape
 
-   23-Jun-06	RMS     Fixed switch conflict in ATTACH
+   15-Mar-17    RMS     Fixed dt_seterr to clear successor states
+   17-Sep-13    RMS     Changed to use central set_bootpc routine
+   23-Jun-06    RMS     Fixed switch conflict in ATTACH
    07-Jan-06    RMS     Fixed unaligned register access bug (Doug Carman)
    16-Aug-05    RMS     Fixed C++ declaration and cast problems
    25-Jan-04    RMS     Revised for device debug support
@@ -265,8 +267,6 @@
 extern uint16 M[];
 extern int32 int_req;
 extern UNIT cpu_unit;
-extern int32 sim_switches;
-extern FILE *sim_deb;
 
 int32 dtsa = 0;                                         /* status A */
 int32 dtsb = 0;                                         /* status B */
@@ -293,7 +293,6 @@ void dt_seterr (UNIT *uptr, int32 e);
 int32 dt_comobv (int32 val);
 int32 dt_csum (UNIT *uptr, int32 blk);
 int32 dt_gethdr (UNIT *uptr, int32 blk, int32 relpos, int32 dir);
-extern int32 sim_is_running;
 
 /* DT data structures
 
@@ -383,7 +382,8 @@ int32 pulse = IR & 07;
 int32 old_dtsa = dtsa, fnc;
 UNIT *uptr;
 
-if (pulse & 01) AC = AC | dtsa;                         /* DTRA */
+if (pulse & 01)                                         /* DTRA */
+    AC = AC | dtsa;
 if (pulse & 06) {                                       /* select */
     if (pulse & 02)                                     /* DTCA */
         dtsa = 0;
@@ -681,13 +681,13 @@ if (mot & DTS_DIR)                                      /* update pos */
 else uptr->pos = uptr->pos + delta;
 if (((int32) uptr->pos < 0) ||
     ((int32) uptr->pos > (DTU_FWDEZ (uptr) + DT_EZLIN))) {
-	detach_unit (uptr);									/* off reel? */
-	uptr->STATE = uptr->pos = 0;
-	unum = (int32) (uptr - dt_dev.units);
-	if (unum == DTA_GETUNIT (dtsa))						/* if selected, */
-		dt_seterr (uptr, DTB_SEL);						/* error */
-	return TRUE;
-	}
+    detach_unit (uptr);                                 /* off reel? */
+    uptr->STATE = uptr->pos = 0;
+    unum = (int32) (uptr - dt_dev.units);
+    if (unum == DTA_GETUNIT (dtsa))                     /* if selected, */
+        dt_seterr (uptr, DTB_SEL);                      /* error */
+    return TRUE;
+    }
 return FALSE;
 }
 
@@ -795,7 +795,7 @@ switch (fnc) {                                          /* at speed, check fnc *
             if (dtsb & DTB_DTF) {                       /* DTF set? */
                 dt_seterr (uptr, DTB_TIM);              /* timing error */
                 return SCPE_OK;
-				}
+                }
             if (DEBUG_PRI (dt_dev, LOG_RW) ||
                (DEBUG_PRI (dt_dev, LOG_BL) && (blk == dt_logblk)))
                 fprintf (sim_deb, ">>DT%d: reading block %d %s%s\n",
@@ -813,7 +813,7 @@ switch (fnc) {                                          /* at speed, check fnc *
             if (MEM_ADDR_OK (ma))                       /* mem addr legal? */
                 M[ma] = dat;
             if (M[DT_WC] == 0)                          /* wc ovf? */
-                dt_substate = DTO_WCO;
+                dt_substate = DTO_WCO;                  /* fall through */
         case DTO_WCO:                                   /* wc ovf, not sob */
             if (wrd != (dir? 0: DTU_BSIZE (uptr) - 1))  /* not last? */
                 sim_activate (uptr, DT_WSIZE * dt_ltime);
@@ -863,7 +863,7 @@ switch (fnc) {                                          /* at speed, check fnc *
             dt_substate = 0;                            /* fall through */
         case 0:                                         /* normal write */
             M[DT_WC] = (M[DT_WC] + 1) & 07777;          /* incr WC, CA */
-            M[DT_CA] = (M[DT_CA] + 1) & 07777;
+            M[DT_CA] = (M[DT_CA] + 1) & 07777;          /* fall through */
         case DTO_WCO:                                   /* wc ovflo */
             ma = DTB_GETMEX (dtsb) | M[DT_CA];          /* get mem addr */
             ba = (blk * DTU_BSIZE (uptr)) + wrd;        /* buffer ptr */
@@ -948,7 +948,7 @@ switch (fnc) {                                          /* at speed, check fnc *
             if (dtsb & DTB_DTF) {                       /* DTF set? */
                 dt_seterr (uptr, DTB_TIM);              /* timing error */
                 return SCPE_OK;
-				}
+                }
             relpos = DT_LIN2OF (uptr->pos, uptr);       /* cur pos in blk */
             M[DT_WC] = (M[DT_WC] + 1) & 07777;          /* incr WC, CA */
             M[DT_CA] = (M[DT_CA] + 1) & 07777;
@@ -963,8 +963,8 @@ switch (fnc) {                                          /* at speed, check fnc *
                 fbuf[ba] = dat;                         /* write word */
                 if (ba >= uptr->hwmark)
                     uptr->hwmark = ba + 1;
-				}
-/*                                                      /* ignore hdr */
+                }
+                                                        /* ignore hdr */
             sim_activate (uptr, DT_WSIZE * dt_ltime);
             if (M[DT_WC] == 0)
                 dt_substate = DTO_WCO;
@@ -1014,7 +1014,8 @@ return SCPE_OK;
 
 int32 dt_gethdr (UNIT *uptr, int32 blk, int32 relpos, int32 dir)
 {
-if (relpos >= DT_HTLIN) relpos = relpos - (DT_WSIZE * DTU_BSIZE (uptr));
+if (relpos >= DT_HTLIN)
+    relpos = relpos - (DT_WSIZE * DTU_BSIZE (uptr));
 if (dir) {                                              /* reverse */
     switch (relpos / DT_WSIZE) {
     case 6:                                             /* rev csm */
@@ -1071,6 +1072,7 @@ if (mot >= DTS_ACCF) {                                  /* ~stopped or stopping?
     sim_activate (uptr, dt_dctime);                     /* sched decel */
     DTS_SETSTA (DTS_DECF | (mot & DTS_DIR), 0);         /* state = decel */
     }
+else DTS_SETSTA (mot, 0);                               /* clear 2nd, 3rd */
 DT_UPDINT;
 return;
 }
@@ -1178,8 +1180,7 @@ static const uint16 boot_rom[] = {
 
 t_stat dt_boot (int32 unitno, DEVICE *dptr)
 {
-int32 i;
-extern int32 saved_PC;
+size_t i;
 
 if (unitno)                                             /* only unit 0 */
     return SCPE_ARG;
@@ -1188,7 +1189,7 @@ if (dt_dib.dev != DEV_DTA)                              /* only std devno */
 dt_unit[unitno].pos = DT_EZLIN;
 for (i = 0; i < BOOT_LEN; i++)
     M[BOOT_START + i] = boot_rom[i];
-saved_PC = BOOT_START;
+cpu_set_bootpc (BOOT_START);
 return SCPE_OK;
 }
 
@@ -1232,13 +1233,13 @@ if (uptr->filebuf == NULL) {                            /* can't alloc? */
     return SCPE_MEM;
     }
 fbuf = (uint16 *) uptr->filebuf;                        /* file buffer */
-printf ("%s%d: ", sim_dname (&dt_dev), u);
+sim_printf ("%s%d: ", sim_dname (&dt_dev), u);
 if (uptr->flags & UNIT_8FMT)
-    printf ("12b format");
+    sim_printf ("12b format");
 else if (uptr->flags & UNIT_11FMT)
-    printf ("16b format");
-else printf ("18b/36b format");
-printf (", buffering file in memory\n");
+    sim_printf ("16b format");
+else sim_printf ("18b/36b format");
+sim_printf (", buffering file in memory\n");
 if (uptr->flags & UNIT_8FMT)                            /* 12b? */
     uptr->hwmark = fxread (uptr->filebuf, sizeof (uint16),
             uptr->capac, uptr->fileref);
@@ -1297,7 +1298,7 @@ if (sim_is_active (uptr)) {
     }
 fbuf = (uint16 *) uptr->filebuf;                        /* file buffer */
 if (uptr->hwmark && ((uptr->flags & UNIT_RO)== 0)) {    /* any data? */
-    printf ("%s%d: writing buffer to file\n", sim_dname (&dt_dev), u);
+    sim_printf ("%s%d: writing buffer to file\n", sim_dname (&dt_dev), u);
     rewind (uptr->fileref);                             /* start of file */
     if (uptr->flags & UNIT_8FMT)                        /* PDP8? */
         fxwrite (uptr->filebuf, sizeof (uint16),        /* write file */

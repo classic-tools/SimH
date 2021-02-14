@@ -1,6 +1,6 @@
 /* pdp18b_rb.c: RB09 fixed head disk simulator
 
-   Copyright (c) 2003-2008, Robert M Supnik
+   Copyright (c) 2003-2016, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,8 @@
 
    rb           RB09 fixed head disk
 
+   07-Mar-16    RMS     Revised for dynamically allocated memory
+   03-Sep-13    RMS     Added explicit void * cast
    14-Jan-04    RMS     Revised IO device call interface
    26-Oct-03    RMS     Cleaned up buffer copy code
 
@@ -76,7 +78,7 @@
 #define GET_POS(x)      ((int) fmod (sim_gtime () / ((double) (x)), \
                         ((double) (RB_NUMSC * RB_NUMWD))))
 
-extern int32 M[];
+extern int32 *M;
 extern int32 int_hwre[API_HLVL+1];
 extern UNIT cpu_unit;
 
@@ -203,9 +205,9 @@ int32 s = rb_set_bcd (bcd_s);                           /* bin sector */
 
 if ((t >= RB_NUMTR) || (t < 0) ||                       /* invalid? */
     (s >= RB_NUMSC) || (s < 0)) {
-	rb_updsta (RBS_ILA);								/* error */
-	return old_da;										/* don't change */
-	}
+    rb_updsta (RBS_ILA);                                /* error */
+    return old_da;                                      /* don't change */
+    }
 else return (((t * RB_NUMSC) + s) * RB_NUMWD);          /* new da */
 }
 
@@ -240,7 +242,7 @@ return r;
 t_stat rb_svc (UNIT *uptr)
 {
 int32 t, sw;
-int32 *fbuf = uptr->filebuf;
+int32 *fbuf = (int32 *) uptr->filebuf;
 
 if ((uptr->flags & UNIT_BUF) == 0) {                    /* not buf? abort */
     rb_updsta (RBS_NRY | RBS_DON);                      /* set nxd, done */

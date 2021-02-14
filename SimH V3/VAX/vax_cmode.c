@@ -1,6 +1,6 @@
 /* vax_cmode.c: VAX compatibility mode
 
-   Copyright (c) 2004-2008, Robert M Supnik
+   Copyright (c) 2004-2016, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -26,6 +26,7 @@
    On a full VAX, this module implements PDP-11 compatibility mode.
    On a subset VAX, this module forces a fault if REI attempts to set PSL<cm>.
 
+   14-Jul-16    RMS     Updated PSL check (found by EVKAE 6.2)
    28-May-08    RMS     Inlined physical memory routines
    25-Jan-08    RMS     Fixed declaration (Mark Pizzolato)
    03-May-06    RMS     Fixed omission of SXT
@@ -59,8 +60,6 @@ extern int32 recqptr;                                   /* recq pointer */
 extern int32 pcq[];
 extern int32 pcq_p;
 extern int32 ibcnt, ppc;
-extern int32 sim_interval;
-extern uint32 sim_brk_summ;
 extern jmp_buf save_env;
 
 int32 GeteaB (int32 spec);
@@ -77,7 +76,7 @@ void WrRegW (int32 val, int32 rn);
 
 t_bool BadCmPSL (int32 newpsl)
 {
-if ((newpsl & (PSL_FPD|PSL_IS|PSL_CUR|PSL_PRV|PSL_IPL)) !=
+if ((newpsl & (PSL_FPD|PSL_IS|PSL_CUR|PSL_PRV|PSL_IPL|PSW_DV|PSW_FU|PSW_IV)) !=
     ((USER << PSL_V_CUR) | (USER << PSL_V_PRV)))
     return TRUE;
 else return FALSE;
@@ -597,7 +596,7 @@ switch ((IR >> 12) & 017) {                             /* decode IR<15:12> */
                 cc = CC_V | CC_C;                       /* set cc's */
                 break;                                  /* done */
                 }
-            if ((src == LSIGN) && (src2 == WMASK)) {    /* -2^31 / -1? */
+            if (((uint32)src == LSIGN) && ((uint32)src2 == WMASK)) {    /* -2^31 / -1? */
                 cc = CC_V;                              /* overflow */
                 break;                                  /* done */
                 }
@@ -621,7 +620,7 @@ switch ((IR >> 12) & 017) {                             /* decode IR<15:12> */
             else src2 = RdMemW (GeteaW (dstspec));
             src2 = src2 & 077;
             src = RdRegW (srcspec);                     /* get src */
-            if (sign = ((src & WSIGN)? 1: 0))
+            if ((sign = ((src & WSIGN)? 1: 0)))
                 src = src | ~WMASK;
             if (src2 == 0) {                            /* [0] */
                 dst = src;                              /* result */
@@ -669,7 +668,7 @@ switch ((IR >> 12) & 017) {                             /* decode IR<15:12> */
                 dst = ((uint32) src) << src2;
                 i = ((src >> (32 - src2)) | (-sign << src2)) & LMASK;
                 oc = (i & 1)? CC_C: 0;
-                if ((dst & LSIGN)? (i != LMASK): (i != 0))
+                if ((dst & LSIGN)? ((uint32)i != LMASK): (i != 0))
                     oc = oc | CC_V;
                 }
             else if (src2 == 32) {                      /* [32] = -32 */

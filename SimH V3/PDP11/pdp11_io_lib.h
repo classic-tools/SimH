@@ -1,6 +1,6 @@
 /* pdp11_io_lib.h: Unibus/Qbus common support routines header file
 
-   Copyright (c) 1993-2008, Robert M Supnik
+   Copyright (c) 1993-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -24,8 +24,8 @@
    in this Software without prior written authorization from Robert M Supnik.
 */
 
-#ifndef _PDP11_IO_LIB_H_
-#define _PDP11_IO_LIB_H_    0
+#ifndef PDP11_IO_LIB_H_
+#define PDP11_IO_LIB_H_    0
 
 t_stat set_autocon (UNIT *uptr, int32 val, char *cptr, void *desc);
 t_stat show_autocon (FILE *st, UNIT *uptr, int32 val, void *desc);

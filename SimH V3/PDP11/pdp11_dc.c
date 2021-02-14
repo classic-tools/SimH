@@ -1,6 +1,6 @@
 /* pdp11_dc.c: PDP-11 DC11 multiple terminal interface simulator
 
-   Copyright (c) 1993-2012, Robert M Supnik
+   Copyright (c) 1993-2016, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,8 @@
 
    dci,dco    DC11 terminal input/output
 
+   03-Jan-2016  RMS     Changed output default to 7B
+   11-Oct-2013  RMS     Poll DCI immediately after attach to pick up connect
    18-Apr-2012  RMS     Modified to use clock coscheduling
    17-Aug-2011  RMS     Added AUTOCONFIGURE modifier
    19-Nov-2008  RMS     Revised for common TMXR show routines
@@ -86,7 +88,7 @@ uint32 dci_ireq = 0;
 uint16 dco_csr[DCX_LINES] = { 0 };                      /* control/status */
 uint8 dco_buf[DCX_LINES] = { 0 };
 uint32 dco_ireq = 0;
-TMLN dcx_ldsc[DCX_LINES] = { 0 };                       /* line descriptors */
+TMLN dcx_ldsc[DCX_LINES] = { {0} };                     /* line descriptors */
 TMXR dcx_desc = { DCX_LINES, 0, 0, dcx_ldsc };          /* mux descriptor */
 
 static const uint8 odd_par[] = {
@@ -153,7 +155,7 @@ DIB dci_dib = {
     2, IVCL (DCI), VEC_DCI, { &dci_iack, &dco_iack }
     };
 
-UNIT dci_unit = { UDATA (&dci_svc, 0, 0), KBD_POLL_WAIT };
+UNIT dci_unit = { UDATA (&dci_svc, 0, 0), SERIAL_IN_WAIT };
 
 REG dci_reg[] = {
     { BRDATA (BUF, dci_buf, DEV_RDX, 8, DCX_LINES) },
@@ -202,22 +204,22 @@ DEVICE dci_dev = {
 */
 
 UNIT dco_unit[] = {
-    { UDATA (&dco_svc, TT_MODE_7P+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
-    { UDATA (&dco_svc, TT_MODE_7P+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
-    { UDATA (&dco_svc, TT_MODE_7P+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
-    { UDATA (&dco_svc, TT_MODE_7P+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
-    { UDATA (&dco_svc, TT_MODE_7P+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
-    { UDATA (&dco_svc, TT_MODE_7P+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
-    { UDATA (&dco_svc, TT_MODE_7P+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
-    { UDATA (&dco_svc, TT_MODE_7P+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
-    { UDATA (&dco_svc, TT_MODE_7P+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
-    { UDATA (&dco_svc, TT_MODE_7P+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
-    { UDATA (&dco_svc, TT_MODE_7P+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
-    { UDATA (&dco_svc, TT_MODE_7P+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
-    { UDATA (&dco_svc, TT_MODE_7P+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
-    { UDATA (&dco_svc, TT_MODE_7P+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
-    { UDATA (&dco_svc, TT_MODE_7P+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
-    { UDATA (&dco_svc, TT_MODE_7P+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT }
+    { UDATA (&dco_svc, TT_MODE_7B+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
+    { UDATA (&dco_svc, TT_MODE_7B+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
+    { UDATA (&dco_svc, TT_MODE_7B+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
+    { UDATA (&dco_svc, TT_MODE_7B+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
+    { UDATA (&dco_svc, TT_MODE_7B+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
+    { UDATA (&dco_svc, TT_MODE_7B+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
+    { UDATA (&dco_svc, TT_MODE_7B+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
+    { UDATA (&dco_svc, TT_MODE_7B+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
+    { UDATA (&dco_svc, TT_MODE_7B+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
+    { UDATA (&dco_svc, TT_MODE_7B+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
+    { UDATA (&dco_svc, TT_MODE_7B+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
+    { UDATA (&dco_svc, TT_MODE_7B+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
+    { UDATA (&dco_svc, TT_MODE_7B+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
+    { UDATA (&dco_svc, TT_MODE_7B+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
+    { UDATA (&dco_svc, TT_MODE_7B+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT },
+    { UDATA (&dco_svc, TT_MODE_7B+DCX_EPAR+DCX_MDM, 0), SERIAL_OUT_WAIT }
     };
 
 REG dco_reg[] = {
@@ -265,7 +267,7 @@ int32 ln = ((PA - dci_dib.ba) >> 3) & DCX_MASK;
 switch ((PA >> 1) & 03) {                               /* decode PA<2:1> */
 
     case 00:                                            /* dci csr */
-	if (dci_csr[ln] & DCICSR_ALLERR)
+        if (dci_csr[ln] & DCICSR_ALLERR)
             dci_csr[ln] |= DCICSR_ERR;
         else dci_csr[ln] &= ~DCICSR_ERR;
         *data = dci_csr[ln] & DCICSR_RD;
@@ -275,6 +277,7 @@ switch ((PA >> 1) & 03) {                               /* decode PA<2:1> */
     case 01:                                            /* dci buf */
         dci_clr_int (ln);
         *data = dci_buf[ln];
+        sim_activate_abs (&dci_unit, dci_unit.wait);
         return SCPE_OK;
 
     case 02:                                            /* dco csr */
@@ -396,7 +399,7 @@ for (ln = 0; ln < DCX_LINES; ln++) {                    /* loop thru lines */
                 c = (c & 0177) | odd_par[c & 0177];
             else if (dco_unit[ln].flags & DCX_EPAR)     /* even parity */
                 c = (c & 0177) | (odd_par[c & 0177] ^ 0200);
-            dci_buf[ln] = c;
+            dci_buf[ln] = (uint8)c;
             if ((c & 0200) == odd_par[c & 0177])        /* odd par? */
                 dci_csr[ln] |= DCICSR_PAR;
             else dci_csr[ln] &= ~DCICSR_PAR;
@@ -541,7 +544,7 @@ t_stat r;
 r = tmxr_attach (&dcx_desc, uptr, cptr);                /* attach */
 if (r != SCPE_OK)                                       /* error? */
     return r;
-sim_activate (uptr, tmxr_poll);                         /* start poll */
+sim_activate (uptr, 0);                                 /* start poll at once */
 return SCPE_OK;
 }
 

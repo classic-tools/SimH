@@ -1,6 +1,6 @@
 /* pdp11_cpu.c: PDP-11 CPU simulator
 
-   Copyright (c) 1993-2012, Robert M Supnik
+   Copyright (c) 1993-2018, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,16 @@
 
    cpu          PDP-11 CPU
 
+   04-Jun-18    RMS     Removed CPU model entries for UC15 (Mark Pizzolato)
+   04-Dec-16    RMS     Removed duplicate IDLE entries in MTAB
+   30-Aug-16    RMS     Fixed overloading of -d in ex/mod
+   14-Mar-16    RMS     Added UC15 support
+   06-Mar-16    RMS     Fixed bug in history virtual addressing
+   30-Dec-15    RMS     Added NOBEVENT option for 11/03, 11/23
+   29-Dec-15    RMS     Call build_dib_tab during reset (Mark Pizzolato)
+   05-Dec-13    RMS     Fixed bug in CSM (John Dundas)
+   23-Oct-13    RMS     Fixed PS behavior on initialization and boot
+   10-Apr-13    RMS     MMR1 does not track PC changes (Johnny Billquist)
    29-Apr-12    RMS     Fixed compiler warning (Mark Pizzolato)
    19-Mar-12    RMS     Fixed declaration of sim_switches (Mark Pizzolato)
    29-Dec-08    RMS     Fixed failure to clear cpu_bme on RESET (Walter Mueller)
@@ -248,15 +258,15 @@ typedef struct {
     uint16              psw;
     uint16              src;
     uint16              dst;
+    uint16              sp;
+    uint16              pad;
     uint16              inst[HIST_ILNT];
     } InstHistory;
 
 /* Global state */
 
-extern FILE *sim_log;
-
 uint16 *M = NULL;                                       /* memory */
-int32 REGFILE[6][2] = { 0 };                            /* R0-R5, two sets */
+int32 REGFILE[6][2] = { {0} };                          /* R0-R5, two sets */
 int32 STACKFILE[4] = { 0 };                             /* SP, four modes */
 int32 saved_PC = 0;                                     /* program counter */
 int32 R[8] = { 0 };                                     /* working registers */
@@ -273,7 +283,7 @@ int32 trap_req = 0;                                     /* trap requests */
 int32 int_req[IPL_HLVL] = { 0 };                        /* interrupt requests */
 int32 PIRQ = 0;                                         /* programmed int req */
 int32 STKLIM = 0;                                       /* stack limit */
-fpac_t FR[6] = { 0 };                                   /* fp accumulators */
+fpac_t FR[6] = { {0} };                                 /* fp accumulators */
 int32 FPS = 0;                                          /* fp status */
 int32 FEC = 0;                                          /* fp exception code */
 int32 FEA = 0;                                          /* fp exception addr */
@@ -290,9 +300,9 @@ int32 stop_vecabort = 1;                                /* stop on vec abort */
 int32 stop_spabort = 1;                                 /* stop on SP abort */
 int32 wait_enable = 0;                                  /* wait state enable */
 int32 autcon_enb = 1;                                   /* autoconfig enable */
-uint32 cpu_model = MOD_1173;                            /* CPU model */
-uint32 cpu_type = 1u << MOD_1173;                       /* model as bit mask */
-uint32 cpu_opt = SOP_1173;                              /* CPU options */
+uint32 cpu_model = INIMODEL;                            /* CPU model */
+uint32 cpu_type = 1u << INIMODEL;                       /* model as bit mask */
+uint32 cpu_opt = INIOPTNS;                              /* CPU options */
 uint16 pcq[PCQ_SIZE] = { 0 };                           /* PC queue */
 int32 pcq_p = 0;                                        /* PC queue ptr */
 REG *pcq_r = NULL;                                      /* PC queue reg ptr */
@@ -301,15 +311,8 @@ int32 hst_p = 0;                                        /* history pointer */
 int32 hst_lnt = 0;                                      /* history length */
 InstHistory *hst = NULL;                                /* instruction history */
 int32 dsmask[4] = { MMR3_KDS, MMR3_SDS, 0, MMR3_UDS };  /* dspace enables */
-t_addr cpu_memsize = INIMEMSIZE;                        /* last mem addr */
 
 extern int32 CPUERR, MAINT;
-extern int32 sim_interval;
-extern int32 sim_int_char;
-extern int32 sim_switches;
-extern uint32 sim_brk_types, sim_brk_dflt, sim_brk_summ; /* breakpoint info */
-extern t_bool sim_idle_enab;
-extern DEVICE *sim_devices[];
 extern CPUTAB cpu_tab[];
 
 /* Function declarations */
@@ -558,6 +561,7 @@ REG cpu_reg[] = {
 MTAB cpu_mod[] = {
     { MTAB_XTD|MTAB_VDV, 0, "TYPE", NULL,
       NULL, &cpu_show_model },
+#if !defined (UC15)
     { MTAB_XTD|MTAB_VDV, MOD_1103, NULL, "11/03", &cpu_set_model },
     { MTAB_XTD|MTAB_VDV, MOD_1104, NULL, "11/04", &cpu_set_model },
     { MTAB_XTD|MTAB_VDV, MOD_1105, NULL, "11/05", &cpu_set_model },
@@ -592,8 +596,8 @@ MTAB cpu_mod[] = {
     { MTAB_XTD|MTAB_VDV, OPT_CIS, NULL, "NOCIS", &cpu_clr_opt },
     { MTAB_XTD|MTAB_VDV, OPT_MMU, NULL, "MMU", &cpu_set_opt },
     { MTAB_XTD|MTAB_VDV, OPT_MMU, NULL, "NOMMU", &cpu_clr_opt },
-    { MTAB_XTD|MTAB_VDV, 0, "IDLE", "IDLE", &sim_set_idle, &sim_show_idle },
-    { MTAB_XTD|MTAB_VDV, 0, NULL, "NOIDLE", &sim_clr_idle, NULL },
+    { MTAB_XTD|MTAB_VDV, OPT_BVT, NULL, "BEVENT", &cpu_set_opt },
+    { MTAB_XTD|MTAB_VDV, OPT_BVT, NULL, "NOBEVENT", &cpu_clr_opt },
     { UNIT_MSIZE, 16384, NULL, "16K", &cpu_set_size},
     { UNIT_MSIZE, 32768, NULL, "32K", &cpu_set_size},
     { UNIT_MSIZE, 49152, NULL, "48K", &cpu_set_size},
@@ -606,6 +610,7 @@ MTAB cpu_mod[] = {
     { UNIT_MSIZE, 524288, NULL, "512K", &cpu_set_size},
     { UNIT_MSIZE, 786432, NULL, "768K", &cpu_set_size},
     { UNIT_MSIZE, 1048576, NULL, "1024K", &cpu_set_size},
+    { UNIT_MSIZE, 1572864, NULL, "1536K", &cpu_set_size},
     { UNIT_MSIZE, 2097152, NULL, "2048K", &cpu_set_size},
     { UNIT_MSIZE, 3145728, NULL, "3072K", &cpu_set_size},
     { UNIT_MSIZE, 4186112, NULL, "4096K", &cpu_set_size},
@@ -613,12 +618,18 @@ MTAB cpu_mod[] = {
     { UNIT_MSIZE, 2097152, NULL, "2M", &cpu_set_size},
     { UNIT_MSIZE, 3145728, NULL, "3M", &cpu_set_size},
     { UNIT_MSIZE, 4186112, NULL, "4M", &cpu_set_size},
-    { MTAB_XTD|MTAB_VDV|MTAB_NMO, 0, "IOSPACE", NULL,
-      NULL, &show_iospace },
     { MTAB_XTD|MTAB_VDV, 1, "AUTOCONFIG", "AUTOCONFIG",
       &set_autocon, &show_autocon },
     { MTAB_XTD|MTAB_VDV, 0, NULL, "NOAUTOCONFIG",
       &set_autocon, NULL },
+#else
+    { UNIT_MSIZE, 16384, NULL, "16K", &cpu_set_size},
+    { UNIT_MSIZE, 24576, NULL, "24K", &cpu_set_size},
+#endif
+    { MTAB_XTD|MTAB_VDV|MTAB_NMO, 0, "IOSPACE", NULL,
+      NULL, &show_iospace },
+    { MTAB_XTD|MTAB_VDV, 0, "IDLE", "IDLE", &sim_set_idle, &sim_show_idle },
+    { MTAB_XTD|MTAB_VDV, 0, NULL, "NOIDLE", &sim_clr_idle, NULL },
     { MTAB_XTD|MTAB_VDV|MTAB_NMO|MTAB_SHP, 0, "HISTORY", "HISTORY",
       &cpu_set_hist, &cpu_show_hist },
     { MTAB_XTD|MTAB_VDV|MTAB_NMO|MTAB_SHP, 0, "VIRTUAL", NULL,
@@ -653,9 +664,8 @@ t_stat reason;
 reason = build_dib_tab ();                              /* build, chk dib_tab */
 if (reason != SCPE_OK)
     return reason;
-if (MEMSIZE < cpu_tab[cpu_model].maxm)                  /* mem size < max? */
-    cpu_memsize = MEMSIZE;                              /* then okay */
-else cpu_memsize = cpu_tab[cpu_model].maxm - IOPAGESIZE;/* max - io page */
+if (MEMSIZE >= (cpu_tab[cpu_model].maxm - IOPAGESIZE))  /* mem size >= max - io page? */
+    MEMSIZE = cpu_tab[cpu_model].maxm - IOPAGESIZE;     /* max - io page */
 cpu_type = 1u << cpu_model;                             /* reset type mask */
 cpu_bme = (MMR3 & MMR3_BME) && (cpu_opt & OPT_UBM);     /* map enabled? */
 PC = saved_PC;
@@ -696,7 +706,8 @@ if (abortval != 0) {
     if ((trapea > 0) && stop_vecabort)
         reason = STOP_VECABORT;
     if ((trapea < 0) &&                                 /* stack push abort? */
-        (CPUT (STOP_STKA) || stop_spabort)) reason = STOP_SPABORT;
+        (CPUT (STOP_STKA) || stop_spabort))
+        reason = STOP_SPABORT;
     if (trapea == ~MD_KER) {                            /* kernel stk abort? */
         setTRAP (TRAP_RED);
         setCPUERR (CPUE_RED);
@@ -722,7 +733,7 @@ while (reason == 0)  {
         cpu_astop = 0;
         reason = SCPE_STOP;
         break;
-		}
+        }
 
     if (sim_interval <= 0) {                            /* intv cnt expired? */
         reason = sim_process_event ();                  /* process events */
@@ -732,7 +743,7 @@ while (reason == 0)  {
 
     if (trap_req) {                                     /* check traps, ints */
         trapea = 0;                                     /* assume srch fails */
-        if (t = trap_req & TRAP_ALL) {                  /* if a trap */
+        if ((t = trap_req & TRAP_ALL)) {                /* if a trap */
             for (trapnum = 0; trapnum < TRAP_V_MAX; trapnum++) {
                 if ((t >> trapnum) & 1) {               /* trap set? */
                     trapea = trap_vec[trapnum];         /* get vec, clr */
@@ -804,18 +815,14 @@ while (reason == 0)  {
     if (tbit)
         setTRAP (TRAP_TRC);
     if (wait_state) {                                   /* wait state? */
-        if (sim_idle_enab)                              /* idle enabled? */
-            sim_idle (TMR_CLK, TRUE);
-        else if (wait_enable)                           /* old style idle? */
-            sim_interval = 0;                           /* force check */
-        else sim_interval = sim_interval - 1;           /* count cycle */
+        sim_idle (TMR_CLK, TRUE);
         continue;
         }
 
     if (sim_brk_summ && sim_brk_test (PC, SWMASK ('E'))) { /* breakpoint? */
         reason = STOP_IBKPT;                            /* stop simulation */
         continue;
-		}
+        }
 
     if (update_MM) {                                    /* if mm not frozen */
         MMR1 = 0;
@@ -830,13 +837,18 @@ while (reason == 0)  {
     if (hst_lnt) {                                      /* record history? */
         t_value val;
         uint32 i;
+        static int32 swmap[4] = {
+            SWMASK ('K') | SWMASK ('V'), SWMASK ('S') | SWMASK ('V'),
+            SWMASK ('U') | SWMASK ('V'), SWMASK ('U') | SWMASK ('V')
+            };
         hst[hst_p].pc = PC | HIST_VLD;
+        hst[hst_p].sp = SP;
         hst[hst_p].psw = get_PSW ();
         hst[hst_p].src = R[srcspec & 07];
         hst[hst_p].dst = R[dstspec & 07];
         hst[hst_p].inst[0] = IR;
         for (i = 1; i < HIST_ILNT; i++) {
-            if (cpu_ex (&val, (PC + (i << 1)) & 0177777, &cpu_unit, SWMASK ('V')))
+            if (cpu_ex (&val, (PC + (i << 1)) & 0177777, &cpu_unit, swmap[cm & 03]))
                 hst[hst_p].inst[i] = 0;
             else hst[hst_p].inst[i] = (uint16) val;
             }
@@ -913,7 +925,8 @@ while (reason == 0)  {
                 trap_req = calc_ints (ipl, trap_req);
                 JMP_PC (src);
                 if (CPUT (HAS_RTT) && tbit &&           /* RTT impl? */
-                    (IR == 000002)) setTRAP (TRAP_TRC); /* RTI immed trap */
+                    (IR == 000002))
+                    setTRAP (TRAP_TRC);                 /* RTI immed trap */
                 break;
             case 7:                                     /* MFPT */
                 if (CPUT (HAS_MFPT))                    /* implemented? */
@@ -1246,7 +1259,7 @@ while (reason == 0)  {
                     else dst = R[dstspec];
                     }
                 else {
-                    i = ((cm == pm) && (cm == MD_USR))? calc_ds (pm): calc_is (pm);
+                    i = ((cm == pm) && (cm == MD_USR))? (int32)calc_ds (pm): (int32)calc_is (pm);
                     dst = ReadW ((GeteaW (dstspec) & 0177777) | i);
                     }
                 N = GET_SIGN_W (dst);
@@ -1293,7 +1306,7 @@ while (reason == 0)  {
             break;
 
         case 070:                                       /* CSM */
-            if ((CPUT (HAS_CSM) && (MMR3 & MMR3_CSM)) || (cm != MD_KER)) {
+            if (CPUT (HAS_CSM) && (MMR3 & MMR3_CSM) && (cm != MD_KER)) {
                 dst = dstreg? R[dstspec]: ReadW (GeteaW (dstspec));
                 PSW = get_PSW () & ~PSW_CC;             /* PSW, cc = 0 */
                 STACKFILE[cm] = SP;
@@ -1358,7 +1371,8 @@ while (reason == 0)  {
             }
         else {
             dst = srcreg? R[srcspec]: ReadW (GeteaW (srcspec));
-            if (!dstreg) ea = GeteaW (dstspec);
+            if (!dstreg)
+                ea = GeteaW (dstspec);
             }
         N = GET_SIGN_W (dst);
         Z = GET_Z (dst);
@@ -1507,7 +1521,7 @@ while (reason == 0)  {
                 Z = V = C = 1;                          /* N = 0, Z = 1 */
                 break;
                 }
-            if ((src == 020000000000) && (src2 == 0177777)) {
+            if ((((uint32)src) == 020000000000) && (src2 == 0177777)) {
                 V = 1;                                  /* J11,11/70 compat */
                 N = Z = C = 0;                          /* N = Z = 0 */
                 break;
@@ -1894,6 +1908,7 @@ while (reason == 0)  {
                 R[dstspec] = (R[dstspec] & 0177400) | dst;
             else PWriteB (dst, last_pa);
             break;
+
 /* Notes:
    - MTPS cannot alter the T bit
    - MxPD must mask GeteaW returned address, dspace is from cm not pm
@@ -1987,7 +2002,8 @@ while (reason == 0)  {
             }
         else {
             dst = srcreg? R[srcspec] & 0377: ReadB (GeteaB (srcspec));
-            if (!dstreg) ea = GeteaB (dstspec);
+            if (!dstreg)
+                ea = GeteaB (dstspec);
             }
         N = GET_SIGN_B (dst);
         Z = GET_Z (dst);
@@ -2167,20 +2183,20 @@ switch (spec >> 3) {                                    /* decode spec<5:3> */
 
     case 2:                                             /* (R)+ */
         R[reg] = ((adr = R[reg]) + 2) & 0177777;
-        if (update_MM)
+        if (update_MM && (reg != 7))
             MMR1 = calc_MMR1 (020 | reg);
         return (adr | ds);
 
     case 3:                                             /* @(R)+ */
         R[reg] = ((adr = R[reg]) + 2) & 0177777;
-        if (update_MM)
+        if (update_MM && (reg != 7))
             MMR1 = calc_MMR1 (020 | reg);
         adr = ReadW (adr | ds);
         return (adr | dsenable);
 
     case 4:                                             /* -(R) */
         adr = R[reg] = (R[reg] - 2) & 0177777;
-        if (update_MM)
+        if (update_MM && (reg != 7))
             MMR1 = calc_MMR1 (0360 | reg);
         if ((reg == 6) && (cm == MD_KER) && (adr < (STKLIM + STKL_Y)))
             set_stack_trap (adr);
@@ -2188,7 +2204,7 @@ switch (spec >> 3) {                                    /* decode spec<5:3> */
 
     case 5:                                             /* @-(R) */
         adr = R[reg] = (R[reg] - 2) & 0177777;
-        if (update_MM)
+        if (update_MM && (reg != 7))
             MMR1 = calc_MMR1 (0360 | reg);
         if ((reg == 6) && (cm == MD_KER) && (adr < (STKLIM + STKL_Y)))
             set_stack_trap (adr);
@@ -2225,13 +2241,13 @@ switch (spec >> 3) {                                    /* decode spec<5:3> */
     case 2:                                                     /* (R)+ */
         delta = 1 + (reg >= 6);                         /* 2 if R6, PC */
         R[reg] = ((adr = R[reg]) + delta) & 0177777;
-        if (update_MM)
+        if (update_MM && (reg != 7))
             MMR1 = calc_MMR1 ((delta << 3) | reg);
         return (adr | ds);
 
     case 3:                                             /* @(R)+ */
         R[reg] = ((adr = R[reg]) + 2) & 0177777;
-        if (update_MM)
+        if (update_MM && (reg != 7))
             MMR1 = calc_MMR1 (020 | reg);
         adr = ReadW (adr | ds);
         return (adr | dsenable);
@@ -2239,7 +2255,7 @@ switch (spec >> 3) {                                    /* decode spec<5:3> */
     case 4:                                             /* -(R) */
         delta = 1 + (reg >= 6);                         /* 2 if R6, PC */
         adr = R[reg] = (R[reg] - delta) & 0177777;
-        if (update_MM)
+        if (update_MM && (reg != 7))
             MMR1 = calc_MMR1 ((((-delta) & 037) << 3) | reg);
         if ((reg == 6) && (cm == MD_KER) && (adr < (STKLIM + STKL_Y)))
             set_stack_trap (adr);
@@ -2247,7 +2263,7 @@ switch (spec >> 3) {                                    /* decode spec<5:3> */
 
     case 5:                                             /* @-(R) */
         adr = R[reg] = (R[reg] - 2) & 0177777;
-        if (update_MM)
+        if (update_MM && (reg != 7))
             MMR1 = calc_MMR1 (0360 | reg);
         if ((reg == 6) && (cm == MD_KER) && (adr < (STKLIM + STKL_Y)))
             set_stack_trap (adr);
@@ -2285,7 +2301,7 @@ if ((va & 1) && CPUT (HAS_ODD)) {                       /* odd address? */
     }
 pa = relocR (va);                                       /* relocate */
 if (ADDR_IS_MEM (pa))                                   /* memory address? */
-    return (M[pa >> 1]);
+    return RdMemW (pa);
 if ((pa < IOPAGEBASE) ||                                /* not I/O address */
     (CPUT (CPUT_J) && (pa >= IOBA_CPU))) {              /* or J11 int reg? */
         setCPUERR (CPUE_NXM);
@@ -2308,7 +2324,7 @@ if ((va & 1) && CPUT (HAS_ODD)) {                       /* odd address? */
     }
 pa = relocR (va);                                       /* relocate */
 if (ADDR_IS_MEM (pa))                                   /* memory address? */
-    return (M[pa >> 1]);
+    return RdMemW (pa);
 if (pa < IOPAGEBASE) {                                  /* not I/O address? */
     setCPUERR (CPUE_NXM);
     ABORT (TRAP_NXM);
@@ -2325,8 +2341,8 @@ int32 ReadB (int32 va)
 int32 pa, data;
 
 pa = relocR (va);                                       /* relocate */
-if (ADDR_IS_MEM (pa))
-    return (va & 1? M[pa >> 1] >> 8: M[pa >> 1]) & 0377;
+if (ADDR_IS_MEM (pa))                                   /* memory address? */
+    return RdMemB (pa);
 if (pa < IOPAGEBASE) {                                  /* not I/O address? */
     setCPUERR (CPUE_NXM);
     ABORT (TRAP_NXM);
@@ -2348,7 +2364,7 @@ if ((va & 1) && CPUT (HAS_ODD)) {                       /* odd address? */
     }
 last_pa = relocW (va);                                  /* reloc, wrt chk */
 if (ADDR_IS_MEM (last_pa))                              /* memory address? */
-    return (M[last_pa >> 1]);
+    return RdMemW (last_pa);
 if (last_pa < IOPAGEBASE) {                             /* not I/O address? */
     setCPUERR (CPUE_NXM);
     ABORT (TRAP_NXM);
@@ -2366,7 +2382,7 @@ int32 data;
 
 last_pa = relocW (va);                                  /* reloc, wrt chk */
 if (ADDR_IS_MEM (last_pa))
-    return (va & 1? M[last_pa >> 1] >> 8: M[last_pa >> 1]) & 0377;
+    return RdMemB (last_pa);
 if (last_pa < IOPAGEBASE) {                             /* not I/O address? */
     setCPUERR (CPUE_NXM);
     ABORT (TRAP_NXM);
@@ -2397,7 +2413,7 @@ if ((va & 1) && CPUT (HAS_ODD)) {                       /* odd address? */
     }
 pa = relocW (va);                                       /* relocate */
 if (ADDR_IS_MEM (pa)) {                                 /* memory address? */
-    M[pa >> 1] = data;
+    WrMemW (pa, data);
     return;
     }
 if (pa < IOPAGEBASE) {                                  /* not I/O address? */
@@ -2417,9 +2433,7 @@ int32 pa;
 
 pa = relocW (va);                                       /* relocate */
 if (ADDR_IS_MEM (pa)) {                                 /* memory address? */
-    if (va & 1)
-        M[pa >> 1] = (M[pa >> 1] & 0377) | (data << 8);
-    else M[pa >> 1] = (M[pa >> 1] & ~0377) | data;
+    WrMemB (pa, data);
     return;
     }             
 if (pa < IOPAGEBASE) {                                  /* not I/O address? */
@@ -2436,7 +2450,7 @@ return;
 void PWriteW (int32 data, int32 pa)
 {
 if (ADDR_IS_MEM (pa)) {                                 /* memory address? */
-    M[pa >> 1] = data;
+    WrMemW (pa, data);
     return;
     }
 if (pa < IOPAGEBASE) {                                  /* not I/O address? */
@@ -2453,9 +2467,7 @@ return;
 void PWriteB (int32 data, int32 pa)
 {
 if (ADDR_IS_MEM (pa)) {                                 /* memory address? */
-    if (pa & 1)
-        M[pa >> 1] = (M[pa >> 1] & 0377) | (data << 8);
-    else M[pa >> 1] = (M[pa >> 1] & ~0377) | data;
+    WrMemB (pa, data);
     return;
     }             
 if (pa < IOPAGEBASE) {                                  /* not I/O address? */
@@ -2693,7 +2705,7 @@ if (MMR0 & MMR0_MME) {                                  /* if mmgt */
     else if (sw & SWMASK ('P'))
         mode = (PSW >> PSW_V_PM) & 03;
     else mode = (PSW >> PSW_V_CM) & 03;
-    va = va | ((sw & SWMASK ('D'))? calc_ds (mode): calc_is (mode));
+    va = va | ((sw & SWMASK ('T'))? calc_ds (mode): calc_is (mode));
     apridx = (va >> VA_V_APF) & 077;                    /* index into APR */
     apr = APRFILE[apridx];                              /* with va<18:13> */
     dbn = va & VA_BN;                                   /* extr block num */
@@ -2992,7 +3004,9 @@ t_stat cpu_reset (DEVICE *dptr)
 {
 PIRQ = 0;
 STKLIM = 0;
-PSW = 000340;
+if (CPUT (CPUT_T))                                      /* T11? */
+    PSW = 000340;                                       /* start at IPL 7 */
+else PSW = 0;                                           /* else at IPL 0 */
 MMR0 = 0;
 MMR1 = 0;
 MMR2 = 0;
@@ -3009,7 +3023,16 @@ if (pcq_r)
 else return SCPE_IERR;
 sim_brk_types = sim_brk_dflt = SWMASK ('E');
 set_r_display (0, MD_KER);
-return SCPE_OK;
+return build_dib_tab ();
+}
+
+/* Boot setup routine */
+
+void cpu_set_boot (int32 pc)
+{
+saved_PC = pc;
+PSW = 000340;
+return;
 }
 
 /* Memory examine */
@@ -3028,8 +3051,8 @@ if (sw & SWMASK ('V')) {                                /* -v */
     if (addr >= MAXMEMSIZE)
         return SCPE_REL;
     }
-if (addr < MEMSIZE) {
-    *vptr = M[addr >> 1] & 0177777;
+if (ADDR_IS_MEM (addr)) {
+    *vptr = RdMemW (addr) & 0177777;
     return SCPE_OK;
     }
 if (addr < IOPAGEBASE)
@@ -3050,8 +3073,8 @@ if (sw & SWMASK ('V')) {                                /* -v */
     if (addr >= MAXMEMSIZE)
         return SCPE_REL;
     }
-if (addr < MEMSIZE) {
-    M[addr >> 1] = val & 0177777;
+if (ADDR_IS_MEM (addr)) {
+    WrMemW (addr, val & 0177777);
     return SCPE_OK;
     }
 if (addr < IOPAGEBASE)
@@ -3063,7 +3086,6 @@ return iopageW ((int32) val, addr, WRITEC);
 
 void set_r_display (int32 rs, int32 cm)
 {
-extern REG *find_reg (char *cptr, char **optr, DEVICE *dptr);
 REG *rptr;
 int32 i;
 
@@ -3116,8 +3138,6 @@ char *cptr = (char *) desc;
 t_value sim_eval[HIST_ILNT];
 t_stat r;
 InstHistory *h;
-extern t_stat fprint_sym (FILE *ofile, t_addr addr, t_value *val,
-    UNIT *uptr, int32 sw);
 
 if (hst_lnt == 0)                                       /* enabled? */
     return SCPE_NOFNC;
@@ -3130,12 +3150,12 @@ else lnt = hst_lnt;
 di = hst_p - lnt;                                       /* work forward */
 if (di < 0)
     di = di + hst_lnt;
-fprintf (st, "PC     PSW     src    dst     IR\n\n");
+fprintf (st, "PC     SP     PSW     src    dst     IR\n\n");
 for (k = 0; k < lnt; k++) {                             /* print specified */
     h = &hst[(di++) % hst_lnt];                         /* entry pointer */
     if (h->pc & HIST_VLD) {                             /* instruction? */
         ir = h->inst[0];
-        fprintf (st, "%06o %06o|", h->pc & ~HIST_VLD, h->psw);
+        fprintf (st, "%06o %06o %06o|", h->pc & ~HIST_VLD, h->sp, h->psw);
         if (((ir & 0070000) != 0) ||                    /* dops, eis, fpp */
             ((ir & 0177000) == 0004000))                /* jsr */
             fprintf (st, "%06o %06o  ", h->src, h->dst);

@@ -1,6 +1,6 @@
 /* h316_sys.c: Honeywell 316/516 simulator interface
 
-   Copyright (c) 1999-2008, Robert M Supnik
+   Copyright (c) 1999-2015, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -23,6 +23,9 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   15-Sep-13    RMS     Added device name support for IO instructions
+                        Fixed handling of OTK
+   21-May-13    RLA     Add IMP/TIP devices
    01-Dec-04    RMS     Fixed fprint_opr calling sequence
    24-Oct-03    RMS     Added DMA/DMC support
    17-Sep-01    RMS     Removed multiconsole support
@@ -41,9 +44,13 @@ extern DEVICE clk_dev;
 extern DEVICE dp_dev;
 extern DEVICE fhd_dev;
 extern DEVICE mt_dev;
+#ifdef VM_IMPTIP
+extern DEVICE rtc_dev, wdt_dev, imp_dev;
+extern DEVICE mi1_dev, mi2_dev, mi3_dev, mi4_dev, mi5_dev;
+extern DEVICE hi1_dev, hi2_dev, hi3_dev, hi4_dev;
+#endif
 extern REG cpu_reg[];
 extern uint16 M[];
-extern int32 sim_switches;
 
 /* SCP data structures and interface routines
 
@@ -65,12 +72,19 @@ DEVICE *sim_devices[] = {
     &cpu_dev,
     &ptr_dev,
     &ptp_dev,
-    &tty_dev,
     &lpt_dev,
-    &clk_dev,
-    &dp_dev,
-    &fhd_dev,
+    &tty_dev,
     &mt_dev,
+    &clk_dev,
+    &fhd_dev,
+    &dp_dev,
+#ifdef VM_IMPTIP
+    &wdt_dev,
+    &rtc_dev,
+    &imp_dev,
+    &mi1_dev, &mi2_dev, &mi3_dev, &mi4_dev, &mi5_dev,
+    &hi1_dev, &hi2_dev, &hi3_dev, &hi4_dev,
+#endif
     NULL
     };
 
@@ -132,7 +146,7 @@ static const char *opcode[] = {
  "CAR", "CAL", "ICL",
  "AOA", "ACA", "ICR", "ICA",
  "NOP", "SKP", "SSR", "SSS",
-                "JMP", "JMP*",
+ "OTK",         "JMP", "JMP*",
  "LDA", "LDA*", "ANA", "ANA*",
  "STA", "STA*", "ERA", "ERA*",
  "ADD", "ADD*", "SUB", "SUB*",
@@ -155,6 +169,17 @@ static const char *opcode[] = {
  NULL, NULL,                                            /* decode only */
  NULL
  };
+
+static const char *ioname[DEV_MAX] = {
+ NULL, "PTR", "PTP", "LPT", "TTY", "CDR", NULL, NULL,
+ "MT", NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+ "CLK", NULL, "FHD", NULL, "DMA", "DP", NULL, NULL,
+ NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+ NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+ NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+ NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+ NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+ };
  
 static const int32 opc_val[] = {
  0000000+I_NPN, 0000005+I_NPN, 0000007+I_NPN,
@@ -167,7 +192,7 @@ static const int32 opc_val[] = {
  0141044+I_NPN, 0141050+I_NPN, 0141140+I_NPN,
  0141206+I_NPN, 0141216+I_NPN, 0141240+I_NPN, 0141340+I_NPN,
  0101000+I_NPN, 0100000+I_NPN, 0100036+I_NPN, 0101036+I_NPN,
-                               0002000+I_MRF, 0102000+I_MRF,
+ 0171020+I_NPN,                0002000+I_MRF, 0102000+I_MRF,
  0004000+I_MRF, 0104000+I_MRF, 0006000+I_MRF, 0106000+I_MRF,
  0010000+I_MRF, 0110000+I_MRF, 0012000+I_MRF, 0112000+I_MRF,
  0014000+I_MRF, 0114000+I_MRF, 0016000+I_MRF, 0116000+I_MRF,
@@ -234,7 +259,7 @@ return;
 t_stat fprint_sym (FILE *of, t_addr addr, t_value *val,
     UNIT *uptr, int32 sw)
 {
-int32 cflag, i, j, inst, disp;
+int32 cflag, i, j, inst, fnc, disp;
 
 cflag = (uptr == NULL) || (uptr == &cpu_unit);
 inst = val[0];
@@ -278,8 +303,11 @@ for (i = 0; opc_val[i] >= 0; i++) {                     /* loop thru ops */
             break;
 
         case I_V_IOT:                                   /* I/O */
-            disp = inst & 01777;                        /* pulse+dev */
-            fprintf (of, "%s %o", opcode[i], disp);
+            fnc = I_GETFNC (inst);                      /* get func */
+            disp = inst & DEVMASK;                      /* get dev */
+            if (ioname[disp] != NULL)
+                fprintf (of, "%s %o,%s", opcode[i], fnc, ioname[disp]);
+            else fprintf (of, "%s %o,%o", opcode[i], fnc, disp);
             break;
 
         case I_V_SHF:                                   /* shift */
@@ -347,11 +375,29 @@ switch (j) {                                            /* case on class */
         break;
 
     case I_V_IOT:                                       /* IOT */
-        cptr = get_glyph (cptr, gbuf, 0);               /* get pulse+dev */
-        d = get_uint (gbuf, 8, 01777, &r);
-        if (r != SCPE_OK)
-            return SCPE_ARG;
-        val[0] = val[0] | d;
+        cptr = get_glyph (cptr, gbuf, ',');             /* get field */
+        if (*cptr == 0) {                               /* single field? */
+            d = get_uint (gbuf, 8, 01777, &r);          /* pulse+dev */
+            if (r != SCPE_OK)
+                return SCPE_ARG;
+            val[0] = val[0] | d;
+            }
+        else {                                          /* multiple fields */
+            d = get_uint (gbuf, 8, 017, &r);            /* get pulse */
+            if (r != SCPE_OK)
+                return SCPE_ARG;
+            cptr = get_glyph (cptr, gbuf, 0);           /* get dev name */
+            for (k = 0; k < DEV_MAX; k++) {             /* sch for name */
+                if ((ioname[k] != NULL) && (strcmp (gbuf, ioname[k]) == 0))
+                    break;                              /* match? */
+                }
+            if (k >= DEV_MAX) {                         /* no match */
+                k = get_uint (gbuf, 8, DEV_MAX - 1, &r);/* integer */
+                if (r != SCPE_OK)
+                    return SCPE_ARG;
+                }
+            val[0] = val[0] | (d << I_V_FNC) | k;
+            }
         break;
 
     case I_V_SHF:                                       /* shift */
@@ -364,11 +410,11 @@ switch (j) {                                            /* case on class */
 
     case I_V_MRF: case I_V_MRX:                         /* mem ref */
         cptr = get_glyph (cptr, gbuf, ',');             /* get next field */
-        if (k = (strcmp (gbuf, "C") == 0)) {            /* C specified? */
+        if ((k = (strcmp (gbuf, "C") == 0))) {          /* C specified? */
             val[0] = val[0] | SC;
             cptr = get_glyph (cptr, gbuf, 0);
             }
-        else if (k = (strcmp (gbuf, "Z") == 0)) {       /* Z specified? */
+        else if ((k = (strcmp (gbuf, "Z") == 0))) {     /* Z specified? */
             cptr = get_glyph (cptr, gbuf, ',');
             }
         d = get_uint (gbuf, 8, X_AMASK, &r);            /* construe as addr */

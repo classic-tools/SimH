@@ -1,6 +1,6 @@
 /* vaxmod_defs.h: VAX model-specific definitions file
 
-   Copyright (c) 1998-2011, Robert M Supnik
+   Copyright (c) 1998-2019, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -23,6 +23,12 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   05-May-19    RMS     Added Qbus memory space to ADDR_IS_IO test
+   23-Apr-19    RMS     Added hook for unpredictable indexed immediate .aw
+   18-May-17    RMS     Added model-specific AST validation test
+   29-Mar-15    RMS     Added model-specific IPR max
+   20-Dec-13    RMS     Added prototypes for unaligned IO and register handling
+   12-Dec-12    RMS     Fixed IO base address for RQB, RQC, RQD
    11-Dec-11    RMS     Moved all Qbus devices to BR4; deleted RP definitions
    25-Nov-11    RMS     Added VEC_QBUS definition
    29-Apr-07    RMS     Separated checks for PxBR and SBR
@@ -69,8 +75,8 @@
 #undef FULL_VAX
 #endif
 
-#ifndef _VAXMOD_DEFS_H_
-#define _VAXMOD_DEFS_H_ 1
+#ifndef VAXMOD_DEFS_H_
+#define VAXMOD_DEFS_H_ 1
 
 /* Microcode constructs */
 
@@ -96,6 +102,7 @@
 #define MT_CONPC        42
 #define MT_CONPSL       43
 #define MT_IORESET      55
+#define MT_MAX          63                              /* last valid IPR */
 
 /* Memory system error register */
 
@@ -141,7 +148,7 @@
 #define IOPAGESIZE      (1u << IOPAGEAWIDTH)            /* IO page length */
 #define IOPAGEMASK      (IOPAGESIZE - 1)                /* IO addr mask */
 #define IOPAGEBASE      0x20000000                      /* IO page base */
-#define ADDR_IS_IO(x)   ((((uint32) (x)) >= IOPAGEBASE) && \
+#define ADDR_IS_IOP(x)  ((((uint32) (x)) >= IOPAGEBASE) && \
                         (((uint32) (x)) < (IOPAGEBASE + IOPAGESIZE)))
 
 /* Read only memory - appears twice */
@@ -178,7 +185,7 @@
 
 /* CMCTL registers */
 
-/* #define CMCTLSIZE    (18 << 2)                       /* 18 registers */
+// #define CMCTLSIZE    (18 << 2)                       /* 18 registers */
 #define CMCTLSIZE       (19 << 2)                       /* KA655X extra reg */
 #define CMCTLBASE       (REGBASE + 0x100)               /* CMCTL addr base */
 
@@ -202,8 +209,15 @@
 #define CQMSIZE         (1u << CQMAWIDTH)               /* Qmem length */
 #define CQMAMASK        (CQMSIZE - 1)                   /* Qmem addr mask */
 #define CQMBASE         0x30000000                      /* Qmem base */
+#define ADDR_IS_CQM(x)  ((((uint32) (x)) >= CQMBASE) && \
+                        (((uint32) (x)) < (CQMBASE + CQMSIZE)))
 
-/* Machine specific reserved operand tests (all NOPs) */
+/* Reflect to IO on either IO space or Qbus memory */
+
+#define ADDR_IS_IO(x)   (ADDR_IS_IOP(x) || ADDR_IS_CQM(x))
+
+
+/* Machine specific reserved operand tests (mostly NOPs) */
 
 #define ML_PA_TEST(r)
 #define ML_LR_TEST(r)
@@ -212,6 +226,10 @@
 #define LP_AST_TEST(r)
 #define LP_MBZ84_TEST(r)
 #define LP_MBZ92_TEST(r)
+#define IDX_IMM_TEST    RSVD_ADDR_FAULT                 /* fault on indexed imm */
+
+#define MT_AST_TEST(r)  if ((r) > AST_MAX) RSVD_OPND_FAULT
+
 
 /* Qbus I/O modes */
 
@@ -280,9 +298,9 @@ typedef struct {
 #define IOLN_DZ         010
 #define IOBA_RQB        (IOPAGEBASE + 000334 +  (020 * (DZ_MUXES / 2)))
 #define IOLN_RQB        004
-#define IOBA_RQC        (IOPAGEBASE + IOBA_RQB + IOLN_RQB)
+#define IOBA_RQC        (IOBA_RQB + IOLN_RQB)
 #define IOLN_RQC        004
-#define IOBA_RQD        (IOPAGEBASE + IOBA_RQC + IOLN_RQC)
+#define IOBA_RQD        (IOBA_RQC + IOLN_RQC)
 #define IOLN_RQD        004
 #define IOBA_VH         (IOPAGEBASE + 000440)           /* DHQ11 */
 #define IOLN_VH         020
@@ -469,5 +487,12 @@ int32 Map_WriteW (uint32 ba, int32 bc, uint16 *buf);
 int32 clk_cosched (int32 wait);
 
 #include "pdp11_io_lib.h"
+
+/* Function prototypes for system-specific unaligned support */
+
+int32 ReadIOU (uint32 pa, int32 lnt);
+int32 ReadRegU (uint32 pa, int32 lnt);
+void WriteIOU (uint32 pa, int32 val, int32 lnt);
+void WriteRegU (uint32 pa, int32 val, int32 lnt);
 
 #endif

@@ -1,6 +1,6 @@
 /* nova_cpu.c: NOVA CPU simulator
 
-   Copyright (c) 1993-2008, Robert M. Supnik
+   Copyright (c) 1993-2017, Robert M. Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,8 @@
 
    cpu          Nova central processor
 
+   07-Sep-17    RMS     Fixed sim_eval declaration in history routine (COVERITY)
+   17-Mar-13    RMS     Added clarifying brances to IND_STEP macro (Dave Bryan)
    04-Jul-07    BKR     DEV_SET/CLR macros now used,
                         support for non-existant devices added
                         CPU bootstrap code warning: high-speed devices may not boot properly,
@@ -243,11 +245,12 @@
 #define STK_CHECK(x,y)  if (((x) & 0377) < (y)) \
                             int_req = int_req | INT_STK
 #define IND_STEP(x)     M[x] & A_IND;  /* return next level indicator */ \
-                        if ( ((x) <= AUTO_TOP) && ((x) >= AUTO_INC) )    \
-                            if ( (x) < AUTO_DEC )    \
-                                M[x] = (M[x] + 1) & DMASK;    \
-                            else    \
-                                M[x] = (M[x] - 1) & DMASK;    \
+                        if ( ((x) <= AUTO_TOP) && ((x) >= AUTO_INC) ) {  \
+                            if ( (x) < AUTO_DEC )                        \
+                                M[x] = (M[x] + 1) & DMASK;               \
+                            else                                         \
+                                M[x] = (M[x] - 1) & DMASK;               \
+                            }                                            \
                         x = M[x] & AMASK
 
 #define INCREMENT_PC    PC = (PC + 1) & AMASK           /* increment PC */
@@ -255,12 +258,12 @@
 #define UNIT_V_MDV      (UNIT_V_UF + 0)                 /* MDV present */
 #define UNIT_V_STK      (UNIT_V_UF + 1)                 /* stack instr */
 #define UNIT_V_BYT      (UNIT_V_UF + 2)                 /* byte instr */
-#define	UNIT_V_64KW     (UNIT_V_UF + 3)                 /* 64KW mem support */
+#define UNIT_V_64KW     (UNIT_V_UF + 3)                 /* 64KW mem support */
 #define UNIT_V_MSIZE    (UNIT_V_UF + 4)                 /* dummy mask */
 #define UNIT_MDV        (1 << UNIT_V_MDV)
 #define UNIT_STK        (1 << UNIT_V_STK)
 #define UNIT_BYT        (1 << UNIT_V_BYT)
-#define	UNIT_64KW       (1 << UNIT_V_64KW)
+#define UNIT_64KW       (1 << UNIT_V_64KW)
 #define UNIT_MSIZE      (1 << UNIT_V_MSIZE)
 #define UNIT_IOPT       (UNIT_MDV | UNIT_STK | UNIT_BYT | UNIT_64KW)
 #define UNIT_NOVA3      (UNIT_MDV | UNIT_STK)
@@ -330,14 +333,6 @@ char * devBitNames( int32 flags, char * ptr, char * sepStr ) ;
 void mask_out (int32 mask);
 
 
-extern int32    sim_interval;
-extern int32    sim_int_char;
-extern uint32   sim_brk_types, sim_brk_dflt, sim_brk_summ; /* breakpoint info */
-extern DEVICE * sim_devices[];
-extern t_stat   fprint_sym(FILE *ofile, t_addr addr, t_value *val, UNIT *uptr, int32 sw);
-
-
-
 /* CPU data structures
 
    cpu_dev      CPU device descriptor
@@ -394,7 +389,6 @@ MTAB cpu_mod[] = {
     { UNIT_MSIZE, (24 * 1024), NULL, "24K", &cpu_set_size },
     { UNIT_MSIZE, (28 * 1024), NULL, "28K", &cpu_set_size },
     { UNIT_MSIZE, (32 * 1024), NULL, "32K", &cpu_set_size },
-
     { UNIT_MSIZE, (36 * 1024), NULL, "36K", &cpu_set_size },
     { UNIT_MSIZE, (40 * 1024), NULL, "40K", &cpu_set_size },
     { UNIT_MSIZE, (44 * 1024), NULL, "44K", &cpu_set_size },
@@ -483,7 +477,7 @@ while (reason == 0) {                                   /* loop until halted */
     IR = M[PC];                                         /* fetch instr */
     if ( hist_cnt )
         {
-        hist_save( PC, IR ) ;			                /*  PC, int_req unchanged */
+        hist_save( PC, IR ) ;                           /*  PC, int_req unchanged */
         }
 
     INCREMENT_PC ;
@@ -979,15 +973,15 @@ while (reason == 0) {                                   /* loop until halted */
         else if (device == DEV_CPU) {                   /* CPU control */
             switch (code) {                             /* decode IR<5:7> */
 
-        case ioNIO:                                     /* NIOP <x> CPU ? */
-            if ( pulse == iopP )
-                if ( MODE_64K )
+            case ioNIO:                                 /* NIOP <x> CPU ? */
+                if ( pulse == iopP )
+                    if ( MODE_64K )
                     {
-                    /*  Keronix/Point4/SCI/INI/IDP (and others)    */
-                    /*  64 KW memory extension:                    */
-                    /*  NIOP - set memory mode (32/64 KW) per AC:  */
-                    /*  B15: 0 = 32 KW, 1 = 64 KW mode             */
-                    AMASK = (AC[dstAC] & 0x0001) ? 0177777 : 077777 ;
+                        /*  Keronix/Point4/SCI/INI/IDP (and others)    */
+                        /*  64 KW memory extension:                    */
+                        /*  NIOP - set memory mode (32/64 KW) per AC:  */
+                        /*  B15: 0 = 32 KW, 1 = 64 KW mode             */
+                        AMASK = (AC[dstAC] & 0x0001) ? 0177777 : 077777 ;
                     }
                 break ;
 
@@ -1209,11 +1203,11 @@ return SCPE_OK;
  *    - The Binary Loader was in turn used to load tapes in the usual DG 'absolute binary' format.
  */
 
-#define BOOT_START	00000
-#define BOOT_LEN	(sizeof(boot_rom) / sizeof(int32))
+#define BOOT_START  00000
+#define BOOT_LEN    (sizeof(boot_rom) / sizeof(int32))
 
 static const int32 boot_rom[] = {
-    0062677,                    /*	IORST           ;reset all I/O  */
+    0062677,                    /*      IORST           ;reset all I/O  */
     0060477,                    /*      READS 0         ;read SR into AC0 */
     0024026,                    /*      LDA 1,C77       ;get dev mask */
     0107400,                    /*      AND 0,1         ;isolate dev code */
@@ -1252,7 +1246,7 @@ static const int32 boot_rom[] = {
 
 t_stat cpu_boot (int32 unitno, DEVICE *dptr)
 {
-int32    i;
+size_t i;
 
 for (i = 0; i < BOOT_LEN; i++) M[BOOT_START + i] = boot_rom[i];
 saved_PC = BOOT_START;
@@ -1359,7 +1353,7 @@ if ( (r != SCPE_OK) || (lnt && (lnt < HIST_MIN)) )
     }
 hist_p = 0;
 if ( hist_cnt )
-    	{
+    {
     free( hist ) ;
     hist_cnt = 0 ;
     hist = NULL ;
@@ -1379,7 +1373,7 @@ return ( SCPE_OK ) ;
 
 int hist_fprintf( FILE * fp, int itemNum, Hist_entry * hptr )
 {
-t_value     sim_eval ;
+extern t_value *sim_eval ;
 
 if ( hptr )
     {
@@ -1401,8 +1395,8 @@ if ( hptr )
         fprintf( fp, "%06o  %06o   ", SP, FP ) ;
         }
 
-    sim_eval = (hptr->ir & 0xFFFF) ;
-    if ( (fprint_sym(fp, (hptr->pc & AMASK), &sim_eval, &cpu_unit, SWMASK ('M'))) > 0 )
+    sim_eval[0] = (hptr->ir & 0xFFFF) ;
+    if ( (fprint_sym(fp, (hptr->pc & AMASK), sim_eval, &cpu_unit, SWMASK ('M'))) > 0 )
         {
         fprintf( fp, "(undefined) %04o", (hptr->ir & 0xFFFF) ) ;
     }

@@ -1,6 +1,6 @@
 /* i1620_defs.h: IBM 1620 simulator definitions
 
-   Copyright (c) 2002-2010, Robert M. Supnik
+   Copyright (c) 2002-2017, Robert M. Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -27,12 +27,15 @@
    I am grateful to Al Kossow, the Computer History Museum, and the IBM Corporate
    Archives for their help in gathering documentation about the IBM 1620.
 
+   23-May-17    RMS     MARCHK is indicator 8, not 18 (Dave Wise)
+   19-May-17    RMS     Added option for Model I diagnostic mode (Dave Wise)
+   05-Feb-15    TFM     Added definitions for flagged RM, GM, NB
    22-May-10    RMS     Added check for 64b definitions
    18-Oct-02    RMS     Fixed bug in ADDR_S macro (found by Hans Pufal)
 */
 
-#ifndef _I1620_DEFS_H_
-#define _I1620_DEFS_H_  0
+#ifndef I1620_DEFS_H_
+#define I1620_DEFS_H_  0
 
 #include "sim_defs.h"                                   /* simulator defns */
 
@@ -111,6 +114,7 @@
 #define IN_SW4          4                               /* sense switch 4 */
 #define IN_RDCHK        6                               /* read check (I/O error) */
 #define IN_WRCHK        7                               /* write check (I/O error) */
+#define IN_MARCHK       8                               /* MAR check - diag only */
 #define IN_LAST         9                               /* last card was just read */
 #define IN_HP           11                              /* high or positive result */
 #define IN_EZ           12                              /* equal or zero result */
@@ -158,6 +162,9 @@
 #define REC_MARK        0xA
 #define NUM_BLANK       0xC
 #define GRP_MARK        0xF
+#define FLG_REC_MARK    0x1A
+#define FLG_NUM_BLANK   0x1C
+#define FLG_GRP_MARK    0x1F
 #define BAD_DIGIT(x)    ((x) > 9)
 
 /* Instruction format */
@@ -193,12 +200,13 @@
 #define IF_4QA          (1 << (UNIT_V_UF + 9))          /* 4 char Q addr */
 #define IF_NQX          (1 << (UNIT_V_UF + 10))         /* no Q indexing */
 #define IF_IMM          (1 << (UNIT_V_UF + 11))         /* immediate */
-#define UNIT_BCD        (1 << (UNIT_V_UF + 12))         /* BCD coded */
-#define UNIT_MSIZE      (1 << (UNIT_V_UF + 13))         /* fake flag */
-#define ALLOPT          (IF_DIV + IF_IA + IF_EDT + IF_FP + IF_BIN + IF_IDX)
-#define MI_OPT          (IF_DIV + IF_IA + IF_EDT + IF_FP)
+#define IF_RMOK         (1 << (UNIT_V_UF + 12))         /* diag mode - force rm to 0 */
+#define UNIT_BCD        (1 << (UNIT_V_UF + 13))         /* BCD coded */
+#define UNIT_MSIZE      (1 << (UNIT_V_UF + 14))         /* fake flag */
+#define ALLOPT          (IF_DIV + IF_IA + IF_EDT + IF_FP + IF_BIN + IF_IDX + IF_RMOK)
+#define MI_OPT          (IF_DIV + IF_IA + IF_EDT + IF_FP + IF_RMOK)
 #define MI_STD          (IF_DIV + IF_IA + IF_EDT)
-#define MII_OPT         (ALLOPT)
+#define MII_OPT         (IF_DIV + IF_IA + IF_EDT + IF_FP + IF_BIN + IF_IDX)
 #define MII_STD         (IF_DIV + IF_IA + IF_EDT + IF_BIN + IF_IDX)
 
 /* Add status codes */
@@ -227,5 +235,15 @@ enum opcodes {
                                                         /* 80 - 89 */
     OP_BBT = 90, OP_BMK, OP_ORF, OP_ANDF, OP_CPLF,      /* 90 - 99 */
     OP_EORF, OP_OTD, OP_DTO };
+
+/* Device flags */
+
+#define DEV_DEFIO       (1 << (DEV_V_UF + 0))
+
+/* Function declarations */
+
+t_stat cpuio_set_inp (uint32 op, uint32 dev, UNIT *uptr);
+t_stat cpuio_clr_inp (UNIT *uptr);
+char *opc_lookup (uint32 op, uint32 qv, uint32 *fl);
 
 #endif

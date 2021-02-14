@@ -1,6 +1,6 @@
 /* vax_cis.c: VAX CIS instructions
 
-   Copyright (c) 2004-2008, Robert M Supnik
+   Copyright (c) 2004-2019, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -26,7 +26,9 @@
    On a full VAX, this module simulates the VAX commercial instruction set (CIS).
    On a subset VAX, this module implements the emulated instruction fault.
 
-   16-Oct-08    RMS     Fixed bug in ASHP left overflow calc (Word/NibbleLShift)
+   03-May-19    RMS     Documnted fall through cases (COVERITY)
+   30-May-16    RMS     Fixed WordLshift FOR REAL
+   16-Oct-08    RMS     Fixed bug in ASHP left overflow calc (Word/NibbleLshift)
                         Fixed bug in DIVx (LntDstr calculation)
    28-May-08    RMS     Inlined physical memory routines
    16-May-06    RMS     Fixed bug in length calculation (Tim Stark)
@@ -71,8 +73,8 @@ typedef struct {
     uint32              val[DSTRLNT];
     } DSTR;
 
-static DSTR Dstr_zero = { 0, 0, 0, 0, 0 };
-static DSTR Dstr_one = { 0, 0x10, 0, 0, 0 };
+static DSTR Dstr_zero = { 0, {0, 0, 0, 0} };
+static DSTR Dstr_one = { 0, {0x10, 0, 0, 0} };
 
 extern int32 R[16];
 extern int32 PSL;
@@ -80,7 +82,6 @@ extern int32 trpirq;
 extern int32 p1;
 extern int32 fault_PC;
 extern int32 ibcnt, ppc;
-extern int32 sim_interval;
 extern jmp_buf save_env;
 
 int32 ReadDstr (int32 lnt, int32 addr, DSTR *dec, int32 acc);
@@ -331,7 +332,7 @@ switch (opc) {                                          /* case on opcode */
             R[3] = (R[3] + 1) & LMASK;                  /* next string char */
             if (i >= sim_interval) {                    /* done with interval? */
                 sim_interval = 0;
-                if (r = sim_process_event ()) {         /* presumably WRU */
+                if ((r = sim_process_event ())) {       /* presumably WRU */
                     PC = fault_PC;                      /* backup up PC */
                     ABORT (r);                          /* abort flushes IB */
                     }
@@ -460,7 +461,7 @@ switch (opc) {                                          /* case on opcode */
 
     case ADDP4: case SUBP4:
         op[4] = op[2];                                  /* copy dst */
-        op[5] = op[3];
+        op[5] = op[3];                                  /* fall through */
     case ADDP6: case SUBP6:
         if ((PSL & PSL_FPD) || (op[0] > 31) ||
             (op[2] > 31) || (op[4] > 31))
@@ -629,7 +630,7 @@ switch (opc) {                                          /* case on opcode */
 
     case CMPP3:
         op[3] = op[2];                                  /* reposition ops */
-        op[2] = op[0];
+        op[2] = op[0];                                  /* fall through */
     case CMPP4:
         if ((PSL & PSL_FPD) || (op[0] > 31) || (op[2] > 31))
             RSVD_OPND_FAULT;
@@ -1225,8 +1226,8 @@ for (i = 0; i <= end; i++) {                            /* loop thru string */
         }
     if ((i == end) && ((lnt & 1) == 0))
         c = c & 0xF;
-/*    if (((c & 0xF0) > 0x90) ||                          /* check hi digit */
-/*        ((c & 0x0F) > 0x09))                            /* check lo digit */    
+/*    if (((c & 0xF0) > 0x90) ||                        *//* check hi digit */
+/*        ((c & 0x0F) > 0x09))                          *//* check lo digit */    
 /*        RSVD_OPND_FAULT; */
     src->val[i / 4] = src->val[i / 4] | (c << ((i % 4) * 8));
     }                                                   /* end for */
@@ -1503,7 +1504,7 @@ void WordRshift (DSTR *dsrc, int32 sc)
 {
 int32 i;
 
-if (sc) {
+if (sc != 0) {
     for (i = 0; i < DSTRLNT; i++) {
         if ((i + sc) < DSTRLNT)
             dsrc->val[i] = dsrc->val[i + sc];
@@ -1522,18 +1523,18 @@ return;
 
 int32 WordLshift (DSTR *dsrc, int32 sc)
 {
-int32 i, c;
+int32 i, c, zc;
 
 c = 0;
-if (sc) {
-    for (i = DSTRMAX; i >= 0; i--) {
-        if (i >= sc)
-            dsrc->val[i] = dsrc->val[i - sc];
-        else {
-            c |= dsrc->val[i];
-            dsrc->val[i] = 0;
-            }
+if (sc != 0) {
+    for (i = DSTRMAX; i >= 0; i--) {                    /* work hi to low */
+        if ((i + sc) <= DSTRMAX)                        /* move in range? */
+            dsrc->val[i + sc] = dsrc->val[i];
+        else c |= dsrc->val[i];                         /* no, count as ovflo */
         }
+    zc = (sc >= DSTRLNT)? DSTRLNT: sc;                  /* cap fill */
+    for (i = 0; i < zc; i++)                            /* fill with 0s */
+        dsrc->val[i] = 0;
     }
 return c;
 }               
@@ -1550,7 +1551,7 @@ uint32 NibbleRshift (DSTR *dsrc, int32 sc, uint32 cin)
 {
 int32 i, s, nc;
 
-if (s = sc * 4) {
+if ((s = sc * 4) != 0) {
     for (i = DSTRMAX; i >= 0; i--) {
         nc = (dsrc->val[i] << (32 - s)) & LMASK;
         dsrc->val[i] = ((dsrc->val[i] >> s) |
@@ -1574,7 +1575,7 @@ uint32 NibbleLshift (DSTR *dsrc, int32 sc, uint32 cin)
 {
 int32 i, s, nc;
 
-if (s = sc * 4) {
+if ((s = sc * 4) != 0) {
     for (i = 0; i < DSTRLNT; i++) {
         nc = dsrc->val[i] >> (32 - s);
         dsrc->val[i] = ((dsrc->val[i] << s) |

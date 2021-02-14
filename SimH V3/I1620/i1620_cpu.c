@@ -1,6 +1,6 @@
 /* i1620_cpu.c: IBM 1620 CPU simulator
 
-   Copyright (c) 2002-2008, Robert M. Supnik
+   Copyright (c) 2002-2018, Robert M. Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -26,7 +26,23 @@
    This CPU module incorporates code and comments from the 1620 simulator by
    Geoff Kuenning, with his permission.
 
-   28-May-06    RMS     Fixed bug in cpu history Peter Schorn)
+   05-Jun-18    RMS     Fixed bug in select index A (COVERITY)
+   23-Jun-17    RMS     BS should not enable indexing unless configured
+   15-Jun-17    RMS     Added more information to IO in progress message
+   26-May-17    RMS     Added deferred IO mode for slow devices
+   20-May-17    RMS     Changed to commit PC on certain stops
+                        Added SET CPU RELEASE command
+                        Undefined indicators don't throw an error (Dave Wise)
+   19-May-17    RMS     Added Model I mode to allow record marks in adds (Dave Wise)
+   18-May-17    RMS     Allowed undocumented indicator 8 (Dave Wise)
+   13-Mar-17    RMS     Added error test on device addr (COVERITY)
+   07-May-15    RMS     Added missing TFL instruction (Tom McBride)
+   28-Mar-15    RMS     Revised to use sim_printf
+   26-Mar-15    RMS     Separated compare from add/sub flows (Tom McBride)
+                        Removed ADD_SIGNC return from add/sub flows
+   10-Dec-13    RMS     Fixed several bugs in add and compare (Bob Armstrong)
+                        Fixed handling of P field in K instruction (Bob Armstrong)
+   28-May-06    RMS     Fixed bug in cpu history (Peter Schorn)
    22-Sep-05    RMS     Fixed declarations (Sterling Garwood)
    16-Aug-05    RMS     Fixed C++ declaration and cast problems
    07-Nov-04    RMS     Added instruction history
@@ -69,6 +85,21 @@
    The 1620 Model 1 uses table lookups for add and multiply; for that reason,
    it was nicknamed CADET (Can't Add, Doesn't Even Try).  The Model 2 does
    adds in hardware and uses the add table memory for index registers.
+
+   The 1620 has no concept of overlapped IO. When an IO instruction is
+   issued, instruction execution is suspended until the IO is complete.
+   For "fast" devices, like the disk, IO is done in an instantaneous burst.
+   "Slow" devices have the option of going character-by-character, with
+   delays in between. This allows for operator intervention, such as
+   ^E or changing paper tapes.
+
+   The simulated IO state for character-by-character IO is:
+
+   cpuio_mode           set if IO in progress
+   cpuio_opc            saved IO opcode
+   cpuio_dev            saved IO device number
+   cpuio_cnt            character counter; increments
+   PAR                  P address; increments
 
    This routine is the instruction decode routine for the IBM 1620.
    It is called from the simulator control program to execute
@@ -113,6 +144,7 @@ typedef struct {
 
 uint8 M[MAXMEMSIZE] = { 0 };                            /* main memory */
 uint32 saved_PC = 0;                                    /* saved PC */
+uint32 actual_PC = 0;                                   /* actual PC at halt */
 uint32 IR2 = 1;                                         /* inst reg 2 */
 uint32 PAR = 0;                                         /* P address */
 uint32 QAR = 0;                                         /* Q address */
@@ -122,6 +154,10 @@ uint32 idxe = 0;                                        /* index enable */
 uint32 idxb = 0;                                        /* index band */
 uint32 io_stop = 1;                                     /* I/O stop */
 uint32 ar_stop = 1;                                     /* arith stop */
+uint32 cpuio_inp = 0;                                   /* IO in progress */
+uint32 cpuio_opc = 0;
+uint32 cpuio_dev = 0;
+uint32 cpuio_cnt = 0;
 int32 ind_max = 16;                                     /* iadr nest limit */
 uint16 pcq[PCQ_SIZE] = { 0 };                           /* PC queue */
 int32 pcq_p = 0;                                        /* PC queue ptr */
@@ -130,11 +166,6 @@ int32 hst_p = 0;                                        /* history pointer */
 int32 hst_lnt = 0;                                      /* history length */
 InstHistory *hst = NULL;                                /* instruction history */
 uint8 ind[NUM_IND] = { 0 };                             /* indicators */
-
-extern int32 sim_int_char;
-extern int32 sim_interval;
-extern uint32 sim_brk_types, sim_brk_dflt, sim_brk_summ; /* breakpoint info */
-extern FILE *sim_log;
 
 t_stat cpu_ex (t_value *vptr, t_addr addr, UNIT *uptr, int32 sw);
 t_stat cpu_dep (t_value val, t_addr addr, UNIT *uptr, int32 sw);
@@ -145,6 +176,7 @@ t_stat cpu_set_model (UNIT *uptr, int32 val, char *cptr, void *desc);
 t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc);
 t_stat cpu_set_save (UNIT *uptr, int32 val, char *cptr, void *desc);
 t_stat cpu_set_table (UNIT *uptr, int32 val, char *cptr, void *desc);
+t_stat cpu_set_release (UNIT *uptr, int32 val, char *cptr, void *desc);
 t_stat cpu_set_hist (UNIT *uptr, int32 val, char *cptr, void *desc);
 t_stat cpu_show_hist (FILE *st, UNIT *uptr, int32 val, void *desc);
 
@@ -158,7 +190,8 @@ t_stat xmt_index (uint32 d, uint32 s);
 t_stat xmt_divd (uint32 d, uint32 s);
 t_stat xmt_tns (uint32 d, uint32 s);
 t_stat xmt_tnf (uint32 d, uint32 s);
-t_stat add_field (uint32 d, uint32 s, t_bool sub, t_bool sto, uint32 skp, int32 *sta);
+t_stat add_field (uint32 d, uint32 s, t_bool sub, uint32 skp, int32 *sta);
+t_stat cmp_field (uint32 d, uint32 s);
 uint32 add_one_digit (uint32 dst, uint32 src, uint32 *cry);
 t_stat mul_field (uint32 mpc, uint32 mpy);
 t_stat mul_one_digit (uint32 mpyd, uint32 mpcp, uint32 prop, uint32 last);
@@ -200,6 +233,7 @@ UNIT cpu_unit = { UDATA (NULL, UNIT_FIX+UNIT_BCD+MI_STD, MAXMEMSIZE) };
 
 REG cpu_reg[] = {
     { DRDATA (PC, saved_PC, 16), PV_LEFT },
+    { DRDATA (APC, actual_PC, 16), PV_LEFT + REG_HRO },
     { DRDATA (IR2, IR2, 16), PV_LEFT },
     { DRDATA (PR1, PR1, 16), PV_LEFT },
     { DRDATA (PAR, PAR, 16), PV_LEFT + REG_RO },
@@ -216,6 +250,10 @@ REG cpu_reg[] = {
     { FLDATA (WRCHK, ind[IN_WRCHK], 0) },
     { FLDATA (ARSTOP, ar_stop, 0) },
     { FLDATA (IOSTOP, io_stop, 0) },
+    { FLDATA (IOINP, cpuio_inp, 0), REG_HRO },
+    { DRDATA (IOOPC, cpuio_opc, 6), REG_HRO },
+    { DRDATA (IODEV, cpuio_dev, 7), REG_HRO },
+    { DRDATA (IOCNT, cpuio_cnt, 16), REG_HRO },
     { BRDATA (IND, ind, 10, 1, NUM_IND) },
     { FLDATA (IAE, iae, 0) },
     { FLDATA (IDXE, idxe, 0) },
@@ -234,6 +272,8 @@ MTAB cpu_mod[] = {
     { IF_EDT, 0, "no EDT", "NOEDT", &cpu_set_opt1 },
     { IF_DIV, IF_DIV, "DIV", "DIV", &cpu_set_opt1 },
     { IF_DIV, 0, "no DIV", "NODIV", &cpu_set_opt1 },
+    { IF_RMOK, IF_RMOK, "RM allowed", "RMOK", &cpu_set_opt1 },
+    { IF_RMOK, 0, "RM disallowed", "NORMOK", &cpu_set_opt1 },
     { IF_FP, IF_FP, "FP", "FP", NULL },
     { IF_FP, 0, "no FP", "NOFP", NULL },
     { IF_BIN, IF_BIN, "BIN", "BIN", &cpu_set_opt2 },
@@ -249,6 +289,8 @@ MTAB cpu_mod[] = {
     { UNIT_MSIZE, 0, NULL, "TABLE", &cpu_set_table },
     { MTAB_XTD|MTAB_VDV|MTAB_NMO|MTAB_SHP, 0, "HISTORY", "HISTORY",
       &cpu_set_hist, &cpu_show_hist },
+    { MTAB_XTD|MTAB_VDV|MTAB_NMO, 0, NULL, "RELEASE",
+      &cpu_set_release, NULL },
     { 0 }
     };
 
@@ -296,7 +338,7 @@ const int32 op_table[100] = {
     IF_VPA + IF_VQA,                                    /* TR */
     IF_VPA,                                             /* SF */
     IF_VPA,                                             /* CF */
-    IF_VPA,                                             /* K */
+    0,                                                  /* K */
     IF_VPA,                                             /* DN */
     IF_VPA,                                             /* RN */
     IF_VPA,                                             /* RA */
@@ -334,7 +376,7 @@ const int32 op_table[100] = {
     0,
     IF_IDX + IF_VPA + IF_VQA,                           /* 70: MA */
     IF_EDT + IF_VPA + IF_VQA,                           /* MF */
-    IF_EDT + IF_VPA + IF_VQA,                           /* MF */
+    IF_EDT + IF_VPA + IF_VQA,                           /* TNS */
     IF_EDT + IF_VPA + IF_VQA,                           /* TNF */
     0,
     0,
@@ -389,10 +431,27 @@ t_stat (*iodisp[NUM_IO])(uint32 op, uint32 pa, uint32 f0, uint32 f1) = {
     NULL, NULL, NULL, NULL, NULL
     };
 
-/* Indicator table: -1 = illegal, +1 = resets when tested */
+/* K instruction validate P field table */
+
+const uint8 k_valid_p[NUM_IO] = {
+    0, 0, 0, 0, 0, 0, 0, 1, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    };
+
+/* Indicator table: -1 = undefined, +1 = resets when tested */
+/* Indicator 8 is MAR CHECK, for maintenance use only */
+/* Undefined indicators always read as 0 */
 
 const int32 ind_table[NUM_IND] = {
-    -1,  0,  0,  0,  0, -1,  1,  1, -1,  1,             /* 00 - 09 */
+    -1,  0,  0,  0,  0, -1,  1,  1,  0,  1,             /* 00 - 09 */
     -1,  0,  0,  0,  1,  1,  1,  1, -1,  0,             /* 10 - 19 */
     -1, -1, -1, -1, -1,  0, -1, -1, -1, -1,             /* 20 - 29 */
      0,  0,  0,  1,  1,  0,  1,  1,  1,  0,             /* 30 - 39 */
@@ -451,6 +510,12 @@ const uint8 std_mul_table[MUL_TABLE_LEN] = {
     5, 4, 4, 5, 3, 6, 2, 7, 1, 8
     };
 
+/* Table of stop codes that commit PC before returning to SCP */
+
+static t_stat commit_pc[] = {
+    STOP_HALT, SCPE_STOP, STOP_NOCD, SCPE_EOF, SCPE_IOERR, 0
+    };
+
 #define BRANCH(x)       PCQ_ENTRY; PC = (x)
 #define GET_IDXADDR(x)  ((idxb? IDX_B: IDX_A) + ((x) * ADDR_LEN) + (ADDR_LEN - 1))
 
@@ -468,22 +533,26 @@ if ((cpu_unit.flags & IF_IA) == 0)
 if ((cpu_unit.flags & IF_IDX) == 0)
     idxe = idxb = 0;
 upd_ind ();                                             /* update indicators */
-reason = 0;
+reason = SCPE_OK;
 
 /* Main instruction fetch/decode loop */
 
-while (reason == 0) {                                   /* loop until halted */
+while (reason == SCPE_OK) {                             /* loop until halted */
 
     saved_PC = PC;                                      /* commit prev instr */
     if (sim_interval <= 0) {                            /* check clock queue */
-        if (reason = sim_process_event ())
+        if ((reason = sim_process_event ()))
             break;
+        }
+    if (cpuio_inp != 0) {                               /* IO in progress? */
+        sim_interval = sim_interval - 1;                /* tick & continue */
+        continue;
         }
 
     if (sim_brk_summ && sim_brk_test (PC, SWMASK ('E'))) { /* breakpoint? */
         reason = STOP_IBKPT;                            /* stop simulation */
         break;
-		}
+        }
 
     sim_interval = sim_interval - 1;
 
@@ -523,7 +592,7 @@ while (reason == 0) {                                   /* loop until halted */
             break;
             }
         }
-    else if (flags & IF_IMM)                             /* immediate? */
+    else if (flags & IF_IMM)                            /* immediate? */
         QAR = qla;
 
     if (hst_lnt) {                                      /* history enabled? */
@@ -536,7 +605,7 @@ while (reason == 0) {                                   /* loop until halted */
             hst[hst_p].inst[i] = M[(PC + i) % MEMSIZE];
         }
 
-    PC = PC + INST_LEN;                                 /* advance PC */
+    PC = ADDR_A (PC, INST_LEN);                         /* advance PC */
     switch (op) {                                       /* case on op */
 
 /* Transmit digit - P,Q are valid */
@@ -551,6 +620,12 @@ while (reason == 0) {                                   /* loop until halted */
     case OP_TF:
     case OP_TFM:
         reason = xmt_field (PAR, QAR, 1);               /* xmit field */
+        break;
+
+/* Transmit floating - P,Q are valid */
+
+    case OP_TFL:
+        reason = xmt_field (PAR, QAR, 3);               /* xmit field */
         break;
 
 /* Transmit record - P,Q are valid */
@@ -661,7 +736,7 @@ while (reason == 0) {                                   /* loop until halted */
     case OP_BNI:
         upd_ind ();                                     /* update indicators */
         t = get_2d (ADDR_A (saved_PC, I_BR));           /* get ind number */
-        if ((t < 0) || (ind_table[t] < 0)) {            /* not valid? */
+        if (t < 0) {                                    /* not valid? */
             reason = STOP_INVIND;                       /* stop */
             break;
             }
@@ -676,7 +751,7 @@ while (reason == 0) {                                   /* loop until halted */
 
     case OP_A:
     case OP_AM:
-        reason = add_field (PAR, QAR, FALSE, TRUE, 0, &sta); /* add, store */
+        reason = add_field (PAR, QAR, FALSE, 0, &sta);  /* add */
         if (sta == ADD_CARRY)                           /* cout => ovflo */
             ind[IN_OVF] = 1;
         if (ar_stop && ind[IN_OVF])
@@ -685,18 +760,19 @@ while (reason == 0) {                                   /* loop until halted */
 
     case OP_S:
     case OP_SM:
-        reason = add_field (PAR, QAR, TRUE, TRUE, 0, &sta); /* sub, store */
+        reason = add_field (PAR, QAR, TRUE, 0, &sta);   /* sub, store */
         if (sta == ADD_CARRY)                           /* cout => ovflo */
             ind[IN_OVF] = 1;
         if (ar_stop && ind[IN_OVF])
             reason = STOP_OVERFL;
         break;
 
+/* IBM's diagnostics try a compare that generates a carry out; it does not
+   generate overflow. Therefore, do not set overflow on a carry out status. */
+
     case OP_C:
     case OP_CM:
-        reason = add_field (PAR, QAR, TRUE, FALSE, 0, &sta); /* sub, nostore */
-        if (sta == ADD_CARRY)                           /* cout => ovflo */
-            ind[IN_OVF] = 1;
+        reason = cmp_field (PAR, QAR);                  /* compare */
         if (ar_stop && ind[IN_OVF])
             reason = STOP_OVERFL;
         break;
@@ -708,7 +784,7 @@ while (reason == 0) {                                   /* loop until halted */
         reason = mul_field (PAR, QAR);                  /* multiply */
         break;
 
-/* IO instructions - P is valid */
+/* IO instructions - P is valid, except for K */
 
     case OP_RA:
     case OP_WA:
@@ -716,7 +792,6 @@ while (reason == 0) {                                   /* loop until halted */
             reason = STOP_INVEAD;                       /* stop */
             break;
             }
-    case OP_K:
     case OP_DN:
     case OP_RN:
     case OP_WN:
@@ -724,6 +799,23 @@ while (reason == 0) {                                   /* loop until halted */
         f0 = M[ADDR_A (saved_PC, I_CTL)] & DIGIT;       /* get function */
         f1 = M[ADDR_A (saved_PC, I_CTL + 1)] & DIGIT;
         if ((dev < 0) || (iodisp[dev] == NULL))         /* undefined dev? */
+            reason = STOP_INVIO;                        /* stop */
+        else reason = iodisp[dev] (op, PAR, f0, f1);    /* call device */
+        break;
+
+    case OP_K:
+        dev = get_2d (ADDR_A (saved_PC, I_IO));         /* get IO dev */
+        if (dev < 0)                                    /* invalid digits? */
+            return STOP_INVDIG;
+        if (k_valid_p[dev]) {                           /* validate P? */
+            reason = get_addr (pla, 5, TRUE, &PAR);     /* get P addr */
+            if (reason != SCPE_OK)                      /* stop if error */
+                 break;
+            }
+        else PAR = 0;
+        f0 = M[ADDR_A (saved_PC, I_CTL)] & DIGIT;       /* get function */
+        f1 = M[ADDR_A (saved_PC, I_CTL + 1)] & DIGIT;
+        if (iodisp[dev] == NULL)                        /* undefined dev? */
             reason = STOP_INVIO;                        /* stop */
         else reason = iodisp[dev] (op, PAR, f0, f1);    /* call device */
         break;
@@ -822,7 +914,7 @@ while (reason == 0) {                                   /* loop until halted */
             reason = STOP_INVIDX;                       /* stop */
             break;
             }
-        reason = add_field (GET_IDXADDR (idx), QAR, FALSE, TRUE, 0, &sta);
+        reason = add_field (GET_IDXADDR (idx), QAR, FALSE, 0, &sta);
         if (ar_stop && ind[IN_OVF])
             reason = STOP_OVERFL;
         BRANCH (PAR);                                   /* branch to P */
@@ -834,7 +926,7 @@ while (reason == 0) {                                   /* loop until halted */
             reason = STOP_INVIDX;                       /* stop */
             break;
             }
-        reason = add_field (GET_IDXADDR (idx), QAR, FALSE, TRUE, 3, &sta);
+        reason = add_field (GET_IDXADDR (idx), QAR, FALSE, 3, &sta);
         if (ar_stop && ind[IN_OVF])
             reason = STOP_OVERFL;
         BRANCH (PAR);                                   /* branch to P */
@@ -848,12 +940,12 @@ while (reason == 0) {                                   /* loop until halted */
             reason = STOP_INVIDX;                       /* stop */
             break;
             }
-        reason = add_field (GET_IDXADDR (idx), QAR, FALSE, TRUE, 0, &sta);
+        reason = add_field (GET_IDXADDR (idx), QAR, FALSE, 0, &sta);
         if (ar_stop && ind[IN_OVF])
             reason = STOP_OVERFL;
         if ((ind[IN_EZ] == 0) && (sta == ADD_NOCRY)) {  /* ~z, ~c, ~sign chg? */
             BRANCH (PAR);                               /* branch */
-			}
+            }
         break;
 
     case OP_BCXM:
@@ -862,15 +954,15 @@ while (reason == 0) {                                   /* loop until halted */
             reason = STOP_INVIDX;                       /* stop */
             break;
             }
-        reason = add_field (GET_IDXADDR (idx), QAR, FALSE, TRUE, 3, &sta);
+        reason = add_field (GET_IDXADDR (idx), QAR, FALSE, 3, &sta);
         if (ar_stop && ind[IN_OVF])
             reason = STOP_OVERFL;
         if ((ind[IN_EZ] == 0) && (sta == ADD_NOCRY)) {  /* ~z, ~c, ~sign chg? */
             BRANCH (PAR);                               /* branch */
-			}
+            }
         break;
 
-/* Branch and select - P is valid */
+/* Branch and select - P is valid - Model 2 only */
 
     case OP_BS:
         t = M[ADDR_A (saved_PC, I_SEL)] & DIGIT;        /* get select */
@@ -879,10 +971,14 @@ while (reason == 0) {                                   /* loop until halted */
             idxe = idxb = 0;                            /* indexing off */
             break;
         case 1:
-            idxe = 1; idxb = 0;                         /* index band A */
+            if ((cpu_unit.flags & IF_IDX) != 0) {       /* indexing present? */
+                idxe = 1; idxb = 0;                     /* index band A */
+                }
             break;
         case 2:
-            idxe = idxb = 1;                            /* index band B */
+            if ((cpu_unit.flags & IF_IDX) != 0) {       /* indexing present? */
+                idxe = idxb = 1;                        /* index band B */
+                }
             break;
         case 8:
             iae = 0;                                    /* indirect off */
@@ -893,7 +989,7 @@ while (reason == 0) {                                   /* loop until halted */
         default:
             reason = STOP_INVSEL;                       /* undefined */
             break;
-			}
+            }
         BRANCH (PAR);
         break;
 
@@ -996,7 +1092,6 @@ while (reason == 0) {                                   /* loop until halted */
 /* Halt */
 
     case OP_H:
-        saved_PC = PC;                                  /* commit inst */
         reason = STOP_HALT;                             /* stop */
         break;
 
@@ -1015,8 +1110,20 @@ while (reason == 0) {                                   /* loop until halted */
 
 /* Simulation halted */
 
+for (i = 0; commit_pc[i] != 0; i++) {                   /* check stop code */
+    if (reason == commit_pc[i])                         /* on list? */
+        saved_PC = PC;                                  /* commit PC */
+    }
+actual_PC = PC;                                         /* save cur PC for RLS */
 pcq_r->qptr = pcq_p;                                    /* update pc q ptr */
 upd_ind ();
+if (cpuio_inp != 0) {                                   /* flag IO in progress */
+    char *opstr = opc_lookup (cpuio_opc, cpuio_dev * 100, NULL);
+
+    if (opstr != NULL)
+        sim_printf ("\r\nIO in progress (%s %05d)", opstr, PAR);
+    else sim_printf ("\r\nIO in progress (%02d %05d,%05d)", cpuio_opc, PAR, cpuio_dev * 100);
+    }
 return reason;
 }
 
@@ -1296,17 +1403,20 @@ return SCPE_OK;
    Output:
         return  =       status
         sta     =       ADD_NOCRY: no carry out, no sign change
-                        ADD_SCHNG: sign change
+                        ADD_SIGNC: sign change
                         ADD_CARRY: carry out
 
    Reference Manual: "When the sum is zero, the sign of the P field
    is retained."
+
+   Model 1 hack: If the Q field contains a record mark, it is treated
+   as 0 (Dave Wise; from schematics).
 */
 
-t_stat add_field (uint32 d, uint32 s, t_bool sub, t_bool sto, uint32 skp, int32 *sta)
+t_stat add_field (uint32 d, uint32 s, t_bool sub, uint32 skp, int32 *sta)
 {
 uint32 cry, src, dst, res, comp, dp, dsv;
-uint32 src_f = 0, cnt = 0, dst_f;
+uint32 src_f = 0, cnt = 0, dst_f = 0;
 
 *sta = ADD_NOCRY;                                       /* assume no cry */
 dsv = d;                                                /* save dst */
@@ -1317,13 +1427,15 @@ ind[IN_EZ] = 1;                                         /* assume zero */
 
 dst = M[d] & DIGIT;                                     /* 1st digits */
 src = M[s] & DIGIT;
+if ((src == REC_MARK) &&                                /* Q record mark? */
+    ((cpu_unit.flags & IF_RMOK) != 0))                  /* Model I & enabled? */
+    src = 0;                                            /* treat as 0 */
 if (BAD_DIGIT (dst) || BAD_DIGIT (src))                 /* bad digit? */
      return STOP_INVDIG;
 if (comp)                                               /* complement? */
     src = 10 - src;
 res = add_one_digit (dst, src, &cry);                   /* add */
-if (sto)                                                /* store */
-    M[d] = (M[d] & FLAG) | res;
+M[d] = (M[d] & FLAG) | res;                             /* store */
 MM (d); MM (s);                                         /* decr mem addrs */
 do {
     dst = M[d] & DIGIT;                                 /* get dst digit */
@@ -1335,31 +1447,37 @@ do {
         if (cnt >= skp)                                 /* get src flag */
             src_f = M[s] & FLAG;
         MM (s);                                         /* decr src addr */
+        if ((src == REC_MARK) &&                        /* Q record mark? */
+            ((cpu_unit.flags & IF_RMOK) != 0))          /* Model I & enabled? */
+            src = 0;                                    /* treat as 0 */
         }
     if (BAD_DIGIT (dst) || BAD_DIGIT (src))             /* bad digit? */
         return STOP_INVDIG;
     if (comp)                                           /* complement? */
         src = 9 - src;
     res = add_one_digit (dst, src, &cry);               /* add */
-    if (sto)                                            /* store */
-        M[d] = dst_f | res;
+    M[d] = dst_f | res;                                 /* store */
     MM (d);                                             /* decr dst addr */
     if (cnt++ >= MEMSIZE)                               /* (stop runaway) */
         return STOP_FWRAP;
     } while (dst_f == 0);                               /* until dst done */
 if (!src_f)                                             /* !src done? ovf */
     ind[IN_OVF] = 1;
+
+/* Because recomplement is done (model 1) with table lookup, the first digit
+   must be explicitly 10s complemented, and not 9s complemented with a carry
+   in of 1. (Bob Armstrong) */
+
 if (comp && !cry && !ind[IN_EZ]) {                      /* recomp needed? */
     ind[IN_HP] = ind[IN_HP] ^ 1;                        /* flip indicator */
-    if (sto) {                                          /* storing? */
-        for (cry = 1, dp = dsv; dp != d; ) {            /* rescan */
-            dst = M[dp] & DIGIT;                        /* get dst digit */
-            res = add_one_digit (9 - dst, 0, &cry);     /* "add" */
-            M[dp] = (M[dp] & FLAG) | res;               /* store */
-            MM (dp);                                    /* decr dst addr */
-            }
-        M[dsv] = M[dsv] ^ FLAG;                         /* compl sign */
+    for (cry = 0, dp = dsv; dp != d; ) {                /* rescan */
+        dst = M[dp] & DIGIT;                            /* get dst digit */
+        dst = (dp == dsv)? (10 - dst): (9 - dst);       /* 10 or 9s comp */
+        res = add_one_digit (0, dst, &cry);             /* "add" */
+        M[dp] = (M[dp] & FLAG) | res;                   /* store */
+        MM (dp);                                        /* decr dst addr */
         }
+    M[dsv] = M[dsv] ^ FLAG;                             /* compl sign */
     *sta = ADD_SIGNC;                                   /* sign changed */
     return SCPE_OK;     
     }                                                   /* end if recomp */
@@ -1370,13 +1488,86 @@ if (!comp && cry)                                       /* set status */
 return SCPE_OK;
 }
 
+/* Compare routine
+
+   Inputs:
+        d       =       destination field low (P)
+        s       =       source field low (Q)
+   Output:
+        return  =       status
+
+   In the unlike signs case, the compare is abandoned as soon as a non-zero
+   digit is seen; zeroes go through the normal flows.
+
+   See add for Model I hack in handling Q field record marks.
+*/
+
+t_stat cmp_field (uint32 d, uint32 s)
+{
+uint32 cry, src, dst, unlike, dsv;
+uint32 src_f = 0, cnt = 0, dst_f = 0;
+
+dsv = d;                                                /* save dst */
+cry = 0;                                                /* clr carry */
+unlike = (M[d] ^ M[s]) & FLAG;                          /* set unlike signs flag */
+ind[IN_HP] = ((M[d] & FLAG) == 0);                      /* set sign from res */
+ind[IN_EZ] = 1;                                         /* assume zero */
+
+do {
+    dst = M[d] & DIGIT;                                 /* get dst digit */
+    if (d != dsv)                                       /* if not first digit, */
+        dst_f = M[d] & FLAG;                            /* get dst flag */
+    if (src_f)                                          /* src done? src = 0 */
+        src = 0;
+    else {
+        src = M[s] & DIGIT;                             /* get src digit */
+        if (d != dsv)                                   /* if not first digit, */
+            src_f = M[s] & FLAG;                        /* get src flag */
+        MM (s);                                         /* decr src addr */
+        }
+    if (unlike && ((dst | src) != 0)) {                 /* unlike signs, digit? */
+        ind[IN_EZ] = 0;                                 /* not equal */
+        return SCPE_OK;
+        }
+    if ((src == REC_MARK) &&                            /* Q record mark? */
+        ((cpu_unit.flags & IF_RMOK) != 0))              /* Model I & enabled? */
+        src = 0;                                        /* treat as 0 */
+    if (BAD_DIGIT (dst) || BAD_DIGIT (src))             /* bad digit? */
+        return STOP_INVDIG;
+    src = (d != dsv)? 9 - src: 10 - src;                /* complement */
+    add_one_digit (dst, src, &cry);                     /* throw away result */
+    MM (d);                                             /* decr dst addr */
+    if (cnt++ >= MEMSIZE)                               /* (stop runaway) */
+        return STOP_FWRAP;
+    } while (dst_f == 0);                               /* until dst done */
+if (!src_f)                                             /* !src done? ovf */
+    ind[IN_OVF] = 1;
+
+/* At this point, we have three possible cases:
+   - Fields are equal, signs irrelevant: ind[IN_EZ] is still set
+   - Fields are unequal, signs are the same, carry out:
+        |p| > |q|, ind[IN_HP] is correct
+   - Fields are unequal, signs are the same, no carry out:
+        |p| < |q, ind[IN_HP] must be inverted
+*/
+
+if (!cry && !ind[IN_EZ]) {                              /* recomp needed? */
+    ind[IN_HP] = ind[IN_HP] ^ 1;                        /* flip indicator */
+    return SCPE_OK;     
+    }                                                   /* end if recomp */
+if (ind[IN_EZ])                                         /* res = 0? clr HP */
+    ind[IN_HP] = 0;
+return SCPE_OK;
+}
+
 /* Add one digit via table (Model 1) or "hardware" (Model 2) */
 
 uint32 add_one_digit (uint32 dst, uint32 src, uint32 *cry)
 {
 uint32 res;
 
-if (*cry) src = src + 1;                                /* cry in? incr src */
+if (*cry)                                               /* cry in? incr src */
+    src = src + 1;
 if (src >= 10) {                                        /* src > 10? */
     src = src - 10;                                     /* src -= 10 */
     *cry = 1;                                           /* carry out */
@@ -1982,6 +2173,30 @@ M[d] = M[d] | sign;                                     /* set result sign */
 return SCPE_OK;
 }
 
+/* Set and clear IO in progress */
+
+t_stat cpuio_set_inp (uint32 op, uint32 dev, UNIT *uptr)
+{
+cpuio_inp = 1;
+cpuio_opc = op;
+cpuio_dev = dev;
+cpuio_cnt = 0;
+if (uptr != NULL)
+    sim_activate_abs (uptr, uptr->wait);
+return SCPE_OK;
+}
+
+t_stat cpuio_clr_inp (UNIT *uptr)
+{
+cpuio_inp = 0;
+cpuio_opc = 0;
+cpuio_dev = 0;
+cpuio_cnt = 0;
+if (uptr != NULL)
+    sim_cancel (uptr);
+return SCPE_OK;
+}
+
 /* Reset routine */
 
 t_stat cpu_reset (DEVICE *dptr)
@@ -1993,6 +2208,8 @@ PR1 = IR2 = 1;                                          /* invalidate PR1,IR2 */
 ind[0] = 0;
 for (i = IN_SW4 + 1; i < NUM_IND; i++)                  /* init indicators */
     ind[i] = 0;
+if (cpuio_inp != 0)                                     /* IO in progress? */
+    cpu_set_release (NULL, 0, NULL, NULL);              /* clear IO */
 if (cpu_unit.flags & IF_IA)                             /* indirect enabled? */
     iae = 1;
 else iae = 0;
@@ -2003,9 +2220,37 @@ if (pcq_r)
 else return SCPE_IERR;
 sim_brk_types = sim_brk_dflt = SWMASK ('E');            /* init breakpoints */
 upd_ind ();                                             /* update indicators */
-if (one_time)                                           /* set default tables */
+if (one_time) {                                         /* set default tables */
     cpu_set_table (&cpu_unit, 1, NULL, NULL);
+    actual_PC = saved_PC = 0;                           /* sync PCs */
+    }
 one_time = FALSE;
+return SCPE_OK;
+}
+
+/* Release routine */
+
+t_stat cpu_set_release (UNIT *uptr, int32 val, char *cptr, void *desc)
+{
+uint32 i;
+DEVICE *dptr;
+
+if (cpuio_inp != 0) {                                   /* IO in progress? */
+    cpuio_inp = 0;
+    cpuio_opc = 0;
+    cpuio_dev = 0;
+    cpuio_cnt = 0;
+    for (i = 0; (dptr = sim_devices[i]) != NULL; i++) {
+        if (((dptr->flags & DEV_DEFIO) != 0) && (dptr->reset != NULL))
+            dptr->reset (dptr);
+        }
+    sim_printf ("IO operation canceled\n");
+    }
+else if (actual_PC == ADDR_A (saved_PC, INST_LEN)) {    /* one instr ahead? */
+    saved_PC = actual_PC;
+    sim_printf ("New PC = %05d\n", saved_PC);
+    }
+else sim_printf ("PC unchanged\n");
 return SCPE_OK;
 }
 
@@ -2065,9 +2310,9 @@ return SCPE_OK;
 t_stat cpu_set_opt1 (UNIT *uptr, int32 val, char *cptr, void *desc)
 {
 if (cpu_unit.flags & IF_MII) {
-    printf ("Feature is standard on 1620 Model 2\n");
-    if (sim_log)
-        fprintf (sim_log, "Feature is standard on 1620 Model 2\n");
+    if ((val & IF_RMOK) != 0)
+        sim_printf ("Feature is not available on 1620 Model 2\n");
+    else sim_printf ("Feature is standard on 1620 Model 2\n");
     return SCPE_NOFNC;
     }
 return SCPE_OK;
@@ -2078,9 +2323,7 @@ return SCPE_OK;
 t_stat cpu_set_opt2 (UNIT *uptr, int32 val, char *cptr, void *desc)
 {
 if (!(cpu_unit.flags & IF_MII)) {
-    printf ("Feature is not available on 1620 Model 1\n");
-    if (sim_log)
-        fprintf (sim_log, "Feature is not available on 1620 Model 1\n");
+    sim_printf ("Feature is not available on 1620 Model 1\n");
     return SCPE_NOFNC;
     }
 return SCPE_OK;

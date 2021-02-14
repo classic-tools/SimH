@@ -1,6 +1,6 @@
 /* gri_sys.c: GRI-909 simulator interface
 
-   Copyright (c) 2001-2008, Robert M Supnik
+   Copyright (c) 2001-2017, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -23,6 +23,7 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   13-Mar-17    RMS     Annotated fall through in switch
    14-Jan-08    RMS     Added GRI-99 support
    18-Oct-02    RMS     Fixed bug in symbolic decode (Hans Pufal)
 */
@@ -37,7 +38,6 @@ extern DEVICE hsr_dev, hsp_dev;
 extern DEVICE rtc_dev;
 extern REG cpu_reg[];
 extern uint16 M[];
-extern int32 sim_switches;
 
 void fprint_addr (FILE *of, uint32 val, uint32 mod, uint32 dst);
 
@@ -618,7 +618,7 @@ switch (j) {                                            /* case on class */
         cptr = get_sd (cptr, val, ',', TRUE);           /* src */
         if (!cptr)
             return SCPE_ARG;
-
+                                                        /* fall through */
     case F_V_SFI:                                       /* skip func impl */
         cptr = get_fnc (cptr, val);                     /* fo # */
         break;

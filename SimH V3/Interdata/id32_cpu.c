@@ -1,6 +1,6 @@
 /* id32_cpu.c: Interdata 32b CPU simulator
 
-   Copyright (c) 2000-2008, Robert M. Supnik
+   Copyright (c) 2000-2017, Robert M. Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,10 +25,11 @@
 
    cpu                  Interdata 32b CPU
 
+   09-Mar-17    RMS     OC to display testing wrong argument (COVERITY)
    28-Apr-07    RMS     Removed clock initialization
    27-Oct-06    RMS     Added idle support
                         Removed separate PASLA clock
-   09-Mar-06	RMS     Added 8 register bank support for 8/32
+   09-Mar-06    RMS     Added 8 register bank support for 8/32
    06-Feb-06    RMS     Fixed bug in DH (Mark Hittinger)
    22-Sep-05    RMS     Fixed declarations (Sterling Garwood)
    16-Aug-05    RMS     Fixed C++ declaration and cast problems
@@ -222,7 +223,7 @@ uint32 GREG[16 * NRSETS] = { 0 };                       /* general registers */
 uint32 *M = NULL;                                       /* memory */
 uint32 *R = &GREG[0];                                   /* working reg set */
 uint32 F[8] = { 0 };                                    /* sp fp registers */
-dpr_t D[8] = { 0 };                                     /* dp fp registers */
+dpr_t D[8] = { {0} };                                   /* dp fp registers */
 uint32 PSW = 0;                                         /* processor status word */
 uint32 PC = 0;                                          /* program counter */
 uint32 oPC = 0;                                         /* PC at inst start */
@@ -252,12 +253,6 @@ InstHistory *hst = NULL;                                /* instruction history *
 jmp_buf save_env;                                       /* abort handler */
 struct BlockIO blk_io;                                  /* block I/O status */
 uint32 (*dev_tab[DEVNO])(uint32 dev, uint32 op, uint32 datout) = { NULL };
-
-extern int32 sim_interval;
-extern int32 sim_int_char;
-extern uint32 sim_brk_types, sim_brk_dflt, sim_brk_summ; /* breakpoint info */
-extern t_bool sim_idle_enab;
-extern FILE *sim_deb;
 
 uint32 ReadB (uint32 loc, uint32 rel);
 uint32 ReadH (uint32 loc, uint32 rel);
@@ -664,7 +659,7 @@ while (reason == 0) {                                   /* loop until halted */
     int32 sr, st;
 
     if (sim_interval <= 0) {                            /* check clock queue */
-        if (reason = sim_process_event ())
+        if ((reason = sim_process_event ()))
             break;
         int_eval ();
         }
@@ -714,9 +709,7 @@ while (reason == 0) {                                   /* loop until halted */
             }
 
         if (PSW & PSW_WAIT) {                           /* wait state? */
-            if (sim_idle_enab)                          /* idling enabled? */
-                sim_idle (TMR_LFC, TRUE);
-            else sim_interval = sim_interval - 1;       /* no, count cycle */
+            sim_idle (TMR_LFC, TRUE);                   /* idling */
             continue;
             }
 
@@ -1997,12 +1990,12 @@ switch (op) {
         return BY;                                      /* byte only */
 
     case IO_OC:                                         /* command */
-        op = op & 0xC0;
-        if (op == 0x40) {                               /* x40 = inc */
+        dat = dat & 0xC0;
+        if (dat == 0x40) {                              /* x40 = inc */
             drmod = 1;
             drpos = srpos = 0;                          /* init cntrs */
             }
-        else if (op == 0x80)                            /* x80 = norm */
+        else if (dat == 0x80)                           /* x80 = norm */
             drmod = 0;
         break;
 
@@ -2293,7 +2286,7 @@ if ((sw & SWMASK ('V')) && (PSW & PSW_REL)) {
     int32 cc = RelocT (addr, MAC_BASE, P, &addr);
     if (cc & (CC_C | CC_V))
         return SCPE_NXM;
-	}
+    }
 if (addr >= MEMSIZE)
     return SCPE_NXM;
 if (vptr != NULL)
@@ -2309,7 +2302,7 @@ if ((sw & SWMASK ('V')) && (PSW & PSW_REL)) {
     int32 cc = RelocT (addr, MAC_BASE, P, &addr);
     if (cc & (CC_C | CC_V))
         return SCPE_NXM;
-	}
+    }
 if (addr >= MEMSIZE)
     return SCPE_NXM;
 IOWriteH (addr, val);
@@ -2323,7 +2316,7 @@ t_stat cpu_set_size (UNIT *uptr, int32 val, char *cptr, void *desc)
 uint32 mc = 0;
 uint32 i;
 
-if ((val <= 0) || (val > MAXMEMSIZE32) || ((val & 0xFFFF) != 0))
+if ((val <= 0) || (((unsigned)val) > MAXMEMSIZE32) || ((val & 0xFFFF) != 0))
     return SCPE_ARG;
 for (i = val; i < MEMSIZE; i = i + 4)
     mc = mc | M[i >> 2];
@@ -2339,7 +2332,6 @@ return SCPE_OK;
 
 void set_r_display (uint32 *rbase)
 {
-extern REG *find_reg (char *cptr, char **optr, DEVICE *dptr);
 REG *rptr;
 int32 i;
 
@@ -2400,8 +2392,6 @@ char *cptr = (char *) desc;
 t_value sim_eval[3];
 t_stat r;
 InstHistory *h;
-extern t_stat fprint_sym (FILE *ofile, t_addr addr, t_value *val,
-    UNIT *uptr, int32 sw);
 
 if (hst_lnt == 0)                                       /* enabled? */
     return SCPE_NOFNC;

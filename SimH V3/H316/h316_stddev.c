@@ -1,6 +1,6 @@
 /* h316_stddev.c: Honeywell 316/516 standard devices
 
-   Copyright (c) 1999-2008, Robert M. Supnik
+   Copyright (c) 1999-2015, Robert M. Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -28,6 +28,11 @@
    tty          316/516-33 teleprinter
    clk/options  316/516-12 real time clocks/internal options
 
+   10-Sep-13    RMS     Fixed several bugs in the TTY logic
+                        Added SET file type commands to PTR/PTP
+   03-Jul-13    RLA     compatibility changes for extended interrupts
+   23-May-13    RLA     Move the SMK/OTK to h316_cpu (where it belongs!)
+                        Allow the CLK device to be disabled
    09-Jun-07    RMS     Fixed bug in clock increment (Theo Engel)
    30-Sep-06    RMS     Fixed handling of non-printable characters in KSR mode
    03-Apr-06    RMS     Fixed bugs in punch state handling (Theo Engel)
@@ -50,21 +55,37 @@
    07-Sep-01    RMS     Moved function prototypes
 
    The ASR-33/35 reader/punch logic, and the ASCII file support for all paper tape
-   devices, logic is taken, with grateful thanks, from Adrian Wise's H316 emulator.
+   devices, is taken, with grateful thanks, from Adrian Wise's H316 emulator.
+
+   Teletype transitions:
+
+   - An OCP '1 starts an output sequence, unconditionally. Ready and Busy are both
+     set, and a dummy output sequence is started.
+   - If OTA "overtakes" the dummy output sequence, the dummy sequence is stopped,
+     and normal output takes place.
+   - If OTA is not issued before the dummy sequence completes, Busy is cleared.
+     Because Ready is set, an interrupt is requested.
+   - An OCP '0 starts an input sequence, unconditionally. Ready and Busy are both
+     cleared.
+   - When a character is available (either from the keyboard or the reader), Busy
+     is set.
+   - At the end of a delay, Busy is cleared and Ready is set, and an interrupt is
+     requested.
+   - At all times, the interrupt flag reflects the equation Ready & ~Busy.
 
    Teletype reader transitions:
 
-   - SET TTY2 START puts the reader in RUN
-   - XOFF from keyboard/reader stops the reader after 1-2 more characters are read
-   - XON from program starts the reader
-   - Detach, SET TTY2 STOP, or end of file stops the reader
+   - SET TTY2 START puts the reader in RUN.
+   - XOFF from keyboard/reader stops the reader after 1-2 more characters are read.
+   - XON from program starts the reader.
+   - Detach, SET TTY2 STOP, or end of file stops the reader.
 
    Teletype punch transitions:
 
-   - SET TTY3 START puts the punch in RUN
-   - XOFF from program stops the punch after 1 more character is punched
-   - TAPE from program starts the punch after 1 character delay
-   - Detach or SET TTY3 STOP stops the punch
+   - SET TTY3 START puts the punch in RUN.
+   - XOFF from program stops the punch after 1 more character is punched.
+   - TAPE from program starts the punch after 1 character delay.
+   - Detach or SET TTY3 STOP stops the punch.
 */
 
 #include "h316_defs.h"
@@ -88,7 +109,6 @@ extern int32 PC;
 extern int32 stop_inst;
 extern int32 C, dp, ext, extoff_pending, sc;
 extern int32 dev_int, dev_enb;
-extern int32 sim_switches;
 extern UNIT cpu_unit;
 
 uint32 ptr_motion = 0;                                  /* read motion */
@@ -99,9 +119,13 @@ int32 ptp_ptime;
 uint32 ttr_stopioe = 0;
 uint32 tty_mode = 0;                                    /* input (0), output (1) */
 uint32 tty_buf = 0;                                     /* tty buffer */
+uint32 tty_ready = 1;                                   /* tty ready */
+uint32 tty_busy = 0;                                    /* tty busy */
+uint32 tty_2nd = 0;                                     /* tty input second state */
 uint32 ttr_xoff_read = 0;
 uint32 ttp_tape_rcvd = 0;
 uint32 ttp_xoff_rcvd = 0;
+int32 tty_busy_wait = SERIAL_IN_WAIT;                   /* busy state on input */
 int32 clk_tps = 60;                                     /* ticks per second */
 
 int32 ptrio (int32 inst, int32 fnc, int32 dat, int32 dev);
@@ -136,7 +160,7 @@ t_stat ttp_write (int32 c);
    ptr_reg      PTR register list
 */
 
-DIB ptr_dib = { PTR, IOBUS, 1, &ptrio };
+DIB ptr_dib = { PTR, 1, IOBUS, IOBUS, INT_V_PTR, INT_V_NONE, &ptrio, 0 };
 
 UNIT ptr_unit = {
     UDATA (&ptr_svc, UNIT_SEQ+UNIT_ATTABLE+UNIT_ROABLE, 0),
@@ -156,8 +180,12 @@ REG ptr_reg[] = {
     };
 
 MTAB pt_mod[] = {
-    { UNIT_ATT+UNIT_ASC+UNIT_UASC, UNIT_ATT+UNIT_ASC, "ASCII", NULL },
-    { UNIT_ATT+UNIT_ASC+UNIT_UASC, UNIT_ATT+UNIT_ASC+UNIT_UASC, "Unix ASCII", NULL },
+    { UNIT_ATTABLE+UNIT_ASC+UNIT_UASC, UNIT_ATTABLE, NULL, "BINARY",
+      &ttrp_set_mode },
+    { UNIT_ATTABLE+UNIT_ASC+UNIT_UASC, UNIT_ATTABLE+UNIT_ASC, "ASCII", "ASCII",
+      &ttrp_set_mode },
+    { UNIT_ATTABLE+UNIT_ASC+UNIT_UASC, UNIT_ATTABLE+UNIT_ASC+UNIT_UASC, "Unix ASCII", "UASCII",
+      &ttrp_set_mode },
     { 0 }
     };
 
@@ -177,7 +205,7 @@ DEVICE ptr_dev = {
    ptp_reg      PTP register list
 */
 
-DIB ptp_dib = { PTP, IOBUS, 1, &ptpio };
+DIB ptp_dib = { PTP, 1, IOBUS, IOBUS, INT_V_PTP, INT_V_NONE, &ptpio, 0 };
 
 UNIT ptp_unit = {
     UDATA (&ptp_svc, UNIT_SEQ+UNIT_ATTABLE, 0), SERIAL_OUT_WAIT
@@ -217,7 +245,7 @@ DEVICE ptp_dev = {
 #define TTR     2
 #define TTP     3
 
-DIB tty_dib = { TTY, IOBUS, 1, &ttyio };
+DIB tty_dib = { TTY, 1, IOBUS, IOBUS, INT_V_TTY, INT_V_NONE, &ttyio, 0 };
 
 UNIT tty_unit[] = {
     { UDATA (&tti_svc, TT_MODE_KSR, 0), KBD_POLL_WAIT },
@@ -228,11 +256,15 @@ UNIT tty_unit[] = {
 
 REG tty_reg[] = {
     { ORDATA (BUF, tty_buf, 8) },
+    { ORDATA (IN2ND, tty_2nd, 9) },
     { FLDATA (MODE, tty_mode, 0) },
-    { FLDATA (READY, dev_int, INT_V_TTY) },
+    { FLDATA (READY, tty_ready, 0) },
+    { FLDATA (BUSY, tty_busy, 0) },
+    { FLDATA (INT, dev_int, INT_V_TTY) },
     { FLDATA (ENABLE, dev_enb, INT_V_TTY) },
     { DRDATA (KPOS, tty_unit[TTI].pos, T_ADDR_W), PV_LEFT },
     { DRDATA (KTIME, tty_unit[TTI].wait, 24), REG_NZ + PV_LEFT },
+    { DRDATA (KBTIME, tty_busy_wait, 24), REG_NZ + PV_LEFT },
     { DRDATA (TPOS, tty_unit[TTO].pos, T_ADDR_W), PV_LEFT },
     { DRDATA (TTIME, tty_unit[TTO].wait, 24), REG_NZ + PV_LEFT },
     { ORDATA (RXOFF, ttr_xoff_read, 2), REG_HIDDEN },
@@ -278,7 +310,7 @@ DEVICE tty_dev = {
    clk_reg      CLK register list
 */
 
-DIB clk_dib = { CLK_KEYS, IOBUS, 1, &clkio };
+DIB clk_dib = { CLK_KEYS, 1, IOBUS, IOBUS, INT_V_CLK, INT_V_NONE, &clkio, 0 };
 
 UNIT clk_unit = { UDATA (&clk_svc, 0, 0), 16000 };
 
@@ -305,7 +337,7 @@ DEVICE clk_dev = {
     1, 0, 0, 0, 0, 0,
     NULL, NULL, &clk_reset,
     NULL, NULL, NULL,
-    &clk_dib, 0
+    &clk_dib, /* [RLA] */ DEV_DISABLE
     };
 
 /* Paper tape reader: IO routine */
@@ -315,16 +347,16 @@ int32 ptrio (int32 inst, int32 fnc, int32 dat, int32 dev)
 switch (inst) {                                         /* case on opcode */
 
     case ioOCP:                                         /* OCP */
-        if (fnc & 016)                                  /* only fnc 0,1 */
+        if ((fnc & 016) != 0)                           /* only fnc 0,1 */
             return IOBADFNC (dat);
         ptr_motion = fnc ^ 1;
-        if (fnc)                                        /* fnc 1? stop */
+        if (fnc != 0)                                   /* fnc 1? stop */
             sim_cancel (&ptr_unit);
         else sim_activate (&ptr_unit, ptr_unit.wait);   /* fnc 0? start */
         break;
 
     case ioSKS:                                         /* SKS */
-        if (fnc & 013)                                  /* only fnc 0,4 */
+        if ((fnc & 013) != 0)                           /* only fnc 0,4 */
             return IOBADFNC (dat);
         if (((fnc == 000) && TST_INT (INT_PTR)) ||      /* fnc 0? skip rdy */
             ((fnc == 004) && !TST_INTREQ (INT_PTR)))    /* fnc 4? skip !int */
@@ -332,7 +364,7 @@ switch (inst) {                                         /* case on opcode */
         break;
 
     case ioINA:                                         /* INA */
-        if (fnc)                                        /* only fnc 0 */
+        if (fnc != 0)                                   /* only fnc 0 */
             return IOBADFNC (dat);
         if (TST_INT (INT_PTR)) {                        /* ready? */
             CLR_INT (INT_PTR);                          /* clear ready */
@@ -362,7 +394,7 @@ else {
     if ((c = getc (uptr->fileref)) == EOF) {            /* read byte */
         if (feof (uptr->fileref)) {
             if (ptr_stopioe)
-                printf ("PTR end of file\n");
+                sim_printf ("PTR end of file\n");
             else return SCPE_OK;
             }
         else perror ("PTR I/O error");
@@ -372,7 +404,7 @@ else {
     if ((uptr->flags & UNIT_UASC) && (c == '\n')) {     /* Unix newline? */
         c = 0215;                                       /* insert CR */
         uptr->STA |= LF_PEND;                           /* lf pending */
-		}
+        }
     else if ((uptr->flags & UNIT_ASC) && (c != 0))      /* ASCII? */
         c = c | 0200;
     uptr->pos = ftell (uptr->fileref);                  /* update pos */
@@ -382,15 +414,16 @@ uptr->buf = c & 0377;                                   /* get byte */
 return SCPE_OK;
 }
 
-/* Paper tape attach routine - set or clear ASC/UASC flags if specified */
+/* Paper tape attach routine - set or clear ASC/UASC flags if specified
+   Can be called for TTY units at well, hence, check for attachability */
 
 t_stat pt_attach (UNIT *uptr, char *cptr)
 {
 t_stat r;
 
-if (!(uptr->flags & UNIT_ATTABLE))
+if (!(uptr->flags & UNIT_ATTABLE))                      /* not tti,tto */
     return SCPE_NOFNC;
-if (r = attach_unit (uptr, cptr))
+if ((r = attach_unit (uptr, cptr)))
     return r;
 if (sim_switches & SWMASK ('A'))                        /* -a? ASCII */
     uptr->flags |= UNIT_ASC;
@@ -406,7 +439,10 @@ return r;
 
 t_stat pt_detach (UNIT *uptr)
 {
-if (!(sim_switches & SIM_SW_REST)) sim_cancel (uptr);   /* stop motion */
+if (!(uptr->flags & UNIT_ATTABLE))                      /* not tti,tto */
+    return SCPE_NOFNC;
+if (!(sim_switches & SIM_SW_REST))                      /* stop motion */
+     sim_cancel (uptr);
 uptr->STA = 0;
 return detach_unit (uptr);
 }
@@ -449,7 +485,7 @@ static const int32 pboot[] = {
 
 t_stat ptr_boot (int32 unitno, DEVICE *dptr)
 {
-int32 i;
+size_t i;
 
 for (i = 0; i < PBOOT_SIZE; i++)                        /* copy bootstrap */
     M[PBOOT_START + i] = pboot[i];
@@ -464,9 +500,9 @@ int32 ptpio (int32 inst, int32 fnc, int32 dat, int32 dev)
 switch (inst) {                                         /* case on opcode */
 
     case ioOCP:                                         /* OCP */
-        if (fnc & 016)                                  /* only fnc 0,1 */
+        if ((fnc & 016) != 0)                           /* only fnc 0,1 */
             return IOBADFNC (dat);
-        if (fnc) {                                      /* fnc 1? pwr off */
+        if (fnc != 0) {                                 /* fnc 1? pwr off */
             CLR_INT (INT_PTP);                          /* not ready */
             ptp_power = 0;                              /* turn off power */
             sim_cancel (&ptp_unit);                     /* stop punch */
@@ -476,7 +512,7 @@ switch (inst) {                                         /* case on opcode */
         break;
 
     case ioSKS:                                         /* SKS */
-        if ((fnc & 012) || (fnc == 005))                /* only 0, 1, 4 */
+        if (((fnc & 012) !=0) || (fnc == 005))          /* only 0, 1, 4 */
             return IOBADFNC (dat);
         if (((fnc == 000) && TST_INT (INT_PTP)) ||      /* fnc 0? skip rdy */
             ((fnc == 001) &&                            /* fnc 1? skip ptp on */
@@ -486,7 +522,7 @@ switch (inst) {                                         /* case on opcode */
         break;
 
     case ioOTA:                                         /* OTA */
-        if (fnc)                                        /* only fnc 0 */
+        if (fnc != 0)                                   /* only fnc 0 */
             return IOBADFNC (dat);
         if (TST_INT (INT_PTP)) {                        /* if ptp ready */
             CLR_INT (INT_PTP);                          /* clear ready */
@@ -550,25 +586,29 @@ int32 ttyio (int32 inst, int32 fnc, int32 dat, int32 dev)
 switch (inst) {                                         /* case on opcode */
 
     case ioOCP:                                         /* OCP */
-        if (fnc & 016)                                  /* only fnc 0,1 */
+        if ((fnc & 016) != 0)                           /* only fnc 0,1 */
             return IOBADFNC (dat);
-        if (fnc && (tty_mode == 0)) {                   /* input to output? */
-            if (!sim_is_active (&tty_unit[TTO]))        /* set ready */
-                SET_INT (INT_TTY);
+        if (fnc != 0) {                                 /* output */
+            tty_ready = 1;                              /* set rdy, busy */
+            tty_busy = 1;                               /* start dummy out */
             tty_mode = 1;                               /* mode is output */
+            sim_activate (&tty_unit[TTO], tty_unit[TTO].wait);
             }
-        else if ((fnc == 0) && tty_mode) {              /* output to input? */
-            CLR_INT (INT_TTY);                          /* clear ready */
+        else {                                          /* input? */
+            tty_ready = 0;                              /* clr rdy, busy */
+            tty_busy = 0;
             tty_mode = 0;                               /* mode is input */
+            tty_2nd = 0;
+/*          sim_cancel (&tty_unit[TTO]);              *//* cancel output */
             }
+        CLR_INT (INT_TTY);                              /* clear intr */
         break;
 
     case ioSKS:                                         /* SKS */
-        if (fnc & 012)                                  /* fnc 0,1,4,5 */
+        if ((fnc & 012) != 0)                           /* fnc 0,1,4,5 */
             return IOBADFNC (dat);
-        if (((fnc == 000) && TST_INT (INT_TTY)) ||      /* fnc 0? skip rdy */
-            ((fnc == 001) &&                            /* fnc 1? skip !busy */
-                (!tty_mode || !sim_is_active (&tty_unit[TTO]))) ||
+        if (((fnc == 000) && tty_ready) ||              /* fnc 0? skip rdy */
+            ((fnc == 001) && !tty_busy) ||              /* fnc 1? skip !busy */
             ((fnc == 004) && !TST_INTREQ (INT_TTY)) ||  /* fnc 4? skip !int */
             ((fnc == 005) && (tty_mode ||               /* fnc 5? skip !xoff */
                 ((tty_buf & 0177) != XOFF))))           /* input & XOFF char */
@@ -576,30 +616,30 @@ switch (inst) {                                         /* case on opcode */
         break;
 
     case ioINA:                                         /* INA */
-        if (fnc & 005)                                  /* only 0,2 */
+        if ((fnc & 005) != 0)                           /* only 0,2 */
             return IOBADFNC (dat);
-        if (TST_INT (INT_TTY)) {                        /* ready? */
-            if (tty_mode == 0)                          /* inp? clear rdy */
-                CLR_INT (INT_TTY);
+        if (tty_ready) {                                /* ready? */
+            tty_ready = 0;                              /* clear rdy */
+            CLR_INT (INT_TTY);                          /* no interrupt */
             return IOSKIP (dat |
                 (tty_buf & ((fnc & 002)? 077: 0377)));
             }
         break;
 
     case ioOTA:
-        if (fnc & 015)                                  /* only 0,2 */
+        if ((fnc & 015) != 0)                           /* only 0,2 */
             return IOBADFNC (dat);
-        if (TST_INT (INT_TTY)) {                        /* ready? */
+        if (tty_ready) {                                /* ready? */
             tty_buf = dat & 0377;                       /* store char */
             if (fnc & 002) {                            /* binary mode? */
                 tty_buf = tty_buf | 0100;               /* set ch 7 */
                 if (tty_buf & 040)
                     tty_buf = tty_buf & 0277;
                 }
-            if (tty_mode) {
-                sim_activate (&tty_unit[TTO], tty_unit[TTO].wait);
-                CLR_INT (INT_TTY);
-                }
+            tty_ready = 0;                              /* clear ready */
+            tty_busy = 1;                               /* set busy */
+            CLR_INT (INT_TTY);                          /* clr int */
+            sim_activate (&tty_unit[TTO], tty_unit[TTO].wait);
             return IOSKIP (dat);
             }
         break;
@@ -616,6 +656,14 @@ int32 out, c;
 UNIT *ruptr = &tty_unit[TTR];
 
 sim_activate (uptr, uptr->wait);                        /* continue poll */
+if (tty_2nd) {                                          /* char pending? */
+    tty_buf = tty_2nd & 0377;
+    tty_2nd = 0;
+    tty_busy = 0;                                       /* clr busy */
+    tty_ready = 1;                                      /* set ready */
+    SET_INT (INT_TTY);                                  /* set int */
+    return SCPE_OK;
+    }
 if ((c = sim_poll_kbd ()) >= SCPE_KFLAG) {              /* character? */
     out = c & 0177;                                     /* mask echo to 7b */
     if (c & SCPE_BREAK)                                 /* break? */
@@ -636,7 +684,7 @@ else if ((ruptr->flags & UNIT_ATT) &&                   /* TTR attached */
             if (feof (ruptr->fileref)) {                /* EOF? */
                 ruptr->STA &= ~RUNNING;                 /* stop reader */
                 if (ttr_stopioe)
-                    printf ("TTR end of file\n");
+                    sim_printf ("TTR end of file\n");
                 else return SCPE_OK;
                 }
             else perror ("TTR I/O error");
@@ -663,12 +711,15 @@ else if ((ruptr->flags & UNIT_ATT) &&                   /* TTR attached */
     out = c;                                            /* echo char */
     }
 else return SCPE_OK;                                    /* no char */
-if (tty_mode == 0) {                                    /* input mode? */
-    tty_buf = c & 0377;                                 /* put char in buf */
-    SET_INT (INT_TTY);                                  /* set flag */
-    }
 tto_write (out);                                        /* echo to printer */
-return ttp_write (out);                                 /* and punch */
+ttp_write (out);                                        /* and punch */
+if (tty_mode == 0) {                                    /* input mode? */
+    tty_2nd = (c & 0377) | 0400;                        /* flag 2nd state */
+    tty_busy = 1;                                       /* set busy */
+    CLR_INT (INT_TTY);                                  /* clear interrupt */
+    sim_activate_abs (uptr, tty_busy_wait);             /* sched busy period */
+    }
+return SCPE_OK;
 }
 
 /* Output service - printer and punch */
@@ -680,6 +731,11 @@ UNIT *ruptr = &tty_unit[TTR];
 UNIT *puptr = &tty_unit[TTP];
 t_stat r;
 
+if ((tty_ready != 0) && (tty_busy != 0)) {              /* dummy cycle? */
+    tty_busy = 0;                                       /* clr busy */
+    SET_INT (INT_TTY);                                  /* set intr */
+    return SCPE_OK;
+    }
 c7b = tty_buf & 0177;
 if (ttp_tape_rcvd != 0) {                               /* prev = tape? */
     ttp_tape_rcvd--;                                    /* decrement state */
@@ -705,7 +761,9 @@ if ((r = tto_write (tty_buf)) != SCPE_OK) {             /* print; error? */
     }
 if ((r = ttp_write (tty_buf)) != SCPE_OK)               /* punch; error? */
     return r;
-SET_INT (INT_TTY);                                      /* set done flag */
+tty_busy = 0;                                           /* clr busy, set rdy */
+tty_ready = 1;
+SET_INT (INT_TTY);                                      /* set intr */
 return SCPE_OK;
 }
 
@@ -757,6 +815,9 @@ CLR_INT (INT_TTY);                                      /* clear ready, enb */
 CLR_ENB (INT_TTY);
 tty_mode = 0;                                           /* mode = input */
 tty_buf = 0;
+tty_2nd = 0;
+tty_ready = 1;
+tty_busy = 0;
 ttr_xoff_read = 0;                                      /* clr TTR, TTP flags */
 ttp_tape_rcvd = 0;
 ttp_xoff_rcvd = 0;
@@ -784,7 +845,7 @@ return SCPE_OK;
 
 t_stat ttrp_set_mode (UNIT *uptr, int32 val, char *cptr, void *desc)
 {
-if (!(uptr->flags & UNIT_ATTABLE))                      /* TTR, TTP only */
+if (!(uptr->flags & UNIT_ATTABLE))                      /* PTR, PTP, TTR, TTP only */
     return SCPE_NOFNC;
 if (!(val & UNIT_UASC))
     uptr->STA &= ~LF_PEND;
@@ -799,10 +860,10 @@ if (!(uptr->flags & UNIT_ATTABLE))                      /* TTR, TTP only */
     return SCPE_NOFNC;
 if (!(uptr->flags & UNIT_ATT))                          /* must be attached */
     return SCPE_UNATT;
-if (val)                                                /* start? set running */
+if (val != 0)                                           /* start? set running */
     uptr->STA |= RUNNING;
 else uptr->STA &= ~RUNNING;                             /* stop? clr running */
-if (uptr->flags & UNIT_ROABLE)                          /* TTR? cancel stop */
+if ((uptr->flags & UNIT_ROABLE) != 0)                   /* TTR? cancel stop */
     ttr_xoff_read = 0;
 else ttp_tape_rcvd = ttp_xoff_rcvd = 0;                 /* TTP? cancel all */
 return SCPE_OK;
@@ -815,10 +876,10 @@ int32 clkio (int32 inst, int32 fnc, int32 dat, int32 dev)
 switch (inst) {                                         /* case on opcode */
 
     case ioOCP:                                         /* OCP */
-        if (fnc & 015)                                  /* only fnc 0,2 */
+        if ((fnc & 015) != 0)                           /* only fnc 0,2 */
             return IOBADFNC (dat);
         CLR_INT (INT_CLK);                              /* reset ready */
-        if (fnc)                                        /* fnc = 2? stop */
+        if (fnc != 0)                                   /* fnc = 2? stop */
             sim_cancel (&clk_unit);
         else {                                          /* fnc = 0? */
             if (!sim_is_active (&clk_unit))
@@ -831,33 +892,29 @@ switch (inst) {                                         /* case on opcode */
         if (fnc == 000) {                               /* clock skip !int */
             if (!TST_INTREQ (INT_CLK))
                 return IOSKIP (dat);
-			}
-        else if ((fnc & 007) == 002) {                  /* mem parity? */
-            if (((fnc == 002) && !TST_INT (INT_MPE)) ||
-                ((fnc == 012) && TST_INT (INT_MPE)))
-                return IOSKIP (dat);
             }
+        // [RLA]  I'm not sure where this comes from - I can't find any H316
+        // [RLA] documentation that supports this.  According to my manual,
+        // [RLA] skip on memory parity error (SPS) is opcode 101200 and skip
+        // [RLA] on no parity error (SPN) is 100200.  Neither of these look
+        // [RLA] like an SKS to device 20.  
+        //
+        // [RLA]   In any case this code can't stay here since the clock can
+        // [RLA] now be disabled.  It'll have to move to h316_cpu.c no matter
+        // [RLA] how it's supposed to work.
+        //
+        // [RLA] else if ((fnc & 007) == 002) {             /* mem parity? */
+        // [RLA]     if (((fnc == 002) && !TST_INT (INT_MPE)) ||
+        // [RLA]         ((fnc == 012) && TST_INT (INT_MPE)))
+        // [RLA]         return IOSKIP (dat);
+        // [RLA]     }
         else return IOBADFNC (dat);                     /* invalid fnc */
         break;
 
     case ioOTA:                                         /* OTA */
-        if (fnc == 000)                                 /* SMK */
-            dev_enb = dat;
-        else if (fnc == 010) {                          /* OTK */
-            C = (dat >> 15) & 1;                        /* set C */
-            if (cpu_unit.flags & UNIT_HSA)              /* HSA included? */
-                dp = (dat >> 14) & 1;                   /* set dp */
-            if (cpu_unit.flags & UNIT_EXT) {            /* ext opt? */
-                if (dat & 020000) {                     /* ext set? */
-                    ext = 1;                            /* yes, set */
-                    extoff_pending = 0;
-                    }
-                else extoff_pending = 1;                /* no, clr later */
-                }
-            sc = dat & 037;                             /* set sc */
-            }
-        else return IOBADFNC (dat);
-        break;
+        // [RLA]   This case never gets here - OTA with device 20 is the SMK or
+        // [RLA] OTK instructions, and those are handled directly in h316_cpu.c
+        return IOBADFNC (dat);
         }
 
 return dat;
@@ -871,7 +928,8 @@ t_stat clk_svc (UNIT *uptr)
 M[M_CLK] = (M[M_CLK] + 1) & DMASK;                      /* increment mem ctr */
 if (M[M_CLK] == 0)                                      /* = 0? set flag */
     SET_INT (INT_CLK);
-sim_activate (&clk_unit, sim_rtc_calb (clk_tps));       /* reactivate */
+sim_rtc_calb (clk_tps);                                 /* recalibrate */
+sim_activate_after (uptr, 1000000/clk_tps);             /* reactivate unit */
 return SCPE_OK;
 }
 
@@ -879,6 +937,7 @@ return SCPE_OK;
 
 t_stat clk_reset (DEVICE *dptr)
 {
+sim_register_clock_unit (&clk_unit);                    /* declare clock unit */
 CLR_INT (INT_CLK);                                      /* clear ready, enb */
 CLR_ENB (INT_CLK);
 sim_cancel (&clk_unit);                                 /* deactivate unit */
