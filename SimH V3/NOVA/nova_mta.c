@@ -1,6 +1,6 @@
 /* nova_mta.c: NOVA magnetic tape simulator
 
-   Copyright (c) 1993-2017, Robert M. Supnik
+   Copyright (c) 1993-2022, Robert M. Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,8 @@
 
    mta          magnetic tape
 
+   26-Mar-22    RMS     Added extra case points for new MTSE definitions
+   23-Mar-20    RMS     Unload should call sim_tape_detach (Mark Pizzolato)
    13-Mar-17    RMS     Annotated fall through in switch
    04-Jul-07    BKR     fixed boot code to properly boot self-boot tapes;
                         boot routine now uses standard DG APL boot code;
@@ -296,7 +298,7 @@ switch (pulse) {                                        /* decode IR<8:9> */
                 ~(STA_BOT | STA_EOF | STA_EOT | STA_RDY)) | STA_REW);
             sim_activate (uptr, mta_rwait);             /* start IO */
             if (c == CU_UNLOAD)
-                detach_unit (uptr);
+                sim_tape_detach (uptr);
             }
         else {
             mta_sta = 0;                                /* clear errors */
@@ -513,6 +515,7 @@ switch (st) {
     case MTSE_FMT:                                      /* illegal fmt */
         mta_upddsta (uptr, uptr->USTAT | STA_WLK | STA_RDY);
                                                         /* fall through */
+    default:
     case MTSE_UNATT:                                    /* unattached */
         mta_sta = mta_sta | STA_ILL;
                                                         /* fall through */

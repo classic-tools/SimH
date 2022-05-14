@@ -1,6 +1,6 @@
 /* alpha_cpu.c: Alpha CPU simulator
 
-   Copyright (c) 2003-2017, Robert M Supnik
+   Copyright (c) 2003-2020, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -23,6 +23,7 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   03-Mar-2020  RMS     Fixed DMAPEN register declaration (Mark Pizzolato)
    05-Oct-2017  RMS     Fixed reversed definitions of FTOIS, FTOIT (Maurice Marks)
    27-May-2017  RMS     Fixed MIN/MAXx4 iteration counts (Mark Pizzolato)
    26-May-2017  RMS     Fixed other reversed definitions in opcode 12
@@ -326,7 +327,7 @@ REG cpu_reg[] = {
     { FLDATA (VAXF, vax_flag, 0) },
     { FLDATA (PALMODE, pal_mode, 0) },
     { HRDATA (PALTYPE, pal_type, 2), REG_HRO },
-    { HRDATA (DMAPEN, dmapen, 0) },
+    { FLDATA (DMAPEN, dmapen, 0) },
     { HRDATA (AMASK, arch_mask, 13), REG_RO },
     { HRDATA (IMPLV, impl_ver, 2), REG_RO },
     { BRDATA (PCQ, pcq, 16, 32, PCQ_SIZE), REG_RO+REG_CIRC },
@@ -1662,10 +1663,13 @@ vax_flag = 0;
 lock_flag = 0;
 trap_summ = 0;
 trap_mask = 0;
-if (M == NULL) M = (t_uint64 *) calloc (((uint32) MEMSIZE) >> 3, sizeof (t_uint64));
-if (M == NULL) return SCPE_MEM;
+if (M == NULL)
+    M = (t_uint64 *) calloc (((uint32) MEMSIZE) >> 3, sizeof (t_uint64));
+if (M == NULL)
+    return SCPE_MEM;
 pcq_r = find_reg ("PCQ", NULL, dptr);
-if (pcq_r) pcq_r->qptr = 0;
+if (pcq_r)
+    pcq_r->qptr = 0;
 else return SCPE_IERR;
 sim_brk_types = sim_brk_dflt = SWMASK ('E');
 return SCPE_OK;
@@ -1685,7 +1689,8 @@ t_stat cpu_ex (t_value *vptr, t_addr addr, UNIT *uptr, int32 sw)
 if (vptr == NULL) return SCPE_ARG;
 if (sw & SWMASK ('V') && dmapen) {
     addr = trans_c (addr);
-    if (addr == M64) return STOP_MME;
+    if (addr == M64)
+        return STOP_MME;
     }
 if (ADDR_IS_MEM (addr)) {
     *vptr = ReadPQ (addr);
@@ -1700,7 +1705,8 @@ t_stat cpu_dep (t_value val, t_addr addr, UNIT *uptr, int32 sw)
 {
 if (sw & SWMASK ('V') && dmapen) {
     addr = trans_c (addr);
-    if (addr == M64) return STOP_MME;
+    if (addr == M64)
+        return STOP_MME;
     }
 if (ADDR_IS_MEM (addr)) {
     WritePQ (addr, val);
@@ -1721,7 +1727,8 @@ for (i = val; i < MEMSIZE; i = i + 8) mc = mc | M[i >> 3];
 if ((mc != 0) && !get_yn ("Really truncate memory [N]?", FALSE))
     return SCPE_OK;
 nM = (t_uint64 *) calloc (val >> 3, sizeof (t_uint64));
-if (nM == NULL) return SCPE_MEM;
+if (nM == NULL)
+    return SCPE_MEM;
 clim = (uint32) ((((uint32) val) < MEMSIZE)? val: MEMSIZE);
 for (i = 0; i < clim; i = i + 8) nM[i >> 3] = M[i >>3];
 free (M);
@@ -1834,7 +1841,8 @@ if (h_fmt[op] & H_EA) {                                 /* ea? */
     }
 else fputs ("                ", st);
 fputc (' ', st);
-if (pc & 4) sim_val = ((t_uint64) ir) << 32;
+if (pc & 4)
+    sim_val = ((t_uint64) ir) << 32;
 else sim_val = ir;
 if ((fprint_sym (st, pc & ~03, &sim_val, &cpu_unit, SWMASK ('M'))) > 0)
     fprintf (st, "(undefined) %08X", ir);
@@ -1854,7 +1862,8 @@ InstHistory *h;
 if (hst_lnt == 0) return SCPE_NOFNC;                    /* enabled? */
 if (cptr) {
     lnt = (int32) get_uint (cptr, 10, hst_lnt, &r);
-    if ((r != SCPE_OK) || (lnt == 0)) return SCPE_ARG;
+    if ((r != SCPE_OK) || (lnt == 0))
+        return SCPE_ARG;
     }
 else lnt = hst_lnt;
 di = hst_p - lnt;                                       /* work forward */

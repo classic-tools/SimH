@@ -1,6 +1,6 @@
 /* pdp10_tu.c - PDP-10 RH11/TM03/TU45 magnetic tape simulator
 
-   Copyright (c) 1993-2018, Robert M Supnik
+   Copyright (c) 1993-2022, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,9 @@
 
    tu           RH11/TM03/TU45 magtape
 
+   26-Mar-22    RMS     Added extra case points for new MTSE definitions
+   07-Sep-20    RMS     Fixed || -> | in macro (Mark Pizzolato)
+   23-Mar-20    RMS     Unload should call sim_tape_detach (Mark Pizzolato)
    12-Jan-18    RMS     Fixed missing () in logical test (Mark Pizzolato)
    29-Dec-17    RMS     Read tape mark must set Massbus EXC (TRE)
    28-Mar-17    RMS     Documented switch fall through case (COVERITY)
@@ -266,7 +269,7 @@
 #define TC_ACC          0100000                         /* accelerating NI */
 #define TC_RW           0013777
 #define TC_MBZ          0004000
-#define TC_RIP          ((TC_800 << TC_V_DEN) || (TC_10C << TC_V_FMT))
+#define TC_RIP          ((TC_800 << TC_V_DEN) | (TC_10C << TC_V_FMT))
 #define GET_DEN(x)      (((x) >> TC_V_DEN) & TC_M_DEN)
 #define GET_FMT(x)      (((x) >> TC_V_FMT) & TC_M_FMT)
 #define GET_DRV(x)      (((x) >> TC_V_UNIT) & TC_M_UNIT)
@@ -697,7 +700,7 @@ switch (fnc) {                                          /* case on function */
             set_tuer (ER_UNS);
             break;
             }
-        detach_unit (uptr);
+        sim_tape_detach (uptr);
         uptr->USTAT = FS_REW;
         sim_activate (uptr, tu_time);
         tucs1 = tucs1 & ~CS1_GO;
@@ -1095,6 +1098,7 @@ switch (st) {
 
     case MTSE_FMT:                                      /* illegal fmt */
     case MTSE_UNATT:                                    /* not attached */
+    default:                                            /* unknown error */
         set_tuer (ER_NXF);                              /* can't execute */
         if (qdt)                                        /* data xfr? set TRE */
             tucs1 = tucs1 | CS1_TRE;

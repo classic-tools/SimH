@@ -1,6 +1,6 @@
 /* sim_sock.c: OS-dependent socket routines
 
-   Copyright (c) 2001-2019, Robert M Supnik
+   Copyright (c) 2001-2010, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -23,7 +23,6 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
-   22-Nov-19    MP      Latest 4.X changes
    15-Oct-12    MP      Added definitions needed to detect possible tcp 
                         connect failures
    25-Sep-12    MP      Reworked for RFC3493 interfaces supporting IPv6 and IPv4
@@ -56,7 +55,7 @@ extern "C" {
 #include <ws2tcpip.h>
 #endif
 
-#ifdef HAVE_DLOPEN
+#ifdef SIM_HAVE_DLOPEN
 #include <dlfcn.h>
 #endif
 
@@ -263,6 +262,7 @@ if (service) {
     char *c;
 
     port = strtoul(service, &c, 10);
+    port = htons((unsigned short)port);
     if ((port == 0) || (*c != '\0')) {
         switch (hints->ai_socktype)
             {
@@ -432,6 +432,10 @@ return 0;
 #if !defined(IPV6_V6ONLY)           /* Older XP environments may not define IPV6_V6ONLY */
 #define IPV6_V6ONLY           27    /* Treat wildcard bind as AF_INET6-only. */
 #endif
+#if defined(TEST_INFO_STUBS)
+#undef IPV6_V6ONLY
+#undef AF_INET6
+#endif
 /* Dynamic DLL load variables */
 #ifdef _WIN32
 static HINSTANCE hLib = 0;                      /* handle to DLL */
@@ -497,27 +501,38 @@ int load_ws2(void) {
 
 /* OS independent routines
 
-   sim_parse_addr       parse a hostname/ipaddress from port and apply defaults and 
-                        optionally validate an address match
+   sim_parse_addr       parse a hostname/ipaddress from port and apply defaults 
+                        and optionally validate an address match
+   sim_addr_acl_check   parse a hostname/ipaddress (possibly in CIDR form) and 
+                        test against an acl
 */
 
 /* sim_parse_addr       host:port
 
-   Presumption is that the input, if it doesn't contain a ':' character is a port specifier.
-   If the host field contains one or more colon characters (i.e. it is an IPv6 address), 
-   the IPv6 address MUST be enclosed in square bracket characters (i.e. Domain Literal format)
+   Presumption is that the cptr input, if it doesn't contain a ':' character 
+   is a port specifier.  If the host field contains one or more colon characters 
+   (i.e. it is an IPv6 address), the IPv6 address MUST be enclosed in square 
+   bracket characters (i.e. Domain Literal format)
 
    Inputs:
         cptr    =       pointer to input string
-        default_host
-                =       optional pointer to default host if none specified
+        host    =       optional pointer to host buffer
         host_len =      length of host buffer
-        default_port
-                =       optional pointer to default port if none specified
+        default_host =  optional pointer to default host if none specified 
+                        in cptr
+        port    =       optional pointer to port buffer
         port_len =      length of port buffer
+        default_port =  optional pointer to default port if none specified 
+                        in cptr
         validate_addr = optional name/addr which is checked to be equivalent
                         to the host result of parsing the other input.  This
                         address would usually be returned by sim_accept_conn.
+                        The validate_addr can also be a CIDR address specifier
+                        which will match against the provided host.
+                        If the validate_addr is provided with cptr as NULL,
+                        the validate_addr is parsed for reasonableness and 
+                        the result returned with 0 indicating a reasonable 
+                        value and -1 indicating a parsing error.
    Outputs:
         host    =       pointer to buffer for IP address (may be NULL), 0 = none
         port    =       pointer to buffer for IP port (may be NULL), 0 = none
@@ -528,7 +543,9 @@ int load_ws2(void) {
                         doesn't match the parsed host)
 */
 
-int sim_parse_addr (const char *cptr, char *host, size_t host_len, const char *default_host, char *port, size_t port_len, const char *default_port, const char *validate_addr)
+int sim_parse_addr (const char *cptr, char *host, size_t host_len, const char *default_host, 
+                                      char *port, size_t port_len, const char *default_port, 
+                                      const char *validate_addr)
 {
 char gbuf[CBUFSIZE], default_pbuf[CBUFSIZE];
 const char *hostp;
@@ -541,7 +558,8 @@ if ((host != NULL) && (host_len != 0))
 if ((port != NULL) && (port_len != 0))
     memset (port, 0, port_len);
 if ((cptr == NULL) || (*cptr == 0)) {
-    if (((default_host == NULL) || (*default_host == 0)) || ((default_port == NULL) || (*default_port == 0)))
+    if (((default_host == NULL) || (*default_host == 0)) || 
+        ((default_port == NULL) || (*default_port == 0)))
         return -1;
     if ((host == NULL) || (port == NULL))
         return -1;                                  /* no place */
@@ -568,7 +586,7 @@ else {                                                  /* No colon in input */
     portp = gbuf;                                       /* Input is the port specifier */
     hostp = (const char *)default_host;                 /* host is defaulted if provided */
     }
-if (portp != NULL) {
+if ((portp != NULL) && (*portp != '\0')) {
     portval = strtoul(portp, &endc, 10);
     if ((*endc == '\0') && ((portval == 0) || (portval > 65535)))
         return -1;                                      /* numeric value too big */
@@ -586,7 +604,7 @@ if (port)                                               /* port wanted? */
         else
             strcpy (port, portp);
         }
-if (hostp != NULL) {
+if ((hostp != NULL) && (*hostp != '\0')) {
     if (']' == hostp[strlen(hostp)-1]) {
         if ('[' != hostp[0])
             return -1;                                  /* invalid domain literal */
@@ -622,16 +640,15 @@ if (validate_addr) {
     struct addrinfo *ai_host, *ai_validate, *ai, *aiv;
     int status;
 
-    if (hostp == NULL)
-        return -1;
-    if (p_getaddrinfo(hostp, NULL, NULL, &ai_host))
+    if ((hostp == NULL) || 
+        (0 != p_getaddrinfo(hostp, NULL, NULL, &ai_host)))
         return -1;
     if (p_getaddrinfo(validate_addr, NULL, NULL, &ai_validate)) {
         p_freeaddrinfo (ai_host);
         return -1;
         }
     status = -1;
-    for (ai = ai_host; ai != NULL; ai = ai->ai_next) {
+    for (ai = ai_host; (ai != NULL) && (status == -1); ai = ai->ai_next) {
         for (aiv = ai_validate; aiv != NULL; aiv = aiv->ai_next) {
             if ((ai->ai_addrlen == aiv->ai_addrlen) &&
                 (ai->ai_family == aiv->ai_family) &&
@@ -654,6 +671,151 @@ if (validate_addr) {
     return status;
     }
 return 0;
+}
+
+/* sim_addr_acl_check   host:port,acl
+
+                        parse a hostname/ipaddress (possibly in CIDR form) and 
+                        test against an acl
+
+   Inputs:
+        validate_addr = This address would usually be returned by 
+                        sim_accept_conn.  The validate_addr can also be a 
+                        CIDR address specifier and in that mode, acl should 
+                        be NULL so that we're just validating the syntax 
+                        of what will likely become an entry in an acl list.
+                        If the validate_addr is provided with cptr as NULL,
+                        the validate_addr is parsed for reasonableness and 
+                        the result returned with 0 indicating a reasonable 
+                        value and -1 indicating a parsing error.
+        acl           = pointer to acl string which is comprised of comma 
+                        separated entries each which may have a + or - 
+                        prefix that indicated a permit or deny status when 
+                        the entry matches.  Each entry may specify a CIDR
+                        form match criteria.
+   Outputs:
+        result  =       status (0 on complete success or -1 if 
+                        parsing can't happen due to bad syntax, a value is 
+                        out of range or the validate_addr matches a reject
+                        entry in the acl or it is not mentioned at all in 
+                        the acl.
+*/
+
+int sim_addr_acl_check (const char *validate_addr, const char *acl)
+{
+int status = -1;
+int done = 0;
+struct addrinfo *ai_validate;
+unsigned long bits = 0;
+const char *c;
+char *c1, v_cpy[256];
+
+if (validate_addr == NULL)
+    return status;
+
+c = strchr (validate_addr, '/');
+if (c != NULL) {
+    bits = strtoul (c + 1, &c1, 10);
+    if ((bits == 0) || (bits > 128) || (*c1 != '\0'))
+        return status;
+    if ((size_t)(c - validate_addr) > sizeof (v_cpy) - 1)
+        return status;
+    memcpy (v_cpy, validate_addr, c - validate_addr);   /* Copy everything before the / */
+    v_cpy[1 + c - validate_addr] = '\0';                /* NUL terminate the result */
+    validate_addr = v_cpy;                              /* Use the original string minus the prefix specifier */
+    }
+if (p_getaddrinfo(validate_addr, NULL, NULL, &ai_validate))
+    return status;
+if (acl == NULL) {          /* Just checking validate_addr syntax? */
+    status = 0;
+    if ((ai_validate->ai_family == AF_INET) && (bits > 32))
+        status = -1;
+    p_freeaddrinfo (ai_validate);
+    return status;
+    }
+status = -1;
+while ((*acl != '\0') && !done) {
+    struct addrinfo *ai_rule, *ai, *aiv;
+    int permit; 
+    unsigned long bits = 0;
+    const char *cc;
+    char *c,*c1, rule[260];
+
+    permit = (*acl == '+');
+    cc = strchr (acl, ',');
+    if (cc != NULL) {
+        if ((size_t)(cc - acl) > sizeof (rule))
+            break;                  /* Too big - error */
+        memcpy (rule, acl + 1, cc - (acl + 1));
+        rule[cc - (acl + 1)] = '\0';
+        }
+    else {
+        if (strlen (acl) > sizeof (rule))
+            break;                  /* Too big - error */
+        strcpy (rule, acl + 1);
+        }
+    acl += strlen (rule) + 1 + (cc != NULL);
+    c = strchr (rule, '/');
+    if (c != NULL) {
+        bits = strtoul (c + 1, &c1, 10);
+        if ((bits == 0) || (bits > 128) || (*c1 != '\0'))
+            break;
+        *c = '\0';
+        }
+
+    if (p_getaddrinfo(rule, NULL, NULL, &ai_rule))
+        break;
+
+    for (ai = ai_rule; (ai != NULL) && (done == 0); ai = ai->ai_next) {
+        for (aiv = ai_validate; aiv != NULL; aiv = aiv->ai_next) {
+            if ((ai->ai_addrlen == aiv->ai_addrlen) &&
+                (ai->ai_family == aiv->ai_family)) {
+                unsigned int bit, addr_bits;
+                unsigned char *da, *dav;
+               
+                if (ai->ai_family == AF_INET) {
+                    da = (unsigned char *)&((struct sockaddr_in *)ai->ai_addr)->sin_addr;
+                    dav = (unsigned char *)&((struct sockaddr_in *)aiv->ai_addr)->sin_addr;
+                    addr_bits = 32;
+                    }
+    #if !defined(AF_INET6)
+                else {
+                    done = 1;
+                    break;
+                    }
+    #else
+                else {
+                    if (ai->ai_family == AF_INET6) {
+                        da = (unsigned char *)&((struct sockaddr_in6 *)ai->ai_addr)->sin6_addr;
+                        dav = (unsigned char *)&((struct sockaddr_in6 *)aiv->ai_addr)->sin6_addr;
+                        addr_bits = 128;
+                        }
+                    else {
+                        done = 1;
+                        break;
+                        }
+                    }
+    #endif
+                if (bits == 0)          /* Bits not specified? */
+                    bits = addr_bits;   /* Use them all */
+                for (bit=0; (bit < bits) && (bit < addr_bits); bit++) {
+                    unsigned int bitmask = 1 << (7 - (bit & 7));
+
+                    if ((da[bit>>3] & bitmask) != (dav[bit>>3] & bitmask))
+                        break;
+                    }
+                if (bit == bits) {  /* All desired bits matched? */
+                    done = 1;
+                    status = permit ? 0 : -1;
+                    break;
+                    }
+                }
+            }
+        }
+    p_freeaddrinfo (ai_rule);
+    }
+p_freeaddrinfo (ai_validate);
+return status;
 }
 
 /* sim_parse_addr_ex    localport:host:port
@@ -684,7 +846,7 @@ return 0;
         port    =       pointer to buffer for IP port (may be NULL), 0 = none
         localport
                 =       pointer to buffer for local IP port (may be NULL), 0 = none
-        result  =       status (SCPE_OK on complete success or SCPE_ARG if 
+        result  =       status (0 on complete success or -1 if 
                         parsing can't happen due to bad syntax, a value is 
                         out of range, a result can't fit into a result buffer, 
                         a service name doesn't exist, or a validation name 
@@ -738,6 +900,12 @@ load_ws2 ();
 #endif                                                  /* endif _WIN32 */
 #if defined (SIGPIPE)
 signal (SIGPIPE, SIG_IGN);                              /* no pipe signals */
+#endif
+#if defined(TEST_INFO_STUBS)
+/* force use of stubs */
+p_getaddrinfo = (getaddrinfo_func)s_getaddrinfo;
+p_getnameinfo = (getnameinfo_func)s_getnameinfo;
+p_freeaddrinfo = (freeaddrinfo_func)s_freeaddrinfo;
 #endif
 }
 
@@ -918,7 +1086,7 @@ if (sta == SOCKET_ERROR)                                /* bind error? */
 if (!(opt_flags & SIM_SOCK_OPT_BLOCKING)) {
     sta = sim_setnonblock (newsock);                    /* set nonblocking */
     if (sta == SOCKET_ERROR)                            /* fcntl error? */
-        return sim_err_sock (newsock, "fcntl");
+        return sim_err_sock (newsock, "setnonblock");
     }
 sta = listen (newsock, 1);                              /* listen on socket */
 if (sta == SOCKET_ERROR)                                /* listen error? */
@@ -990,7 +1158,7 @@ if (!(opt_flags & SIM_SOCK_OPT_BLOCKING)) {
     sta = sim_setnonblock (newsock);                    /* set nonblocking */
     if (sta == SOCKET_ERROR) {                          /* fcntl error? */
         p_freeaddrinfo (result);
-        return sim_err_sock (newsock, "fcntl");
+        return sim_err_sock (newsock, "setnonblock");
         }
     }
 if ((!(opt_flags & SIM_SOCK_OPT_DATAGRAM)) && (opt_flags & SIM_SOCK_OPT_NODELAY)) {
@@ -1064,20 +1232,16 @@ if (newsock == INVALID_SOCKET) {                        /* error? */
     }
 if (connectaddr != NULL) {
     *connectaddr = (char *)calloc(1, NI_MAXHOST+1);
-#ifdef AF_INET6
     p_getnameinfo((struct sockaddr *)&clientname, size, *connectaddr, NI_MAXHOST, NULL, 0, NI_NUMERICHOST);
     if (0 == memcmp("::ffff:", *connectaddr, 7))        /* is this a IPv4-mapped IPv6 address? */
         memmove(*connectaddr, 7+*connectaddr,           /* prefer bare IPv4 address */
                 strlen(*connectaddr) - 7 + 1);          /* length to include terminating \0 */
-#else
-    strcpy(*connectaddr, inet_ntoa(((struct sockaddr_in *)&connectaddr)->s_addr));
-#endif
     }
 
 if (!(opt_flags & SIM_SOCK_OPT_BLOCKING)) {
     sta = sim_setnonblock (newsock);                    /* set nonblocking */
     if (sta == SOCKET_ERROR)                            /* fcntl error? */
-        return sim_err_sock (newsock, "fcntl");
+        return sim_err_sock (newsock, "setnonblock");
     }
 
 if ((opt_flags & SIM_SOCK_OPT_NODELAY)) {
@@ -1152,7 +1316,6 @@ size_t size = addrsize;
 #endif
 int ret = 0;
 
-#ifdef AF_INET6
 *hostnamebuf = '\0';
 *portnamebuf = '\0';
 ret = p_getnameinfo(addr, size, hostnamebuf, NI_MAXHOST, NULL, 0, NI_NUMERICHOST);
@@ -1161,10 +1324,6 @@ if (0 == memcmp("::ffff:", hostnamebuf, 7))        /* is this a IPv4-mapped IPv6
             strlen(hostnamebuf) + 7 - 1);          /* length to include terminating \0 */
 if (!ret)
     ret = p_getnameinfo(addr, size, NULL, 0, portnamebuf, NI_MAXSERV, NI_NUMERICSERV);
-#else
-strcpy(hostnamebuf, inet_ntoa(((struct sockaddr_in *)addr)->s_addr));
-sprintf(portnamebuf, "%d", (int)ntohs(((struct sockaddr_in *)addr)->s_port)));
-#endif
 return ret;
 }
 

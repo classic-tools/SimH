@@ -1,6 +1,6 @@
 /* sds_rad.c: SDS 940 fixed head disk simulator
 
-   Copyright (c) 2001-2008, Robert M. Supnik
+   Copyright (c) 2001-2021, Robert M. Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -24,6 +24,8 @@
    in this Software without prior written authorization from Robert M Supnik.
 
    rad          fixed head disk
+
+   17-Feb-21    kenr    Added C register support to RAD boot
 
    The fixed head disk is a head-per-track disk, with up to four disks.  Each
    disk is divided into two logical units.  Reads and writes cannot cross logical
@@ -67,7 +69,6 @@ DSPT rad_tplt[] = {                                     /* template */
     { 0, 0 }
     };
 
-DEVICE rad_dev;
 t_stat rad_svc (UNIT *uptr);
 t_stat rad_reset (DEVICE *dptr);
 t_stat rad_boot (int32 unitno, DEVICE *dptr);
@@ -133,7 +134,7 @@ t_stat rad (uint32 fnc, uint32 inst, uint32 *dat)
 {
 int32 t, lun, new_ch;
 uint32 p;
-uint32 *fbuf = rad_unit.filebuf;
+uint32 *fbuf = (uint32 *)rad_unit.filebuf;
 
 switch (fnc) {                                          /* case function */
 
@@ -267,7 +268,7 @@ return SCPE_OK;
 t_stat rad_fill (int32 sba)
 {
 uint32 p = rad_da * RAD_NUMWD;
-uint32 *fbuf = rad_unit.filebuf;
+uint32 *fbuf = (uint32 *)rad_unit.filebuf;
 int32 wa = (sba + 1) >> 1;                              /* whole words */
 
 if (sba && (p < rad_unit.capac)) {                      /* fill needed? */
@@ -327,7 +328,7 @@ return SCPE_OK;
 
 t_stat rad_boot (int32 unitno, DEVICE *dptr)
 {
-extern uint32 P, M[];
+extern uint32 P, C, M[];
 
 if (unitno)                                             /* only unit 0 */
     return SCPE_ARG;
@@ -339,5 +340,6 @@ M[2] = 000203226;                                       /* EOM 3226B */
 M[3] = 003200002;                                       /* WIM 2 */
 M[4] = 000100002;                                       /* BRU 2 */
 P = 1;                                                  /* start at 1 */
+C = M[1];
 return SCPE_OK;
 }

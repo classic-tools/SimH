@@ -1,6 +1,6 @@
 /* pdp8_fpp.c: PDP-8 floating point processor (FPP8A)
 
-   Copyright (c) 2007-2011, Robert M Supnik
+   Copyright (c) 2007-2022, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,10 @@
 
    fpp          FPP8A floating point processor
 
+   11-Mar-22    RMS     Zeroed result exponent in double precision (COVERITY)
+   05-Jan-22    RHM     Fix fencepost error in FP multiply for extended
+                        precision
+   21-Oct-21    RMS     Added device number display
    03-Jan-10    RMS     Initialized variables statically, for VMS compiler
    19-Apr-09    RHM     FPICL does not clear all command and status reg bits
                             modify fpp_reset to conform with FPP
@@ -242,8 +246,13 @@ REG fpp_reg[] = {
     { NULL }
     };
 
+MTAB fpp_mod[] = {
+    { MTAB_XTD|MTAB_VDV, 0, "DEVNO", NULL, NULL, &show_dev },
+    { 0 }
+    };
+
 DEVICE fpp_dev = {
-    "FPP", &fpp_unit, fpp_reg, NULL,
+    "FPP", &fpp_unit, fpp_reg, fpp_mod,
     1, 10, 31, 1, 8, 8,
     NULL, NULL, &fpp_reset,
     NULL, NULL, NULL,
@@ -832,6 +841,7 @@ if (fpp_sta & FPS_DP) {                                 /* dp? */
     uint32 cout = fpp_fr_add (z.fr, x.fr, y.fr, EXTEND);/* z = a + b */
     uint32 zsign = z.fr[0] & FPN_FRSIGN;
     cout = (cout? 04000: 0);                            /* make sign bit */
+    z.exp = 0;                                          /* not used in DP */
     /* overflow is indicated when signs are equal and overflow does not
        match the result sign bit */
     fpp_copy (a, &z);                                   /* result is z */
@@ -887,8 +897,10 @@ if ((fpp_fr_test(y.fr, 0, EXACT-1) == 0) && (y.fr[EXACT-1] < 2)) {
     y.exp = 0;
     y.fr[EXACT-1] = 0;
 }
-if (fpp_sta & FPS_DP)                                   /* dp? */
+if (fpp_sta & FPS_DP) {                                 /* dp? */
     fpp_fr_mul (z.fr, x.fr, y.fr, TRUE);                /* mult frac */
+    z.exp = 0;                                          /* not used in DP */
+    }
 else {                                                  /* fp or ep */
     fpp_norm (&x, EXACT);
     fpp_norm (&y, EXACT);
@@ -924,6 +936,7 @@ if (fpp_sta & FPS_DP) {                                 /* dp? */
         fpp_dump_apt (fpp_apta, FPS_IOVX);              /* error */
         return;
         }
+    z.exp = 0;                                          /* not used in DP */
     fpp_copy (a, &z);                                   /* result is z */
     }
 else {                                                  /* fp or ep */
@@ -1176,7 +1189,8 @@ for (i = 0; i < cnt; i++) {
         wc++;                                       /* do another word */
         lo--;                                       /* and next mpyr word */
         fpp_fr_algn (c, 24, wc + 1);
-        c[wc] = 0;
+        if (wc < FPN_NFR_MDS)                       /* don't assume guard word */
+            c[wc] = 0;
         c[0] = c[1] = fill;                         /* propagate sign */
         }
     if (b[lo] & FPN_FRSIGN)                         /* mpyr bit set? */
@@ -1366,7 +1380,8 @@ if (sc >= (cnt * 12)) {                             /* out of range? */
     }
 while (sc >= 12) {
     for (i = cnt - 1; i > 0; i--)
-        a[i] = a[i - 1];
+        if (i <= FPN_NFR_MDS)                       /* Don't overwrite if EP */
+            a[i] = a[i - 1];
     a[0] = sign;
     sc = sc - 12;
     }

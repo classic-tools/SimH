@@ -1,6 +1,6 @@
 /* sds_stddev.c: SDS 940 standard devices
 
-   Copyright (c) 2001-2008, Robert M. Supnik
+   Copyright (c) 2001-2021, Robert M. Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -28,11 +28,14 @@
    tti          keyboard
    tto          teleprinter
 
+   12-Feb-21    kenr    Added C register support to PTR boot
+   23-Oct-20    RMS     TTO recognizes no leader flag (Ken Rector)
    29-Dec-03    RMS     Added console backpressure support
    25-Apr-03    RMS     Revised for extended file support
 */
 
 #include "sds_defs.h"
+#include "sim_tmxr.h"
 
 #define TT_CR           052                             /* typewriter */
 #define TT_TB           072
@@ -44,9 +47,10 @@ int32 ptr_sor = 0;                                      /* start of rec */
 int32 ptr_stopioe = 0;                                  /* no stop on err */
 int32 ptp_ldr = 0;                                      /* no leader */
 int32 ptp_stopioe = 1;
+int32 tto_ldr = 0;                                      /* no leader */
+int32 tto_retry = 0;                                    /* retry due to stall */
 DSPT std_tplt[] = { { 1, 0 }, { 0, 0 }  };              /* template */
 
-DEVICE ptr_dev, ptp_dev;
 t_stat ptr (uint32 fnc, uint32 inst, uint32 *dat);
 t_stat ptr_svc (UNIT *uptr);
 t_stat ptr_reset (DEVICE *dptr);
@@ -63,9 +67,9 @@ t_stat tti_reset (DEVICE *dptr);
 t_stat tto (uint32 fnc, uint32 inst, uint32 *dat);
 t_stat tto_svc (UNIT *uptr);
 t_stat tto_reset (DEVICE *dptr);
+t_stat tto_out (int32 dat);
 int8 ascii_to_sds(int8 ch);
 int8 sds_to_ascii(int8 ch);
-extern const int8 odd_par[64];
 
 /* PTR data structures
 
@@ -189,6 +193,8 @@ UNIT tto_unit = { UDATA (&tto_svc, 0, 0), SERIAL_OUT_WAIT };
 REG tto_reg[] = {
     { ORDATA (BUF, tto_unit.buf, 6) },
     { FLDATA (XFR, xfr_req, XFR_V_TTO) },
+    { FLDATA (LDR, tto_ldr, 0) },
+    { FLDATA (RETRY, tto_retry, 0), REG_HRO },
     { DRDATA (POS, tto_unit.pos, T_ADDR_W), PV_LEFT },
     { DRDATA (TIME, tto_unit.wait, 24), REG_NZ + PV_LEFT },
     { NULL }
@@ -279,7 +285,7 @@ if ((temp = getc (ptr_unit.fileref)) == EOF) {          /* end of file? */
             sim_printf ("PTR end of file\n");
         else return SCPE_OK;
         }
-    else perror ("PTR I/O error");                      /* I/O error */
+    else sim_perror ("PTR I/O error");                  /* I/O error */
     clearerr (ptr_unit.fileref);
     return SCPE_IOERR;
     }
@@ -322,7 +328,7 @@ return SCPE_OK;
 
 t_stat ptr_boot (int32 unitno, DEVICE *dptr)
 {
-extern uint32 P, M[];
+extern uint32 P, C, M[];
 
 M[0] = 077777771;                                       /* -7B */
 M[1] = 007100000;                                       /* LDX 0 */
@@ -330,6 +336,7 @@ M[2] = 000203604;                                       /* EOM 3604B */
 M[3] = 003200002;                                       /* WIM 2 */
 M[4] = 000100002;                                       /* BRU 2 */
 P = 1;                                                  /* start at 1 */
+C = M[1];
 return SCPE_OK;
 }
 
@@ -413,7 +420,7 @@ if ((ptp_unit.flags & UNIT_ATT) == 0) {                 /* attached? */
     }
 if (putc (dat, ptp_unit.fileref) == EOF) {              /* I/O error? */
     ptp_set_err ();                                     /* yes, disc, err */
-    perror ("PTP I/O error");                           /* print msg */
+    sim_perror ("PTP I/O error");                       /* print msg */
     clearerr (ptp_unit.fileref);
     return SCPE_IOERR;
     }
@@ -504,7 +511,7 @@ if (temp & SCPE_BREAK)                                  /* ignore break */
     return SCPE_OK;
 temp = temp & 0177;
 tti_unit.pos = tti_unit.pos + 1;
-if (ascii_to_sds(temp) >= 0) {
+if (ascii_to_sds (temp) >= 0) {
     tti_unit.buf = ascii_to_sds(temp);                  /* internal rep */
     sim_putchar (temp);                                 /* echo */
     if (temp == '\r')                                   /* lf after cr */
@@ -517,6 +524,7 @@ return SCPE_OK;
 
 t_stat tti_reset (DEVICE *dptr)
 {
+tmxr_set_console_units (&tti_unit, &tto_unit);
 chan_disc (tti_dib.chan);                               /* disconnect */
 tti_unit.buf = 0;                                       /* clear state */
 xfr_req = xfr_req & ~XFR_TTI;                           /* clr xfr flag */
@@ -536,6 +544,9 @@ return SCPE_OK;
 
    The typewriter output is an asynchronous streaming output device.  That is,
    it can never cause a channel rate error; if no data is available, it waits.
+
+   Typewriter output may be stalled, if the device is connected to a Telnet
+   connection, so the output routine must be able to try output repeatedly.
 */
 
 t_stat tto (uint32 fnc, uint32 inst, uint32 *dat)
@@ -548,11 +559,15 @@ switch (fnc) {                                          /* case function */
         new_ch = I_GETEOCH (inst);                      /* get new chan */
         if (new_ch != tto_dib.chan)                     /* inv conn? err */
             return SCPE_IERR;
+        tto_ldr = (inst & CHC_NLDR)? 0: 1;              /* leader? */
+        tto_retry = 0;                                  /* no retry */
         xfr_req = xfr_req & ~XFR_TTO;                   /* clr xfr flag */
         sim_activate (&tto_unit, tto_unit.wait);        /* activate */
         break;
 
     case IO_DISC:                                       /* disconnect */
+        tto_ldr = 0;                                    /* clr state */
+        tto_retry = 0;
         xfr_req = xfr_req & ~XFR_TTO;                   /* clr xfr flag */
         sim_cancel (&tto_unit);                         /* deactivate unit */
         break;
@@ -561,7 +576,7 @@ switch (fnc) {                                          /* case function */
         xfr_req = xfr_req & ~XFR_TTO;                   /* clr xfr flag */
         tto_unit.buf = (*dat) & 077;                    /* save data */
         sim_activate (&tto_unit, tto_unit.wait);        /* activate */
-        break;
+        return tto_out (tto_unit.buf);                  /* write the data */
 
     case IO_WREOR:                                      /* write eor */
         break;
@@ -574,29 +589,47 @@ switch (fnc) {                                          /* case function */
 return SCPE_OK;
 }
 
-/* Unit service */
+/* Unit service - handle leader, retry */
 
 t_stat tto_svc (UNIT *uptr)
+{
+if (tto_ldr != 0) {                                     /* need leader? */
+    sim_putchar (0);                                    /* output, no stall */
+    tto_ldr = 0;                                        /* no more leader */
+    }
+if (tto_retry != 0)                                     /* retry? */
+    tto_out (uptr->buf);                                /* try again, could stall */
+if (tto_retry == 0)                                     /* now no retry? */
+    chan_set_ordy (tto_dib.chan);                       /* tto ready */
+return SCPE_OK;
+}
+
+t_stat tto_out (int32 dat)
 {
 int32 asc;
 t_stat r;
 
-if (uptr->buf == TT_CR)                                 /* control chars? */
+tto_retry = 0;                                          /* assume no retry */
+if (dat == TT_CR)                                       /* control chars? */
     asc = '\r';
-else if (uptr->buf == TT_BS)
+else if (dat == TT_BS)
     asc = '\b';
-else if (uptr->buf == TT_TB)
+else if (dat == TT_TB)
     asc = '\t';
-else asc = sds_to_ascii(uptr->buf);                     /* translate */
-if ((r = sim_putchar_s (asc)) != SCPE_OK) {             /* output; error? */
-    sim_activate (uptr, uptr->wait);                    /* retry */
-    return ((r == SCPE_STALL)? SCPE_OK: r);             /* !stall? report */
+else asc = sds_to_ascii (dat);                          /* translate */
+r = sim_putchar_s (asc);                                /* output */
+if (r == SCPE_STALL) {                                  /* stall? */
+    tto_retry = 1;
+    sim_activate (&tto_unit, tto_unit.wait);            /* retry */
+    return SCPE_OK;
     }
-uptr->pos = uptr->pos + 1;                              /* inc position */
+if (r != SCPE_OK)                                       /* error? */
+    return r;
+tto_unit.pos = tto_unit.pos + 1;                        /* inc position */
 chan_set_ordy (tto_dib.chan);                           /* tto rdy */
 if (asc == '\r') {                                      /* CR? */
-    sim_putchar ('\n');                                 /* add lf */
-    uptr->pos = uptr->pos + 1;                          /* inc position */
+    sim_putchar ('\n');                                 /* add lf, no stall */
+    tto_unit.pos = tto_unit.pos + 1;                    /* inc position */
     }
 return SCPE_OK;
 }
@@ -607,6 +640,8 @@ t_stat tto_reset (DEVICE *dptr)
 {
 chan_disc (tto_dib.chan);                               /* disconnect */
 tto_unit.buf = 0;                                       /* clear state */
+tto_ldr = 0;
+tto_retry = 0;
 xfr_req = xfr_req & ~XFR_TTO;                           /* clr xfr flag */
 sim_cancel (&tto_unit);                                 /* deactivate unit */
 return SCPE_OK;

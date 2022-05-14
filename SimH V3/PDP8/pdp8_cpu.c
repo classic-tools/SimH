@@ -1,6 +1,6 @@
 /* pdp8_cpu.c: PDP-8 CPU simulator
 
-   Copyright (c) 1993-2017, Robert M Supnik
+   Copyright (c) 1993-2021, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,7 @@
 
    cpu          central processor
 
+   21-Oct-21    RMS     Fixed bug in reporting device conflicts (Hans-Bernd Eggenstein)
    07-Sep-17    RMS     Fixed sim_eval declaration in history routine (COVERITY)
    09-Mar-17    RMS     Fixed PCQ_ENTRY for interrupts (COVERITY)
    13-Feb-17    RMS     RESET clear L'AC, per schematics
@@ -1515,7 +1516,7 @@ for (i = 0; (dptr = sim_devices[i]) != NULL; i++) {     /* add devices */
                 if (dspp->dsp) {                        /* any dispatch? */
                     if (dev_tab[dspp->dev]) {           /* already filled? */
                         sim_printf ("%s device number conflict at %02o\n",
-                            sim_dname (dptr), dibp->dev + j);
+                            sim_dname (dptr), dspp->dev);
                         return TRUE;
                         }
                     dev_tab[dspp->dev] = dspp->dsp;     /* fill */

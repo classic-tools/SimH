@@ -1105,11 +1105,11 @@ if (((addr == 0) || (addr >= 020)) && MEM_ADDR_OK (addr))
     M[addr] = val;
 if (addr == M_XR)                                       /* write XR loc? */
     XR = val;
-    // [RLA] Implement "break on memory write" ...
-    if (sim_brk_summ && sim_brk_test (addr, SWMASK ('W')))
-        return STOP_IBKPT;
-    else
-        return SCPE_OK;
+// [RLA] Implement "break on memory write" ...
+if (sim_brk_summ && sim_brk_test (addr, SWMASK ('W')))
+    return STOP_IBKPT;
+else
+    return SCPE_OK;
 }
 
 /* Add */
@@ -1357,7 +1357,7 @@ ARx = AR;                                               /* default */
 jamkn = (MB & (m12+m16)) != 0;                          /* m12+m16 */
 easbm = (MB & (m9+m11)) != 0;                           /* m9+m11 */
 eastl = jamkn || easbm;                                 /* m9+m11+m12+m16 */
-setaz = (MB & (m8+m15)) == (m8+m15);                    /* m8xm15*/
+setaz = (MB & (m8+m15)) == (m8+m15);                    /* m8xm15 */
 eiki7 = (MB & m15) && (C || !(MB & m13));               /* cin */
 aleg = eastl? AR: 0;                                    /* a input */
 bleg = easbm? 0: DMASK;                                 /* b input */

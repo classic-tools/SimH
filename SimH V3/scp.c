@@ -1,6 +1,6 @@
 /* scp.c: simulator control program
 
-   Copyright (c) 1993-2020, Robert M Supnik
+   Copyright (c) 1993-2022, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -23,7 +23,25 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   06-Mar-22    RMS     Removed UNIT_RAW support
+   21-Oct-21    RMS     Fixed bug in byte deposits if aincr > 1
+   20=Sep-21    RMS     Fixed bug in nested DO recognition (per Mark Pizzolato)
+   15-Apr-21    RMS     Changed RUN to store new PC value both before RESET
+                        (former behavior) and after (per Mark Pizzolato)
+   18-Mar-21    JDB     Revised "attach_unit" and "detach_unit" for pipe support
+                        Modified tests to allow UNIT_RO without UNIT_ROABLE
+   16-Feb-21    JDB     Rewrote get_rval, put_rval to support arrays of structures
+   01-Feb-21    JDB     Added casts for down-conversions
+   25-Jan-21    JDB     REG "size" field now determines access size
+                        REG "maxval" field now determines maximum allowed value
+   30-Nov-20    RMS     Fixed RUN problem if CPU reset clears PC (Mark Pizzolato)
+   09-Nov-20    RMS     Added hack for sim_card multiple attach (Mark Pizzolato)
+   23-Oct-20    JDB     Added tmxr_post_logs calls to flush and close log files
+   04-Jun-20    JDB     Call of "sim_vm_init" is now conditional on USE_VM_INIT
+   28-May-20    RMS     Flush stdout after prompting (Mark Pizzolato)
+   23-Mar-20    RMS     Added SET <dev|unit> APPEND command
    13-Feb-20    RMS     Spelled out CONTINUE in command table (Dave Bryan)
+   09-Jan-20    JDB     Added "sim_vm_unit_name" extension hook
    26-Oct-19    RMS     Removed commented out MTAB_VAL code
    09-Oct-19    JDB     Corrected "sim_ref_type" use for RESTORE and DETACH ALL
    19-Jul-19    JDB     Added "sim_get_radix" extension hook
@@ -57,7 +75,7 @@
                         Modified ex_reg and dep_reg to pass VM-specific register flags
    08-May-12    RMS     Fixed memory leaks in save/restore (Peter Schorn)
    20-Mar-12    MP      Fixes to "SHOW <x> SHOW" commands
-   06-Jan-12    JDB     Fixed "SHOW DEVICE" with only one enabled unit (Dave Bryan)  
+   06-Jan-12    JDB     Fixed "SHOW DEVICE" with only one enabled unit (Dave Bryan)
    13-Jan-11    MP      Added "SHOW SHOW" and "SHOW <dev> SHOW" commands
    05-Jan-11    RMS     Fixed bug in deposit stride for numeric input (John Dundas)
    23-Dec-10    RMS     Clarified some help messages (Mark Pizzolato)
@@ -219,10 +237,12 @@
 /* Macros and data structures */
 
 #include "sim_defs.h"
+#include "sim_tmxr.h"
 #include <signal.h>
 #include <ctype.h>
+#include <sys/stat.h>
 
-#if defined(HAVE_DLOPEN)                                 /* Dynamic Readline support */
+#if defined(SIM_HAVE_DLOPEN)                             /* Dynamic Readline support */
 #include <dlfcn.h>
 #endif
 
@@ -249,8 +269,6 @@
     x = sim_interval
 
 #define SZ_D(dp) (size_map[((dp)->dwidth + CHAR_BIT - 1) / CHAR_BIT])
-#define SZ_R(rp) \
-    (size_map[((rp)->width + (rp)->offset + CHAR_BIT - 1) / CHAR_BIT])
 #if defined (USE_INT64)
 #define SZ_LOAD(sz,v,mb,j) \
     if (sz == sizeof (uint8)) v = *(((uint8 *) mb) + ((uint32) j)); \
@@ -277,10 +295,8 @@
 #define GET_RADIX(val,dft) \
     val = sim_get_radix (NULL, sim_switches, dft);
 
-/* The per-simulator init routine is a weak global that defaults to NULL
-   The other per-simulator pointers can be overrriden by the init routine */
+/* The per-simulator pointers can be overrriden by a VM init routine */
 
-void (*sim_vm_init) (void);
 char* (*sim_vm_read) (char *ptr, int32 size, FILE *stream) = NULL;
 void (*sim_vm_post) (t_bool from_scp) = NULL;
 CTAB *sim_vm_cmd = NULL;
@@ -296,6 +312,7 @@ t_bool (*sim_vm_is_subroutine_call) (t_addr **ret_addrs) = NULL;
 t_stat set_dev_radix (DEVICE *dptr, UNIT *uptr, int32 flag, char *cptr);
 t_stat set_dev_enbdis (DEVICE *dptr, UNIT *uptr, int32 flag, char *cptr);
 t_stat set_dev_debug (DEVICE *dptr, UNIT *uptr, int32 flag, char *cptr);
+t_stat set_dev_unit_append (DEVICE *dptr, UNIT *uptr, int32 flag, char *cptr);
 t_stat set_unit_enbdis (DEVICE *dptr, UNIT *uptr, int32 flag, char *cptr);
 t_stat ssh_break (FILE *st, char *cptr, int32 flg);
 t_stat show_cmd_fi (FILE *ofile, int32 flag, char *cptr);
@@ -366,7 +383,8 @@ t_stat ex_reg (FILE *ofile, t_value val, int32 flag, REG *rptr, uint32 idx);
 t_stat dep_reg (int32 flag, char *cptr, REG *rptr, uint32 idx);
 t_stat exdep_addr_loop (FILE *ofile, SCHTAB *schptr, int32 flag, char *cptr,
     t_addr low, t_addr high, DEVICE *dptr, UNIT *uptr);
-t_stat ex_addr (FILE *ofile, int32 flag, t_addr addr, DEVICE *dptr, UNIT *uptr);
+t_stat ex_addr (FILE *ofile, int32 flag, t_addr addr, DEVICE *dptr,
+    UNIT *uptr, int32 dfltinc);
 t_stat dep_addr (int32 flag, char *cptr, t_addr addr, DEVICE *dptr,
     UNIT *uptr, int32 dfltinc);
 t_stat step_svc (UNIT *ptr);
@@ -378,6 +396,7 @@ int32 get_radix_local (const char *cptr, int32 switches, int32 default_radix);
 char *sim_vm_release;
 void (*sub_args) (char *iptr, char *optr, int32 len, char *args []) = sub_args_local;
 int32 (*sim_get_radix) (const char *cptr, int32 switches, int32 default_radix) = get_radix_local;
+char * (*sim_vm_unit_name) (const UNIT *uptr) = NULL;
 
 /* Global data */
 
@@ -529,7 +548,7 @@ static CTAB cmd_table[] = {
     { "RUN", &run_cmd, RU_RUN,
       "ru{n} {new PC}           reset and start simulation\n" },
     { "GO", &run_cmd, RU_GO,
-      "go {new PC}              start simulation\n" }, 
+      "go {new PC}              start simulation\n" },
     { "STEP", &run_cmd, RU_STEP,
       "s{tep} {n}               simulate n instructions\n" },
     { "CONTINUE", &run_cmd, RU_CONT,
@@ -572,23 +591,25 @@ static CTAB cmd_table[] = {
       "set <dev> DISABLED       disable device\n"
       "set <dev> DEBUG{=arg}    set device debug flags\n"
       "set <dev> NODEBUG={arg}  clear device debug flags\n"
+      "set <dev> APPEND         set first unit's position for appending\n"
       "set <dev> arg{,arg...}   set device parameters (see show modifiers)\n"
       "set <unit> ENABLED       enable unit\n"
       "set <unit> DISABLED      disable unit\n"
+      "set <unit> APPEND        set unit's position for appending\n"
       "set <unit> arg{,arg...}  set unit parameters (see show modifiers)\n"
       },
     { "SHOW", &show_cmd, 0,
       "sh{ow} br{eak} <list>    show breakpoints\n"
       "sh{ow} con{figuration}   show configuration\n"
       "sh{ow} cons{ole} {arg}   show console options\n"
-      "sh{ow} dev{ices}         show devices\n"  
-      "sh{ow} m{odifiers}       show modifiers for all devices\n" 
-      "sh{ow} s{how}            show SHOW commands for all devices\n" 
-      "sh{ow} n{ames}           show logical names\n" 
-      "sh{ow} q{ueue}           show event queue\n"  
+      "sh{ow} dev{ices}         show devices\n"
+      "sh{ow} m{odifiers}       show modifiers for all devices\n"
+      "sh{ow} s{how}            show SHOW commands for all devices\n"
+      "sh{ow} n{ames}           show logical names\n"
+      "sh{ow} q{ueue}           show event queue\n"
       "sh{ow} ti{me}            show simulated time\n"
-      "sh{ow} th{rottle}        show simulation rate\n" 
-      "sh{ow} ve{rsion}         show simulator version\n" 
+      "sh{ow} th{rottle}        show simulation rate\n"
+      "sh{ow} ve{rsion}         show simulator version\n"
       "sh{ow} <dev> RADIX       show device display radix\n"
       "sh{ow} <dev> DEBUG       show device debug flags\n"
       "sh{ow} <dev> MODIFIERS   show device modifiers\n"
@@ -634,6 +655,7 @@ static C1TAB set_dev_tab[] = {
     { "HEX", &set_dev_radix, 16 },
     { "ENABLED", &set_dev_enbdis, 1 },
     { "DISABLED", &set_dev_enbdis, 0 },
+    { "APPEND", &set_dev_unit_append, 0 },
     { "DEBUG", &set_dev_debug, 1 },
     { "NODEBUG", &set_dev_debug, 0 },
     { NULL, NULL, 0 }
@@ -642,6 +664,7 @@ static C1TAB set_dev_tab[] = {
 static C1TAB set_unit_tab[] = {
     { "ENABLED", &set_unit_enbdis, 1 },
     { "DISABLED", &set_unit_enbdis, 0 },
+    { "APPEND", &set_dev_unit_append, 0 },
     { NULL, NULL, 0 }
     };
 
@@ -715,7 +738,7 @@ for (i = 1; i < argc; i++) {                            /* loop thru args */
             return 0;
             }
         if (*cbuf)                                      /* concat args */
-            strcat (cbuf, " "); 
+            strcat (cbuf, " ");
         strcat (cbuf, argv[i]);
         lookswitch = FALSE;                             /* no more switches */
         }
@@ -724,9 +747,10 @@ sim_quiet = sim_switches & SWMASK ('Q');                /* -q means quiet */
 
 sim_init_sock ();                                       /* init socket capabilities */
 
-if (sim_vm_init != NULL)                                /* call once only */
-    (*sim_vm_init)();
-sim_finit ();                                           /* init fio package */
+#if defined (USE_VM_INIT)
+(*sim_vm_init)();                                       /* call once only */
+#endif
+sim_finit();                                            /* init fio package */
 stop_cpu = 0;
 sim_interval = 0;
 sim_time = sim_rtime = 0;
@@ -802,7 +826,8 @@ while (stat != SCPE_EXIT) {                             /* in case exit */
         (*sim_vm_post) (TRUE);
     }                                                   /* end while */
 
-detach_all (0, TRUE);                                   /* close files */
+detach_all (0, TRUE);                                   /* close device files */
+tmxr_post_logs (TRUE);                                  /* close all mux log files */
 sim_set_deboff (0, NULL);                               /* close debug */
 sim_set_logoff (0, NULL);                               /* close log */
 sim_set_notelnet (0, NULL);                             /* close Telnet */
@@ -911,7 +936,7 @@ return SCPE_OK;
 
    Note that SCPE_STEP ("Step expired") is considered a note and not an error
    and so does not abort command execution when using -E.
-   
+
    Inputs:
         flag    =   caller and nesting level indicator
         fcptr   =   filename and optional arguments, space-separated
@@ -1005,7 +1030,7 @@ do {
     sim_switches = 0;                                   /* init switches */
     isdo = FALSE;
     if (cmdp = find_cmd (gbuf)) {                       /* lookup command */
-        isdo = (MATCH_CMD (gbuf, "DO") == 0);
+        isdo = (strcmp (cmdp->name, "DO") == 0);
         if (isdo) {                                     /* DO command? */
             if (flag >= DO_NEST_LVL)                    /* nest too deep? */
                 stat = SCPE_NEST;
@@ -1079,10 +1104,10 @@ return;
 }
 
 /* ASSERT command.
-   
+
    The ASSERT command tests the value of a device register or memory location.
    The syntax is:
-   
+
      ASSERT {<dev>} <reg/addr>{<logical-op><value>}<conditional-op><value>
 
    If <dev> is not specified, CPU is assumed.  If a register is specified, the
@@ -1350,6 +1375,26 @@ else {
 return SCPE_OK;
 }
 
+/* Set unit position to end for appending */
+
+t_stat set_dev_unit_append (DEVICE *dptr, UNIT *uptr, int32 flag, char *cptr)
+{
+if (cptr)
+    return SCPE_ARG;
+if (uptr == NULL)
+    return SCPE_NOFNC;
+if (((uptr->flags & UNIT_SEQ) == 0) ||                  /* must be sequential, */
+    ((uptr->flags & (UNIT_RO | UNIT_ROABLE)) != 0) ||   /* not RO settable */
+    ((uptr->flags & UNIT_MUSTBUF) != 0) ||              /* not buffered */
+    ((uptr->dynflags & UNIT_PIPE) != 0))                /* not a pipe */
+    return SCPE_NOFNC;
+if ((uptr->flags & UNIT_ATT) == 0)                      /* must be attached */
+    return SCPE_UNATT;
+if (sim_fseek (uptr->fileref, 0, SEEK_END) != 0)        /* seek to end */
+   return SCPE_IOERR;
+uptr->pos = (t_addr) sim_ftell (uptr->fileref);         /* set at EOF */
+return SCPE_OK;
+}
 /* Set device debug enabled/disabled routine */
 
 t_stat set_dev_debug (DEVICE *dptr, UNIT *uptr, int32 flag, char *cptr)
@@ -1450,7 +1495,7 @@ while (*cptr != 0) {                                    /* do all mods */
         *cvptr++ = 0;
     for (mptr = dptr->modifiers; mptr && (mptr->mask != 0); mptr++) {
         if (((mptr->mask & MTAB_XTD)?                   /* right level? */
-            (mptr->mask & lvl): (MTAB_VUN & lvl)) && 
+            (mptr->mask & lvl): (MTAB_VUN & lvl)) &&
             ((mptr->disp && mptr->pstring &&            /* named disp? */
             (MATCH_CMD (gbuf, mptr->pstring) == 0)))) {
             if (cvptr && !(mptr->mask & MTAB_SHP))
@@ -1542,7 +1587,7 @@ if (uptr->flags & UNIT_ATT) {
     }
 else if (uptr->flags & UNIT_ATTABLE)
     fprintf (st, ", not attached");
-show_all_mods (st, dptr, uptr, MTAB_VUN);               /* show unit mods */ 
+show_all_mods (st, dptr, uptr, MTAB_VUN);               /* show unit mods */
 fprintf (st, "\n");
 return SCPE_OK;
 }
@@ -1632,6 +1677,7 @@ t_stat show_queue (FILE *st, DEVICE *dnotused, UNIT *unotused, int32 flag, char 
 DEVICE *dptr;
 UNIT *uptr;
 int32 accum;
+char *vptr;
 
 if (cptr && (*cptr != 0))
     return SCPE_2MARG;
@@ -1646,6 +1692,8 @@ accum = 0;
 for (uptr = sim_clock_queue; uptr != NULL; uptr = uptr->next) {
     if (uptr == &sim_step_unit)
         fprintf (st, "  Step timer");
+    else if (sim_vm_unit_name && (vptr = sim_vm_unit_name (uptr)))
+        fprintf (st, "  %s", vptr);
     else if ((dptr = find_dev_from_unit (uptr)) != NULL) {
         fprintf (st, "  %s", sim_dname (dptr));
         if (dptr->numunits > 1)
@@ -1718,7 +1766,7 @@ DEVICE *dptr;
 
 if (cptr && (*cptr != 0))                               /* now eol? */
     return SCPE_2MARG;
-for (i = 0; (dptr = sim_devices[i]) != NULL; i++) 
+for (i = 0; (dptr = sim_devices[i]) != NULL; i++)
     show_dev_modifiers (st, dptr, NULL, flag, cptr);
 return SCPE_OK;
 }
@@ -1772,7 +1820,7 @@ if (dptr->modifiers == NULL)
     return SCPE_OK;
 for (mptr = dptr->modifiers; mptr->mask != 0; mptr++) {
     if (mptr->pstring && ((mptr->mask & MTAB_XTD)?
-        ((mptr->mask & flag) && !(mptr->mask & MTAB_NMO)): 
+        ((mptr->mask & flag) && !(mptr->mask & MTAB_NMO)):
         ((MTAB_VUN & flag) && ((uptr->flags & mptr->mask) == mptr->match)))) {
         fputs (", ", st);
         show_one_mod (st, dptr, uptr, mptr, NULL, 0);
@@ -1810,7 +1858,7 @@ DEVICE *dptr;
 
 if (cptr && (*cptr != 0))                               /* now eol? */
     return SCPE_2MARG;
-for (i = 0; (dptr = sim_devices[i]) != NULL; i++) 
+for (i = 0; (dptr = sim_devices[i]) != NULL; i++)
     show_dev_show_commands (st, dptr, NULL, flag, cptr);
 return SCPE_OK;
 }
@@ -1870,7 +1918,7 @@ t_stat r;
 t_addr lo, hi, max;
 int32 cnt;
 
-if (sim_brk_types == 0) 
+if (sim_brk_types == 0)
     return SCPE_NOFNC;
 if (dptr == NULL)                                       /* sanity checks */
     return SCPE_IERR;
@@ -1908,7 +1956,7 @@ while (*cptr) {
             sim_brk_showall (st, sim_switches);
         else return SCPE_ARG;
         }
-    else {      
+    else {
         for ( ; lo <= hi; lo = lo + 1) {
             r = ssh_break_one (st, flg, lo, cnt, aptr);
             if (r != SCPE_OK)
@@ -2065,9 +2113,13 @@ if (dptr == NULL)                                       /* found dev? */
 if (uptr == NULL)                                       /* valid unit? */
     return SCPE_NXUN;
 if (uptr->flags & UNIT_ATT) {                           /* already attached? */
-    r = scp_detach_unit (dptr, uptr);                   /* detach it */
-    if (r != SCPE_OK)                                   /* error? */
-        return r;
+    if (!(uptr->dynflags & UNIT_ATTMULT)) {
+        r = scp_detach_unit (dptr, uptr);               /* detach it */
+        if (r != SCPE_OK)                               /* error? */
+            return r;
+        }
+    else
+        return SCPE_ALATT;
     }
 sim_trim_endspc (cptr);                                 /* trim trailing spc */
 return scp_attach_unit (dptr, uptr, cptr);              /* attach */
@@ -2086,9 +2138,21 @@ return attach_unit (uptr, cptr);                        /* no, std routine */
 
 /* Attach unit to file */
 
+#if !defined (S_ISFIFO)
+  #if !defined (S_IFMT) && defined (_S_IFMT)
+  #define S_IFMT   _S_IFMT
+  #endif
+  #if defined (_S_IFIFO)
+  #define S_ISFIFO(m)   (((m) & S_IFMT) == _S_IFIFO)
+  #else
+  #define S_ISFIFO(m)   0
+  #endif
+#endif
+
 t_stat attach_unit (UNIT *uptr, char *cptr)
 {
 DEVICE *dptr;
+struct stat info;
 
 if (!(uptr->flags & UNIT_ATTABLE))                      /* not attachable? */
     return SCPE_NOATT;
@@ -2100,8 +2164,24 @@ uptr->filename = (char *) calloc (CBUFSIZE, sizeof (char)); /* alloc name buf */
 if (uptr->filename == NULL)
     return SCPE_MEM;
 strncpy (uptr->filename, cptr, CBUFSIZE);               /* save name */
-if (sim_switches & SWMASK ('R')) {                      /* read only? */
-    if ((uptr->flags & UNIT_ROABLE) == 0)               /* allowed? */
+
+if ((!stat (cptr, &info)) && S_ISFIFO (info.st_mode))   /* if file exists and is a pipe */
+    if (uptr->flags & UNIT_SEQ) {                       /*   then if the unit is sequential */
+        if (uptr->flags & (UNIT_RO | UNIT_ROABLE))      /* if the unit is readable */
+            uptr->fileref = sim_fopen (cptr, "rb");     /*   then open the pipe for reading */
+        else                                            /* otherwise */
+            uptr->fileref = sim_fopen (cptr, "wb");     /*   open the pipe for writing */
+
+        if (uptr->fileref == NULL)                          /* if the file failed to open */
+            return attach_err (uptr, SCPE_OPENERR);         /*   then report the error */
+        else                                                /* otherwise */
+            uptr->dynflags = uptr->dynflags | UNIT_PIPE;    /*   set the pipe flag */
+        }
+    else                                                /* otherwise the unit is not sequential */
+        return SCPE_NOFNC;                              /*   so it cannot be attached to a pipe */
+
+else if (sim_switches & SWMASK ('R')) {                 /* read only? */
+    if ((uptr->flags & (UNIT_RO | UNIT_ROABLE)) == 0)   /* allowed? */
         return attach_err (uptr, SCPE_NORO);            /* no, error */
     uptr->fileref = sim_fopen (cptr, "rb");             /* open rd only */
     if (uptr->fileref == NULL)                          /* open fail? */
@@ -2111,18 +2191,18 @@ if (sim_switches & SWMASK ('R')) {                      /* read only? */
         sim_printf ("%s: unit is read only\n", sim_dname (dptr));
     }
 else if (sim_switches & SWMASK ('N')) {                 /* new file only? */
-        uptr->fileref = sim_fopen (cptr, "wb+");        /* open new file */
-        if (uptr->fileref == NULL)                      /* open fail? */
-            return attach_err (uptr, SCPE_OPENERR);     /* yes, error */
-        if (!sim_quiet)
-            sim_printf ("%s: creating new file\n", sim_dname (dptr));
+    uptr->fileref = sim_fopen (cptr, "wb+");            /* open new file */
+    if (uptr->fileref == NULL)                          /* open fail? */
+        return attach_err (uptr, SCPE_OPENERR);         /* yes, error */
+    if (!sim_quiet)
+        sim_printf ("%s: creating new file\n", sim_dname (dptr));
     }
 else {                                                  /* normal */
     uptr->fileref = sim_fopen (cptr, "rb+");            /* open r/w */
     if (uptr->fileref == NULL) {                        /* open fail? */
         if ((errno == EROFS) || (errno == EACCES)) {    /* read only? */
-            if ((uptr->flags & UNIT_ROABLE) == 0)       /* allowed? */
-                return attach_err (uptr, SCPE_NORO);    /* no error */
+            if ((uptr->flags & (UNIT_RO | UNIT_ROABLE)) == 0)   /* allowed? */
+                return attach_err (uptr, SCPE_NORO);            /* no error */
             uptr->fileref = sim_fopen (cptr, "rb");     /* open rd only */
             if (uptr->fileref == NULL)                  /* open fail? */
                 return attach_err (uptr, SCPE_OPENERR); /* yes, error */
@@ -2275,6 +2355,7 @@ if ((uptr->flags & UNIT_BUF) && (uptr->filebuf)) {      /* buffered? */
     }
 uptr->flags = uptr->flags & ~(UNIT_ATT |                /* clear ATT */
     ((uptr->flags & UNIT_ROABLE) ? UNIT_RO : 0));       /* clear RO if dynamic */
+uptr->dynflags = uptr->dynflags & ~UNIT_PIPE;           /* clear the pipe flag */
 free (uptr->filename);
 uptr->filename = NULL;
 if (fclose (uptr->fileref) == EOF)
@@ -2519,7 +2600,7 @@ void *mbuf;
 int32 j, blkcnt, limit, unitno, time, flg;
 uint32 us, depth;
 t_addr k, high, old_capac;
-t_value val, mask;
+t_value val, max;
 t_stat r;
 size_t sz;
 t_bool v35, v32;
@@ -2536,7 +2617,7 @@ sim_ref_type = REF_NONE;                                /* use no references */
 READ_S (buf);                                           /* [V2.5+] read version */
 v35 = v32 = FALSE;
 if (strcmp (buf, save_vercur) == 0)                     /* version 3.5? */
-    v35 = v32 = TRUE;  
+    v35 = v32 = TRUE;
 else if (strcmp (buf, save_ver32) == 0)                 /* version 3.2? */
     v32 = TRUE;
 else if (strcmp (buf, save_ver30) != 0) {               /* version 3.0? */
@@ -2578,7 +2659,7 @@ for ( ;; ) {                                            /* device loop */
         }
     READ_S (buf);                                       /* [V3.0+] logical name */
     deassign_device (dptr);                             /* delete old name */
-    if ((buf[0] != 0) && 
+    if ((buf[0] != 0) &&
         ((r = assign_device (dptr, buf)) != SCPE_OK))
         return r;
     READ_I (flg);                                       /* [V2.10+] ctlr flags */
@@ -2691,10 +2772,13 @@ for ( ;; ) {                                            /* device loop */
         if (depth != rptr->depth)                       /* [V2.10+] mismatch? */
             sim_printf ("Register depth mismatch: %s %s, file = %d, sim = %d\n",
                 sim_dname (dptr), buf, depth, rptr->depth);
-        mask = width_mask[rptr->width];                 /* get mask */
+        if (rptr->maxval > 0)                           /* if a maximum value is defined */
+            max = rptr->maxval;                         /*   then use it */
+        else                                            /* otherwise */
+            max = width_mask[rptr->width];              /*   the mask defines the maximum value */
         for (us = 0; us < depth; us++) {                /* loop thru values */
             READ_I (val);                               /* read value */
-            if (val > mask)                             /* value ok? */
+            if (val > max)                              /* value ok? */
                 sim_printf ("Invalid register value: %s %s\n", sim_dname (dptr), buf);
             else if (us < rptr->depth)                  /* in range? */
                 put_rval (rptr, us, val);
@@ -2727,7 +2811,8 @@ void int_handler (int signal);
 GET_SWITCHES (cptr);                                    /* get switches */
 sim_step = 0;
 if ((flag == RU_RUN) || (flag == RU_GO)) {              /* run or go */
-    if (*cptr != 0) {                                   /* argument? */
+    t_bool new_pcv = (*cptr != 0);                      /* new PC value? */
+    if (new_pcv) {                                      /* argument? */
         cptr = get_glyph (cptr, gbuf, 0);               /* get next glyph */
         if (*cptr != 0)                                 /* should be end */
             return SCPE_2MARG;
@@ -2735,13 +2820,17 @@ if ((flag == RU_RUN) || (flag == RU_GO)) {              /* run or go */
             pcv = sim_vm_parse_addr (sim_dflt_dev, gbuf, &tptr);
         else pcv = strtotv (gbuf, &tptr, sim_PC->radix);/* parse PC */
         if ((tptr == gbuf) || (*tptr != 0) ||           /* error? */
-            (pcv > width_mask[sim_PC->width]))
+            (pcv > (sim_PC->maxval > 0
+                     ? sim_PC->maxval
+                     : width_mask[sim_PC->width])))
             return SCPE_ARG;
-        put_rval (sim_PC, 0, pcv);
+        put_rval (sim_PC, 0, pcv);			/* store new PC */
         }
     if ((flag == RU_RUN) &&                             /* run? */
         ((r = run_boot_prep ()) != SCPE_OK))            /* reset sim */
         return r;
+    if (new_pcv)                                        /* new PC value? */
+        put_rval (sim_PC, 0, pcv);                      /* store again */
     }
 
 else if (flag == RU_STEP) {                             /* step */
@@ -2787,7 +2876,8 @@ else if (flag != RU_CONT)                               /* must be cont */
 for (i = 1; (dptr = sim_devices[i]) != NULL; i++) {     /* reposition all */
     for (j = 0; j < dptr->numunits; j++) {              /* seq devices */
         uptr = dptr->units + j;
-        if ((uptr->flags & (UNIT_ATT + UNIT_SEQ)) == (UNIT_ATT + UNIT_SEQ))
+        if ((uptr->flags & (UNIT_ATT + UNIT_SEQ)) == (UNIT_ATT + UNIT_SEQ) &&
+            (uptr->dynflags & UNIT_PIPE) == 0)
             sim_fseek (uptr->fileref, uptr->pos, SEEK_SET);
         }
     }
@@ -2832,11 +2922,11 @@ for (i = 1; (dptr = sim_devices[i]) != NULL; i++) {     /* flush attached files 
         if ((uptr->flags & UNIT_ATT) &&                 /* attached, */
             !(uptr->flags & UNIT_BUF) &&                /* not buffered, */
             (uptr->fileref) &&                          /* real file, */
-            !(uptr->flags & UNIT_RAW) &&                /* not raw, */
             !(uptr->flags & UNIT_RO))                   /* not read only? */
             fflush (uptr->fileref);
         }
     }
+tmxr_post_logs (FALSE);                                 /* flush all mux log files */
 #if defined (VMS)
 sim_printf ("\n");
 #endif
@@ -2874,7 +2964,7 @@ t_stat r = 0;
 t_addr k;
 t_value pcval;
 
-fputc ('\n', st);                                       /* skip a line */    
+fputc ('\n', st);                                       /* skip a line */
 
 if (v >= SCPE_BASE)                                     /* SCP error? */
     fputs (sim_error_text (v), st);                     /* print it from the SCP list */
@@ -3007,7 +3097,7 @@ for (gptr = gbuf, reason = SCPE_OK;
     tdptr = sim_dfdev;                                  /* working dptr */
     if (strncmp (gptr, "STATE", strlen ("STATE")) == 0) {
         tptr = gptr + strlen ("STATE");
-        if (*tptr && (*tptr++ != ',')) 
+        if (*tptr && (*tptr++ != ','))
             return SCPE_ARG;
         if ((lowr = sim_dfdev->registers) == NULL)
             return SCPE_NXREG;
@@ -3066,7 +3156,7 @@ return reason;
    exdep_addr_loop      examine/deposit range of addresses
 */
 
-t_stat exdep_reg_loop (FILE *ofile, SCHTAB *schptr, int32 flag, char *cptr, 
+t_stat exdep_reg_loop (FILE *ofile, SCHTAB *schptr, int32 flag, char *cptr,
     REG *lowr, REG *highr, uint32 lows, uint32 highs)
 {
 t_stat reason;
@@ -3109,28 +3199,32 @@ t_stat exdep_addr_loop (FILE *ofile, SCHTAB *schptr, int32 flag, char *cptr,
     t_addr low, t_addr high, DEVICE *dptr, UNIT *uptr)
 {
 t_addr i, mask;
-t_stat reason;
+t_stat reason, dfltinc;
+
 
 if (uptr->flags & UNIT_DIS)                             /* disabled? */
     return SCPE_UDIS;
 mask = (t_addr) width_mask[dptr->awidth];
 if ((low > mask) || (high > mask) || (low > high))
     return SCPE_ARG;
+dfltinc =  parse_sym ("0", 0, uptr, sim_eval, sim_switches);
+if (dfltinc > 0)                                         /* parse_sym doing nums? */
+    dfltinc = 1 - dptr->aincr;                          /* no, use std dflt incr */
 for (i = low; i <= high; ) {                            /* all paths must incr!! */
     reason = get_aval (i, dptr, uptr);                  /* get data */
     if (reason != SCPE_OK)                              /* return if error */
         return reason;
     if (schptr && !test_search (sim_eval[0], schptr))
-        i = i + dptr->aincr;                            /* sch fails, incr */
+        i = i + (1 - dfltinc);                          /* sch fails, incr */
     else {                                              /* no sch or success */
         if (flag != EX_D) {                             /* ex, ie, or id? */
-            reason = ex_addr (ofile, flag, i, dptr, uptr);
+            reason = ex_addr (ofile, flag, i, dptr, uptr, dfltinc);
             if (reason > SCPE_OK)
                 return reason;
             if (sim_log && (ofile == stdout))
-                ex_addr (sim_log, flag, i, dptr, uptr);
+                ex_addr (sim_log, flag, i, dptr, uptr, dfltinc);
             }
-        else reason = 1 - dptr->aincr;                  /* no, dflt incr */
+        else reason = dfltinc;                          /* no, dflt incr */
         if (flag != EX_E) {                             /* ie, id, or d? */
             reason = dep_addr (flag, cptr, i, dptr, uptr, reason);
             if (reason > SCPE_OK)
@@ -3185,43 +3279,50 @@ return SCPE_OK;
         idx     =       index
    Outputs:
         return  =       register value
+
+   Implementation notes:
+
+    1. The stride is the size of the element spacing for arrays, which is
+       equivalent to the addressing increment for array subscripting.  For
+       scalar registers, the stride will be zero (as will the idx value), so the
+       access pointer is same as the specified location pointer.
+
+    2. The size of the t_value type is determined by the USE_INT64 symbol and
+       will be either a 32-bit or a 64-bit type.  It represents the largest
+       value that can be returned and so is the default if one of the smaller
+       sizes is not indicated.  If USE_INT64 is not defined, t_value will be
+       identical to uint32.  In this case, compilers are generally smart enough
+       to eliminate the 32-bit size test and combine the two assignments into a
+       single default assignment.
 */
 
 t_value get_rval (REG *rptr, uint32 idx)
 {
-size_t sz;
 t_value val;
-UNIT *uptr;
+void    *ptr;
 
-sz = SZ_R (rptr);
-if ((rptr->depth > 1) && (rptr->flags & REG_CIRC)) {
-    idx = idx + rptr->qptr;
-    if (idx >= rptr->depth) idx = idx - rptr->depth;
+if ((rptr->depth > 1) && (rptr->flags & REG_CIRC)) {    /* if the register is a circular queue */
+    idx = idx + rptr->qptr;                             /*   then adjust the index relative to the queue */
+    if (idx >= rptr->depth)                             /* if the index is beyond the end of the array */
+        idx = idx - rptr->depth;                        /*   then wrap it around */
     }
-if ((rptr->depth > 1) && (rptr->flags & REG_UNIT)) {
-    uptr = ((UNIT *) rptr->loc) + idx;
-#if defined (USE_INT64)
-    if (sz <= sizeof (uint32))
-        val = *((uint32 *) uptr);
-    else val = *((t_uint64 *) uptr);
-#else
-    val = *((uint32 *) uptr);
-#endif
-    }
-else if (((rptr->depth > 1) || (rptr->flags & REG_FIT)) &&
-    (sz == sizeof (uint8)))
-    val = *(((uint8 *) rptr->loc) + idx);
-else if (((rptr->depth > 1) || (rptr->flags & REG_FIT)) &&
-    (sz == sizeof (uint16)))
-    val = *(((uint16 *) rptr->loc) + idx);
-#if defined (USE_INT64)
-else if (sz <= sizeof (uint32))
-     val = *(((uint32 *) rptr->loc) + idx);
-else val = *(((t_uint64 *) rptr->loc) + idx);
-#else
-else val = *(((uint32 *) rptr->loc) + idx);
-#endif
-val = (val >> rptr->offset) & width_mask[rptr->width];
+
+ptr = ((char *) rptr->loc) + (idx * rptr->stride);      /* point at the starting byte of the item */
+
+if (rptr->size == sizeof (uint8))                       /* get the value */
+    val = *((uint8 *) ptr);                             /*   using a size */
+                                                        /*     appropriate to */
+else if (rptr->size == sizeof (uint16))                 /*       the size of */
+    val = *((uint16 *) ptr);                            /*         the underlying type */
+
+else if (rptr->size == sizeof (uint32))
+    val = *((uint32 *) ptr);
+
+else                                                    /* if the element size is non-standard */
+    val = *((t_value *) ptr);                           /*   then access using the largest size permitted */
+
+val = (val >> rptr->offset) & width_mask[rptr->width];  /* shift and mask to obtain the final value */
+
 return val;
 }
 
@@ -3239,7 +3340,7 @@ return val;
 t_stat dep_reg (int32 flag, char *cptr, REG *rptr, uint32 idx)
 {
 t_stat r;
-t_value val, mask;
+t_value val, max;
 int32 rdx;
 char *tptr, gbuf[CBUFSIZE];
 
@@ -3256,17 +3357,20 @@ if (flag & EX_I) {
     if (*cptr == 0)                                     /* success */
         return SCPE_OK;
     }
-mask = width_mask[rptr->width];
+if (rptr->maxval > 0)                                   /* if a maximum value is defined */
+    max = rptr->maxval;                                 /*   then use it */
+else                                                    /* otherwise */
+    max = width_mask[rptr->width];                      /*   the mask defines the maximum value */
 GET_RADIX (rdx, rptr->radix);
 if ((rptr->flags & REG_VMAD) && sim_vm_parse_addr) {    /* address form? */
     val = sim_vm_parse_addr (sim_dflt_dev, cptr, &tptr);
-    if ((tptr == cptr) || (*tptr != 0) || (val > mask))
+    if ((tptr == cptr) || (*tptr != 0) || (val > max))
         return SCPE_ARG;
     }
 else if (!(rptr->flags & REG_VMFLAGS) ||                /* dont use sym? */
     (parse_sym (cptr, (rptr->flags & REG_UFMASK) | rdx, NULL,
                 &val, sim_switches | SIM_SW_REG) > SCPE_OK)) {
-    val = get_uint (cptr, rdx, mask, &r);
+    val = get_uint (cptr, rdx, max, &r);
     if (r != SCPE_OK)
         return SCPE_ARG;
     }
@@ -3282,59 +3386,54 @@ return SCPE_OK;
         rptr    =       pointer to register descriptor
         idx     =       index
         val     =       new value
-        mask    =       mask
    Outputs:
         none
+
+
+   Implementation notes:
+
+    1. mask and val are of type t_value, so an explicit cast is not needed for
+       that type of assignment.
+
+    2. See the notes for the get_rval routine for additional information
+       regarding the stride calculation and the t_value default assignment,
 */
 
 void put_rval (REG *rptr, uint32 idx, t_value val)
 {
-size_t sz;
 t_value mask;
-UNIT *uptr;
+void    *ptr;
 
-#define PUT_RVAL(sz,rp,id,v,m) \
-    *(((sz *) rp->loc) + id) = \
-            (*(((sz *) rp->loc) + id) & \
-            ~((m) << (rp)->offset)) | ((v) << (rp)->offset)
+if (rptr == sim_PC)                                     /* if the PC is changing */
+    sim_brk_npc (0);                                    /*   then notify the breakpoint package */
 
-if (rptr == sim_PC)
-    sim_brk_npc (0);
-sz = SZ_R (rptr);
-mask = width_mask[rptr->width];
-if ((rptr->depth > 1) && (rptr->flags & REG_CIRC)) {
-    idx = idx + rptr->qptr;
-    if (idx >= rptr->depth)
-        idx = idx - rptr->depth;
+mask = ~(width_mask [rptr->width] << rptr->offset);     /* set up a mask to produce a hole in the element */
+val  = val << rptr->offset;                             /*   and position the new value to fit the hole */
+
+if ((rptr->depth > 1) && (rptr->flags & REG_CIRC)) {    /* if the register is a circular queue */
+    idx = idx + rptr->qptr;                             /*   then adjust the index relative to the queue */
+    if (idx >= rptr->depth)                             /* if the index is beyond the end of the array */
+        idx = idx - rptr->depth;                        /*   then wrap it around */
     }
-if ((rptr->depth > 1) && (rptr->flags & REG_UNIT)) {
-    uptr = ((UNIT *) rptr->loc) + idx;
-#if defined (USE_INT64)
-    if (sz <= sizeof (uint32))
-        *((uint32 *) uptr) = (*((uint32 *) uptr) &
-        ~(((uint32) mask) << rptr->offset)) | 
-        (((uint32) val) << rptr->offset);
-    else *((t_uint64 *) uptr) = (*((t_uint64 *) uptr)
-        & ~(mask << rptr->offset)) | (val << rptr->offset);
-#else
-    *((uint32 *) uptr) = (*((uint32 *) uptr) &
-        ~(((uint32) mask) << rptr->offset)) | 
-        (((uint32) val) << rptr->offset);
-#endif
-    }
-else if (((rptr->depth > 1) || (rptr->flags & REG_FIT)) &&
-    (sz == sizeof (uint8)))
-    PUT_RVAL (uint8, rptr, idx, (uint32) val, (uint32) mask);
-else if (((rptr->depth > 1) || (rptr->flags & REG_FIT)) &&
-    (sz == sizeof (uint16)))
-    PUT_RVAL (uint16, rptr, idx, (uint32) val, (uint32) mask);
-#if defined (USE_INT64)
-else if (sz <= sizeof (uint32))
-    PUT_RVAL (uint32, rptr, idx, (int32) val, (uint32) mask);
-else PUT_RVAL (t_uint64, rptr, idx, val, mask);
-#else
-else PUT_RVAL (uint32, rptr, idx, val, mask);
-#endif
+
+ptr = ((char *) rptr->loc) + (idx * rptr->stride);      /* point at the starting byte of the item */
+
+if (rptr->size == sizeof (uint8))                       /* store the value */
+    *((uint8 *) ptr) =                                  /*   using a size */
+      (uint8) (*((uint8 *) ptr) & mask | val);          /*     appropriate to */
+                                                        /*       the size of */
+else if (rptr->size == sizeof (uint16))                 /*         the underlying type */
+    *((uint16 *) ptr) =
+      (uint16) (*((uint16 *) ptr) & mask | val);
+
+else if (rptr->size == sizeof (uint32))
+    *((uint32 *) ptr) =
+      (uint32) (*((uint32 *) ptr) & mask | val);
+
+else                                                    /* if the element size is non-standard */
+    *((t_value *) ptr) =                                /*   then access using the largest size permitted */
+      *((t_value *) ptr) & mask | val;
+
 return;
 }
 
@@ -3346,12 +3445,13 @@ return;
         addr    =       address to examine
         dptr    =       pointer to device
         uptr    =       pointer to unit
+        dfltinc =       default increment
    Outputs:
         return  =       if > 0, error status
                         if <= 0,-number of extra addr units retired
 */
 
-t_stat ex_addr (FILE *ofile, int32 flag, t_addr addr, DEVICE *dptr, UNIT *uptr)
+t_stat ex_addr (FILE *ofile, int32 flag, t_addr addr, DEVICE *dptr, UNIT *uptr, int32 dfltinc)
 {
 t_stat reason;
 int32 rdx;
@@ -3361,12 +3461,12 @@ if (sim_vm_fprint_addr)
 else fprint_val (ofile, addr, dptr->aradix, dptr->awidth, PV_LEFT);
 fprintf (ofile, ":\t");
 if (!(flag & EX_E))
-    return (1 - dptr->aincr);
+    return dfltinc;
 
 GET_RADIX (rdx, dptr->dradix);
 if ((reason = fprint_sym (ofile, addr, sim_eval, uptr, sim_switches)) > 0) {
     fprint_val (ofile, sim_eval[0], rdx, dptr->dwidth, PV_RZRO);
-    reason = 1 - dptr->aincr;
+    reason = dfltinc;
     }
 if (flag & EX_I)
     fprintf (ofile, "\t");
@@ -3407,8 +3507,8 @@ for (i = 0, j = addr; i < sim_emax; i++, j = j + dptr->aincr) {
     else {
         if (!(uptr->flags & UNIT_ATT))
             return SCPE_UNATT;
-        if (((uptr->flags & UNIT_RAW) != 0) ||
-            (uptr->fileref == NULL))
+        if ((uptr->fileref == NULL) ||
+            ((uptr->dynflags & UNIT_PIPE) != 0))
             return SCPE_NOFNC;
         if (((uptr->flags & UNIT_FIX) != 0) &&
             (j >= uptr->capac)) {
@@ -3500,7 +3600,7 @@ for (i = 0, j = addr; i < count; i++, j = j + dptr->aincr) {
     else {
         if (!(uptr->flags & UNIT_ATT))
             return SCPE_UNATT;
-        if (uptr->flags & UNIT_RAW) 
+        if (uptr->dynflags & UNIT_PIPE)
             return SCPE_NOFNC;
         if ((uptr->flags & UNIT_FIX) && (j >= uptr->capac))
             return SCPE_NXM;
@@ -3508,7 +3608,7 @@ for (i = 0, j = addr; i < count; i++, j = j + dptr->aincr) {
         loc = j / dptr->aincr;
         if (uptr->flags & UNIT_BUF) {
             SZ_STORE (sz, sim_eval[i], uptr->filebuf, loc);
-            if (loc >= uptr->hwmark) 
+            if (loc >= uptr->hwmark)
                 uptr->hwmark = (uint32) loc + 1;
             }
         else {
@@ -3596,7 +3696,7 @@ return read_line_p (NULL, cptr, size, stream);
 char *read_line_p (char *prompt, char *cptr, int32 size, FILE *stream)
 {
 char *tptr;
-#if defined(HAVE_DLOPEN)
+#if defined(SIM_HAVE_DLOPEN)
 static int initialized = 0;
 static char *(*p_readline)(const char *) = NULL;
 static void (*p_add_history)(const char *) = NULL;
@@ -3631,13 +3731,16 @@ if (prompt) {                                           /* interactive? */
         }
     else {
         printf ("%s", prompt);                          /* display prompt */
+        fflush (stdout);
         cptr = fgets (cptr, size, stream);              /* get cmd line */
         }
     }
 else cptr = fgets (cptr, size, stream);                 /* get cmd line */
 #else
-if (prompt)                                             /* interactive? */
+if (prompt) {                                           /* interactive? */
     printf ("%s", prompt);                              /* display prompt */
+    fflush (stdout);
+    }
 cptr = fgets (cptr, size, stream);                      /* get cmd line */
 #endif
 
@@ -3657,7 +3760,7 @@ while (isspace (*cptr))                                 /* trim leading spc */
 if (*cptr == ';')                                       /* ignore comment */
     *cptr = 0;
 
-#if defined (HAVE_DLOPEN)
+#if defined (SIM_HAVE_DLOPEN)
 if (prompt && p_add_history && *cptr)                   /* Save non blank lines in history */
     p_add_history (cptr);
 #endif
@@ -3682,7 +3785,7 @@ char *get_glyph_gen (char *iptr, char *optr, char mchar, t_bool uc)
 {
 while ((isspace (*iptr) == 0) && (*iptr != 0) && (*iptr != mchar)) {
     if (islower (*iptr) && uc)
-        *optr = toupper (*iptr);
+        *optr = (char) toupper (*iptr);
     else *optr = *iptr;
     iptr++; optr++;
     }
@@ -4236,7 +4339,7 @@ while (*cptr) {                                         /* loop through modifier
         cptr = get_glyph_nc (cptr + 1, gbuf, 0);
         sim_ofile = sim_fopen (gbuf, "a");              /* open for append */
         if (sim_ofile == NULL) {                        /* open failed? */
-            *st = SCPE_OPENERR;                        
+            *st = SCPE_OPENERR;
             return NULL;
             }
         sim_opt_out |= CMD_OPT_OF;                      /* got output file */
@@ -4480,7 +4583,7 @@ do {
     d = d - 1;
     digit = (int32) (val % radix);
     val = val / radix;
-    dbuf[d] = (digit <= 9)? '0' + digit: 'A' + (digit - 10);
+    dbuf[d] = (char) ((digit <= 9)? '0' + digit: 'A' + (digit - 10));
     } while ((d > 0) && (val != 0));
 
 if (format != PV_LEFT) {
