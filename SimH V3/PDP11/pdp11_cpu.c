@@ -1,6 +1,6 @@
 /* pdp11_cpu.c: PDP-11 CPU simulator
 
-   Copyright (c) 1993-2018, Robert M Supnik
+   Copyright (c) 1993-2022, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,19 @@
 
    cpu          PDP-11 CPU
 
+   30-Nov022    RMS     More 11/45,11/70 trap hackery (Walter Mueller)
+   29-Nov-22    RMS     Trap stack abort must clear other traps/aborts (Walter Mueller)
+   23-Oct-22    RMS     Fixed priority of MME traps (Walter Mueller)
+   02-Sep-22    RMS     Fixed handling of PDR<A> (Walter Mueller)
+   31-Aug-22    RMS     MMR0<15:13> != 0 locks bits<15:13> (Walter Mueller)
+                        MMR0<12> = 1 disables further traps (Walter Mueller)
+   25-Aug-22    RMS     11/45,70 clear MMR1 in trap sequence (Walter Mueller)
+   23-Aug-22    RMS     11/45,70 detect red stack abort before memory write
+                        in JSR, MFPx (Walter Mueller)
+   20-Aug-22    RMS     MMR1 reads as 0 on subset memory mmgt systems
+                        11/44, 45, 70 track PC changes (Walter Mueller)
+                        J11 tracks PC changes on -(PC) and @-(PC)
+   25-Jul-22    RMS     Removed deprecated CPU models (Q22, UHR11, URH70)
    04-Jun-18    RMS     Removed CPU model entries for UC15 (Mark Pizzolato)
    04-Dec-16    RMS     Removed duplicate IDLE entries in MTAB
    30-Aug-16    RMS     Fixed overloading of -d in ex/mod
@@ -329,6 +342,7 @@ int32 relocR (int32 addr);
 int32 relocW (int32 addr);
 void relocR_test (int32 va, int32 apridx);
 void relocW_test (int32 va, int32 apridx);
+int32 clean_MMR1 (int32 mmr1);
 t_bool PLF_test (int32 va, int32 apr);
 void reloc_abort (int32 err, int32 apridx);
 int32 ReadE (int32 addr);
@@ -362,22 +376,35 @@ extern int32 get_vector (int32 nipl);
 /* Trap data structures */
 
 int32 trap_vec[TRAP_V_MAX] = {                          /* trap req to vector */
-    VEC_RED, VEC_ODD, VEC_MME, VEC_NXM,
+    VEC_RED, VEC_ODD, VEC_NXM, VEC_MME,
     VEC_PAR, VEC_PRV, VEC_ILL, VEC_BPT,
     VEC_IOT, VEC_EMT, VEC_TRAP, VEC_TRC,
     VEC_YEL, VEC_PWRFL, VEC_FPE
     };
 
+t_bool trap_load_mmr2[TRAP_V_MAX + 1] = {               /* do trap requests load MMR2? */
+    TRUE, TRUE, TRUE, TRUE,
+    TRUE, FALSE, FALSE, FALSE,
+    FALSE, FALSE, FALSE, TRUE,
+    TRUE, TRUE, TRUE, TRUE                              /* last is interrupt */
+    };
+
 int32 trap_clear[TRAP_V_MAX] = {                        /* trap clears */
-    TRAP_RED+TRAP_PAR+TRAP_YEL+TRAP_TRC+TRAP_ODD+TRAP_NXM,
-    TRAP_ODD+TRAP_PAR+TRAP_YEL+TRAP_TRC,
-    TRAP_MME+TRAP_PAR+TRAP_YEL+TRAP_TRC,
-    TRAP_NXM+TRAP_PAR+TRAP_YEL+TRAP_TRC,
-    TRAP_PAR+TRAP_TRC, TRAP_PRV+TRAP_TRC,
-    TRAP_ILL+TRAP_TRC, TRAP_BPT+TRAP_TRC,
-    TRAP_IOT+TRAP_TRC, TRAP_EMT+TRAP_TRC,
-    TRAP_TRAP+TRAP_TRC, TRAP_TRC,
-    TRAP_YEL, TRAP_PWRFL, TRAP_FPE
+    TRAP_RED+TRAP_ODD+TRAP_NXM+TRAP_PAR+TRAP_YEL+TRAP_TRC+TRAP_MME, /* red stack abort */
+    TRAP_ODD+TRAP_NXM+TRAP_PAR+TRAP_YEL+TRAP_TRC+TRAP_MME, /* odd address abort */
+    TRAP_NXM+TRAP_PAR+TRAP_YEL+TRAP_TRC+TRAP_MME,       /* nxm abort */
+    TRAP_MME+TRAP_PAR+TRAP_YEL+TRAP_TRC,                /* mme abort or trap */
+    TRAP_PAR+TRAP_YEL+TRAP_TRC,
+    TRAP_PRV+TRAP_TRC,                                  /* instruction traps */
+    TRAP_ILL+TRAP_TRC,                                  /* occur in fetch or */
+    TRAP_BPT+TRAP_TRC,                                  /* initial decode */
+    TRAP_IOT+TRAP_TRC,                                  /* no yelstk possible */
+    TRAP_EMT+TRAP_TRC,
+    TRAP_TRAP+TRAP_TRC,
+    TRAP_TRC,
+    TRAP_YEL,
+    TRAP_PWRFL,
+    TRAP_FPE
     };
 
 /* CPU data structures
@@ -582,10 +609,9 @@ MTAB cpu_mod[] = {
     { MTAB_XTD|MTAB_VDV, MOD_1184, NULL, "11/84", &cpu_set_model },
     { MTAB_XTD|MTAB_VDV, MOD_1193, NULL, "11/93", &cpu_set_model },
     { MTAB_XTD|MTAB_VDV, MOD_1194, NULL, "11/94", &cpu_set_model },
-    { MTAB_XTD|MTAB_VDV, MOD_1173, NULL, "Q22", &cpu_set_model },
-    { MTAB_XTD|MTAB_VDV, MOD_1184, NULL, "URH11", &cpu_set_model },
-    { MTAB_XTD|MTAB_VDV, MOD_1170, NULL, "URH70", &cpu_set_model },
-    { MTAB_XTD|MTAB_VDV, MOD_1145, NULL, "U18", &cpu_set_model },
+//    { MTAB_XTD|MTAB_VDV, MOD_1173, NULL, "Q22", &cpu_set_model },
+//    { MTAB_XTD|MTAB_VDV, MOD_1184, NULL, "URH11", &cpu_set_model },
+//    { MTAB_XTD|MTAB_VDV, MOD_1170, NULL, "URH70", &cpu_set_model },
     { MTAB_XTD|MTAB_VDV, OPT_EIS, NULL, "EIS", &cpu_set_opt },
     { MTAB_XTD|MTAB_VDV, OPT_EIS, NULL, "NOEIS", &cpu_clr_opt },
     { MTAB_XTD|MTAB_VDV, OPT_FIS, NULL, "FIS", &cpu_set_opt },
@@ -677,7 +703,7 @@ isenable = calc_is (cm);
 dsenable = calc_ds (cm);
 put_PIRQ (PIRQ);                                        /* rewrite PIRQ */
 STKLIM = STKLIM & STKLIM_RW;                            /* clean up STKLIM */
-MMR0 = MMR0 | MMR0_IC;                                  /* usually on */
+MMR0 = MMR0 & ~MMR0_IC;                                 /* usually off */
 
 trap_req = calc_ints (ipl, trap_req);                   /* upd int req */
 trapea = 0;
@@ -709,7 +735,8 @@ if (abortval != 0) {
         (CPUT (STOP_STKA) || stop_spabort))
         reason = STOP_SPABORT;
     if (trapea == ~MD_KER) {                            /* kernel stk abort? */
-        setTRAP (TRAP_RED);
+        trap_req = trap_req & ~trap_clear[TRAP_RED];    /* clear all traps */
+        setTRAP (TRAP_RED);                             /* set red stack trap */
         setCPUERR (CPUE_RED);
         STACKFILE[MD_KER] = 4;
         if (cm == MD_KER)
@@ -772,16 +799,20 @@ while (reason == 0)  {
    5. Push the old PC and PSW on the new stack
    6. Update SP, PSW, and PC
    7. If not stack overflow, check for stack overflow
+
+   If the MMU registers are not frozen, the 11/45 and 11/70 will
+   also clear MMR1 and store the trap vector in MMR2, <except>
+   for the four instruction traps (EMT, TRAP, IOT, BPT).
 */
 
         wait_state = 0;                                 /* exit wait state */
         STACKFILE[cm] = SP;
         PSW = get_PSW ();                               /* assemble PSW */
         oldrs = rs;
-        if (CPUT (HAS_MMTR)) {                          /* 45,70? */
-            if (update_MM)                              /* save vector */
-                MMR2 = trapea;
-            MMR0 = MMR0 & ~MMR0_IC;                     /* clear IC */
+        if ((CPUT (HAS_MMTR)) && (update_MM)) {         /* 45,70, not frozen? */
+            MMR1 = 0;                                   /* clear MMR1 */
+            if (trap_load_mmr2[trapnum])                /* load MMR2? */
+                MMR2 = trapea;                          /* save vector */
             }
         src = ReadW (trapea | calc_ds (MD_KER));        /* new PC */
         src2 = ReadW ((trapea + 2) | calc_ds (MD_KER)); /* new PSW */
@@ -806,7 +837,6 @@ while (reason == 0)  {
         if ((cm == MD_KER) && (SP < (STKLIM + STKL_Y)) &&
             (trapnum != TRAP_V_RED) && (trapnum != TRAP_V_YEL))
             set_stack_trap (SP);
-        MMR0 = MMR0 | MMR0_IC;                          /* back to instr */
         continue;                                       /* end if traps */
         }
 
@@ -1095,9 +1125,9 @@ while (reason == 0)  {
                 SP = (SP - 2) & 0177777;
                 if (update_MM)
                     MMR1 = calc_MMR1 (0366);
-                WriteW (R[srcspec], SP | dsenable);
                 if ((cm == MD_KER) && (SP < (STKLIM + STKL_Y)))
                     set_stack_trap (SP);
+                WriteW (R[srcspec], SP | dsenable);
                 R[srcspec] = PC;
                 JMP_PC (dst & 0177777);
                 }
@@ -1268,9 +1298,9 @@ while (reason == 0)  {
                 SP = (SP - 2) & 0177777;
                 if (update_MM)
                     MMR1 = calc_MMR1 (0366);
-                WriteW (dst, SP | dsenable);
                 if ((cm == MD_KER) && (SP < (STKLIM + STKL_Y)))
                     set_stack_trap (SP);
+                WriteW (dst, SP | dsenable);
                 }
             else setTRAP (TRAP_ILL);
             break;
@@ -1522,7 +1552,7 @@ while (reason == 0)  {
                 break;
                 }
             if ((((uint32)src) == 020000000000) && (src2 == 0177777)) {
-                V = 1;                                  /* J11,11/70 compat */
+                V = 1;                                  /* V = 1 */
                 N = Z = C = 0;                          /* N = Z = 0 */
                 break;
                 }
@@ -1533,7 +1563,7 @@ while (reason == 0)  {
             dst = src / src2;
             N = (dst < 0);                              /* N set on 32b result */
             if ((dst > 077777) || (dst < -0100000)) {
-                V = 1;                                  /* J11,11/70 compat */
+                V = 1;                                  /* V = 1 */
                 Z = C = 0;                              /* Z = C = 0 */
                 break;
                 }
@@ -1944,9 +1974,9 @@ while (reason == 0)  {
                 SP = (SP - 2) & 0177777;
                 if (update_MM)
                     MMR1 = calc_MMR1 (0366);
-                WriteW (dst, SP | dsenable);
                 if ((cm == MD_KER) && (SP < (STKLIM + STKL_Y)))
                     set_stack_trap (SP);
+                WriteW (dst, SP | dsenable);
                 }
             else setTRAP (TRAP_ILL);
             break;
@@ -2103,7 +2133,7 @@ while (reason == 0)  {
 
     case 017:
         if (CPUO (OPT_FPP))
-            fp11 (IR);                  /* call fpp */
+            fp11 (IR);                                  /* call fpp */
         else setTRAP (TRAP_ILL);
         break;                                          /* end case 017 */
         }                                               /* end switch op */
@@ -2116,6 +2146,7 @@ for (i = 0; i < 6; i++)
     REGFILE[i][rs] = R[i];
 STACKFILE[cm] = SP;
 saved_PC = PC & 0177777;
+MMR1 = clean_MMR1 (MMR1);                               /* clean up MMR1 */
 pcq_r->qptr = pcq_p;                                    /* update pc q ptr */
 set_r_display (rs, cm);
 return reason;
@@ -2153,10 +2184,10 @@ return reason;
 
    According to the PDP-11 Architecture Handbook, MMR1 records all
    autoincrement and autodecrement operations, including those which
-   explicitly reference the PC.  For the J-11, this is only true for
+   explicitly reference the PC. For the J-11, this is only true for
    autodecrement operands, autodecrement deferred operands, and
    autoincrement destination operands that involve a write to memory.
-   The simulator follows the Handbook, for simplicity.
+   This is cleaned up at simulator exit or MMR1 read.
 
    Notes:
 
@@ -2183,20 +2214,20 @@ switch (spec >> 3) {                                    /* decode spec<5:3> */
 
     case 2:                                             /* (R)+ */
         R[reg] = ((adr = R[reg]) + 2) & 0177777;
-        if (update_MM && (reg != 7))
+        if (update_MM)
             MMR1 = calc_MMR1 (020 | reg);
         return (adr | ds);
 
     case 3:                                             /* @(R)+ */
         R[reg] = ((adr = R[reg]) + 2) & 0177777;
-        if (update_MM && (reg != 7))
+        if (update_MM)
             MMR1 = calc_MMR1 (020 | reg);
         adr = ReadW (adr | ds);
         return (adr | dsenable);
 
     case 4:                                             /* -(R) */
         adr = R[reg] = (R[reg] - 2) & 0177777;
-        if (update_MM && (reg != 7))
+        if (update_MM)
             MMR1 = calc_MMR1 (0360 | reg);
         if ((reg == 6) && (cm == MD_KER) && (adr < (STKLIM + STKL_Y)))
             set_stack_trap (adr);
@@ -2204,7 +2235,7 @@ switch (spec >> 3) {                                    /* decode spec<5:3> */
 
     case 5:                                             /* @-(R) */
         adr = R[reg] = (R[reg] - 2) & 0177777;
-        if (update_MM && (reg != 7))
+        if (update_MM)
             MMR1 = calc_MMR1 (0360 | reg);
         if ((reg == 6) && (cm == MD_KER) && (adr < (STKLIM + STKL_Y)))
             set_stack_trap (adr);
@@ -2238,16 +2269,16 @@ switch (spec >> 3) {                                    /* decode spec<5:3> */
     case 1:                                             /* (R) */
         return (R[reg] | ds);
 
-    case 2:                                                     /* (R)+ */
+    case 2:                                             /* (R)+ */
         delta = 1 + (reg >= 6);                         /* 2 if R6, PC */
         R[reg] = ((adr = R[reg]) + delta) & 0177777;
-        if (update_MM && (reg != 7))
+        if (update_MM)
             MMR1 = calc_MMR1 ((delta << 3) | reg);
         return (adr | ds);
 
     case 3:                                             /* @(R)+ */
         R[reg] = ((adr = R[reg]) + 2) & 0177777;
-        if (update_MM && (reg != 7))
+        if (update_MM)
             MMR1 = calc_MMR1 (020 | reg);
         adr = ReadW (adr | ds);
         return (adr | dsenable);
@@ -2255,7 +2286,7 @@ switch (spec >> 3) {                                    /* decode spec<5:3> */
     case 4:                                             /* -(R) */
         delta = 1 + (reg >= 6);                         /* 2 if R6, PC */
         adr = R[reg] = (R[reg] - delta) & 0177777;
-        if (update_MM && (reg != 7))
+        if (update_MM)
             MMR1 = calc_MMR1 ((((-delta) & 037) << 3) | reg);
         if ((reg == 6) && (cm == MD_KER) && (adr < (STKLIM + STKL_Y)))
             set_stack_trap (adr);
@@ -2263,7 +2294,7 @@ switch (spec >> 3) {                                    /* decode spec<5:3> */
 
     case 5:                                             /* @-(R) */
         adr = R[reg] = (R[reg] - 2) & 0177777;
-        if (update_MM && (reg != 7))
+        if (update_MM)
             MMR1 = calc_MMR1 (0360 | reg);
         if ((reg == 6) && (cm == MD_KER) && (adr < (STKLIM + STKL_Y)))
             set_stack_trap (adr);
@@ -2547,14 +2578,16 @@ switch (apr & PDR_ACF) {                                /* case on ACF */
 
     case 1: case 4:                                     /* trap read */
         if (CPUT (HAS_MMTR)) {                          /* traps implemented? */
-            APRFILE[apridx] = APRFILE[apridx] | PDR_A;  /* set A */
-            if (MMR0 & MMR0_TENB) {                     /* traps enabled? */
+            int32 old_mmr0 = MMR0;
+            APRFILE[apridx] |= PDR_A;                   /* set A */
+            MMR0 = MMR0 | MMR0_TRAP;                    /* set trap flag */
+            if ((MMR0 & MMR0_TENB) != 0) {              /* traps enabled? */
                 if (update_MM)                          /* update MMR0 */
                     MMR0 = (MMR0 & ~MMR0_PAGE) | (apridx << MMR0_V_PAGE);
-                MMR0 = MMR0 | MMR0_TRAP;                /* set trap flag */
-                setTRAP (TRAP_MME);                     /* set trap */
+                if ((old_mmr0 & MMR0_TRAP) == 0)        /* first trap? */
+                    setTRAP (TRAP_MME);                 /* set trap */
                 }
-            return;                                     /* continue op */
+            return;                                     /* continue */
             }                                           /* not impl, abort NR */
     case 0: case 3: case 7:                             /* non-resident */
         err = MMR0_NR;                                  /* set MMR0 */
@@ -2580,10 +2613,10 @@ return ((apr & PDR_ED)? (dbn < plf): (dbn > plf));      /* pg lnt error? */
 
 void reloc_abort (int32 err, int32 apridx)
 {
-if (update_MM) MMR0 =                                   /* update MMR0 */
-    (MMR0 & ~MMR0_PAGE) | (apridx << MMR0_V_PAGE);
-APRFILE[apridx] = APRFILE[apridx] | PDR_A;              /* set A */
-MMR0 = MMR0 | err;                                      /* set aborts */
+if (update_MM) {                                        /* MMR0 not frozen? */
+    MMR0 = (MMR0 & ~MMR0_PAGE) | (apridx << MMR0_V_PAGE); /* record page */
+    MMR0 = MMR0 | err;                                  /* OR in aborts */
+    }
 ABORT (TRAP_MME);                                       /* abort ref */
 return;
 }
@@ -2615,7 +2648,7 @@ if (MMR0 & MMR0_MME) {                                  /* if mmgt */
         relocW_test (va, apridx);                       /* long test */
     if (PLF_test (va, apr))                             /* pg lnt error? */
         reloc_abort (MMR0_PL, apridx);
-    APRFILE[apridx] = apr | PDR_W;                      /* set W */
+    APRFILE[apridx] |= PDR_W;                           /* set W */
     pa = ((va & VA_DF) + ((apr >> 10) & 017777700)) & PAMASK;
     if ((MMR3 & MMR3_M22E) == 0) {
         pa = pa & 0777777;
@@ -2655,14 +2688,16 @@ switch (apr & PDR_ACF) {                                /* case on ACF */
 
     case 4: case 5:                                     /* trap write */
         if (CPUT (HAS_MMTR)) {                          /* traps implemented? */
-            APRFILE[apridx] = APRFILE[apridx] | PDR_A;  /* set A */
-            if (MMR0 & MMR0_TENB) {                     /* traps enabled? */
+            int32 old_mmr0 = MMR0;
+            APRFILE[apridx] |= PDR_A;                   /* set PDR <A> */
+            MMR0 = MMR0 | MMR0_TRAP;                    /* set trap flag */
+            if ((MMR0 & MMR0_TENB) != 0) {              /* traps enabled? */
                 if (update_MM)                          /* update MMR0 */
                     MMR0 = (MMR0 & ~MMR0_PAGE) | (apridx << MMR0_V_PAGE);
-                MMR0 = MMR0 | MMR0_TRAP;                /* set trap flag */
-                setTRAP (TRAP_MME);                     /* set trap */
+                if ((old_mmr0 & MMR0_TRAP) == 0)        /* first trap? */
+                    setTRAP (TRAP_MME);                 /* set trap */
                 }
-            return;                                     /* continue op */
+            return;                               /* continue, set A */
             }                                           /* not impl, abort NR */
     case 0: case 3: case 7:                             /* non-resident */
         err = MMR0_NR;                                  /* MMR0 status */
@@ -2749,7 +2784,8 @@ switch ((pa >> 1) & 3) {                                /* decode pa<2:1> */
         break;
 
     case 2:                                             /* MMR1 */
-        *data = MMR1;
+        MMR1 = clean_MMR1 (MMR1);                       /* clean up MMR1 */
+        *data = MMR1;                                   /* return data */
         break;
 
     case 3:                                             /* MMR2 */
@@ -2793,6 +2829,29 @@ MMR3 = data & cpu_tab[cpu_model].mm3;
 cpu_bme = (MMR3 & MMR3_BME) && (cpu_opt & OPT_UBM);
 dsenable = calc_ds (cm);
 return SCPE_OK;
+}
+
+/* Clean up MMR1 for presentation
+
+   !HAS_SID         MMR1 is 0
+   HAS_SID && J11   MMR1 values corresponding to # and @# are cleared
+   HAS_SID && !J11  MMR1 is unchanged
+
+   Note that # and @# always generate reg = 7 and change = 2;
+   no other specifier combination can do that.
+*/
+
+int32 clean_MMR1 (int32 mmr1)
+{
+if (!CPUT (HAS_SID))                                    /* not full mmgt? */
+    return 0;                                           /* always 0 */
+if (CPUT (CPUT_J)) {                                    /* J11? */
+    if ((mmr1 >> 8) == 027)                             /* high byte # or @#? */
+        mmr1 = mmr1 & 0377;                             /* erase high byte */
+    if ((mmr1 & 0377) == 027)                           /* low byte # or @#? */
+        mmr1 = mmr1 >> 8;                               /* erase low byte */
+    }
+return mmr1;
 }
 
 /* PARs and PDRs.  These are grouped in I/O space as follows:

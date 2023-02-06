@@ -1,6 +1,6 @@
 /* pdp11_defs.h: PDP-11 simulator definitions
 
-   Copyright (c) 1993-2017, Robert M Supnik
+   Copyright (c) 1993-2022, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -26,6 +26,8 @@
    The author gratefully acknowledges the help of Max Burnet, Megan Gentry,
    and John Wilson in resolving questions about the PDP-11
 
+   23-Oct-22    RMS     Moved NXM abort priority above MME trap priority
+   25-Jul-22    RMS     Removed OPT_RH11 (Mark Pizzolato)
    10-Feb-17    RMS     Fixed RJS11 register block length (Mark Hill)
    19-Jan-17    RMS     Moved CR11 to BR6, leaving CD11 at BR4 (Mark Pizzolato)
    10-Mar-16    RMS     Added UC15 support
@@ -173,7 +175,7 @@
 #define OPT_FPP         (1u << 3)                       /* FPP */
 #define OPT_CIS         (1u << 4)                       /* CIS */
 #define OPT_MMU         (1u << 5)                       /* MMU */
-#define OPT_RH11        (1u << 6)                       /* RH11 */
+#define OPT_RSRV        (1u << 6)                       /* unused */
 #define OPT_PAR         (1u << 7)                       /* parity */
 #define OPT_UBM         (1u << 8)                       /* UBM */
 #define OPT_BVT         (1u << 9)                       /* BEVENT */
@@ -409,14 +411,17 @@ typedef struct {
 #define CSR_BUSY        (1u << CSR_V_BUSY)
 #define CSR_ERR         (1u << CSR_V_ERR)
 
-/* Trap masks, descending priority order, following J-11
-   An interrupt summary bit is kept with traps, to minimize overhead
+/* Trap masks, descending priority order. Rules:
+
+   - Aborts are mutually exclusive, no more than one per instrution.
+   - Aborts must be higher priority than traps. Because MME can be
+     either an abort or a trap, it is lower priority than NXM.
 */
 
 #define TRAP_V_RED      0                               /* red stk abort  4 */
 #define TRAP_V_ODD      1                               /* odd address    4 */
-#define TRAP_V_MME      2                               /* mem mgt      250 */
-#define TRAP_V_NXM      3                               /* nx memory      4 */
+#define TRAP_V_NXM      2                               /* nx memory      4 */
+#define TRAP_V_MME      3                               /* mem mgt      250 */
 #define TRAP_V_PAR      4                               /* parity err   114 */
 #define TRAP_V_PRV      5                               /* priv inst      4 */
 #define TRAP_V_ILL      6                               /* illegal inst  10 */

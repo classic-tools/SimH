@@ -25,6 +25,7 @@
 
    rl           RL11(RLV12)/RL01/RL02 cartridge disk
 
+   28-Nov-22    RMS     Fixed word count adjustment on NXM
    23-Oct-13    RMS     Revised for new boot setup routine
    24-Mar-11    JAD     Various changes to support diagnostics, including:
                         - distinguish between RLV11 & 12
@@ -866,7 +867,7 @@ if (DEBUG_PRS (rl_dev))
             rlxb[i] = 0;
         if ((t = Map_WriteW (ma, wc << 1, rlxb))) {     /* store buffer */
             rlcs = rlcs | RLCS_ERR | RLCS_NXM;          /* nxm */
-            wc = wc - t;                                /* adjust wc */
+            wc = wc - (t >> 1);                         /* adjust wc */
             }
         }                                               /* end read */
 
@@ -874,7 +875,7 @@ else
 if ((uptr->FNC == RLCS_WRITE) && (err == 0)) {          /* write? */
     if ((t = Map_ReadW (ma, wc << 1, rlxb))) {          /* fetch buffer */
         rlcs = rlcs | RLCS_ERR | RLCS_NXM;              /* nxm */
-        wc = wc - t;                                    /* adj xfer lnt */
+        wc = wc - (t >> 1);                             /* adj xfer lnt */
         }
     if (wc) {                                           /* any xfer? */
         awc = (wc + (RL_NUMWD - 1)) & ~(RL_NUMWD - 1);  /* clr to */

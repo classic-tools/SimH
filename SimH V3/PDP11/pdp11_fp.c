@@ -23,6 +23,8 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   10-Dec-22    RMS     Fixed bug in FUIV operation (James Fehlinger)
+   21-Aug-22    RMS     Restored MMR1 operation for 11/44, 11/45-70 (Walter Mueller)
    28-May-18    RMS     Fixed FPCHG macro to avoid undefined operation (Mark Pizzolato)
    24-Mar-15    RMS     MMR1 does not track register changes (Johnny Billquist)
    20-Apr-13    RMS     MMR1 does not track PC changes (Johnny Billquist)
@@ -87,12 +89,17 @@
                         accessed;  if the operand is 32b or 64b, these
                         are the high order 16b of the operand.
 
-   The FP11 cannot update MMR1 on specifier changes, because the
-   quantity field is too narrow for +8 or -8. Instead, the simulator
-   records changes to be made and only commits them at instruction
-   completion. Instructions that can overwrite a general register
-   (STFPS, STST, STEXP, STCFi in mode 0) need not check for conflicts;
-   in mode 0, no general register changes occur in the specifier flow.
+   The J11 cannot update MMR1 on specifier changes, because the
+   quantity field is too narrow for +8 or -8. However, the 11/44 and
+   11/70 can. So the simulator treats the two cases differently.
+   On the J11, the simulator records changes to be made and only
+   commits them at instruction. On all other systems, changes occur
+   as they happen and are recorded in MMR1. However, all systems
+   update the general registers on floating point exceptions. Thus,
+   when an exception occurs, the simulator in most cases cannot 
+   abort but must let the instruction "run to completion." For
+   undefined variable and divide by zero, this means skipping
+   the actual processing logic.
 */
 
 #include "pdp11_defs.h"
@@ -248,9 +255,10 @@ static const uint32 and_mask[33] = { 0,
 int32 backup_PC;
 int32 fp_change;
 
-int32 fpnotrap (int32 code);
+t_bool fpnotrap (int32 code);
 int32 GeteaFW (int32 spec);
 int32 GeteaFP (int32 spec, int32 len);
+void fp_reg_change (int32 len, int32 reg);
 uint32 ReadI (int32 addr, int32 spec, int32 len);
 t_bool ReadFP (fpac_t *fac, int32 addr, int32 spec, int32 len);
 void WriteI (int32 data, int32 addr, int32 spec, int32 len);
@@ -533,7 +541,7 @@ switch ((IR >> 8) & 017) {                              /* decode IR<11:8> */
 
     case 003:                                           /* MODf */
         if (ReadFP (&fsrc, GeteaFP (dstspec, lenf), dstspec, lenf)) {
-        F_LOAD (qdouble, FR[ac], fac);
+            F_LOAD (qdouble, FR[ac], fac);
             newV = modfp11 (&fac, &fsrc, &modfrac);
             F_STORE (qdouble, fac, FR[ac | 1]);
             F_STORE (qdouble, modfrac, FR[ac]);
@@ -603,33 +611,25 @@ switch (spec >> 3) {                                    /* decode spec<5:3> */
 
     case 2:                                             /* (R)+ */
         adr = R[reg];                                   /* post increment */
-        if (reg == 7)                                   /* commit PC chg now */
-            R[reg] = (R[reg] + 2) & 0177777;
-        else fp_change = FPCHG (2, reg);                /* others, update later */
+        fp_reg_change (2, reg);                         /* update */
         return (adr | ds);
 
     case 3:                                             /* @(R)+ */
         adr = R[reg];                                   /* post increment */
-        if (reg == 7)                                   /* commit PC chg now */
-            R[reg] = (R[reg] + 2) & 0177777;
-        else fp_change = FPCHG (2, reg);                /* others, update later */
+        fp_reg_change (2, reg);                         /* update */
         adr = ReadW (adr | ds);
         return (adr | dsenable);
 
     case 4:                                             /* -(R) */
         adr = (R[reg] - 2) & 0177777;                   /* predecrement */
-        if (reg == 7)                                   /* commit PC chg now */
-            R[reg] = adr;
-        else fp_change = FPCHG (-2, reg);               /* others, update later */
+        fp_reg_change (-2, reg);                        /* update */
         if ((reg == 6) && (cm == MD_KER) && (adr < (STKLIM + STKL_Y)))
             set_stack_trap (adr);
         return (adr | ds);
 
     case 5:                                             /* @-(R) */
         adr = (R[reg] - 2) & 0177777;                   /* predecrement */
-        if (reg == 7)                                   /* commit PC chg now */
-            R[reg] = adr;
-        else fp_change = FPCHG (-2, reg);               /* others, update later */
+        fp_reg_change (-2, reg);                        /* update */
         if ((reg == 6) && (cm == MD_KER) && (adr < (STKLIM + STKL_Y)))
             set_stack_trap (adr);
         adr = ReadW (adr | ds);
@@ -684,33 +684,27 @@ switch (spec >> 3) {                                    /* case on spec */
 
     case 2:                                             /* (R)+ */
         adr = R[reg];                                   /* post increment */
-        if (reg == 7)                                   /* commit PC chg now */
-            R[reg] = (R[reg] + 2) & 0177777;
-        else fp_change = FPCHG (len, reg);              /* others, update later */
+        if (reg == 7)                                   /* # is always length 2 */
+           len = 2;
+        fp_reg_change (len, reg);                       /* update */
         return (adr | ds);
 
     case 3:                                             /* @(R)+ */
         adr = R[reg];                                   /* post increment */
-        if (reg == 7)                                   /* commit PC chg now */
-            R[reg] = (R[reg] + 2) & 0177777;
-        else fp_change = FPCHG (2, reg);                /* others, update later */
+        fp_reg_change (2, reg);                         /* update */
         adr = ReadW (adr | ds);
         return (adr | dsenable);
 
     case 4:                                             /* -(R) */
         adr = (R[reg] - len) & 0177777;                 /* predecrement */
-        if (reg == 7)                                   /* commit PC chg now */
-            R[reg] = adr;
-        else fp_change = FPCHG (-len, reg);             /* others, udpate later */
+        fp_reg_change (-len, reg);                      /* update */
         if ((reg == 6) && (cm == MD_KER) && (adr < (STKLIM + STKL_Y)))
             set_stack_trap (adr);
         return (adr | ds);
 
     case 5:                                             /* @-(R) */
         adr = (R[reg] - 2) & 0177777;                   /* predecrement */
-        if (reg == 7)                                   /* commit PC chg now */
-            R[reg] = adr;
-        else fp_change = FPCHG (-2, reg);               /* others, update later */
+        fp_reg_change (-2, reg);                        /* update */
         if ((reg == 6) && (cm == MD_KER) && ((adr - 2) < (STKLIM + STKL_Y)))
             set_stack_trap (adr);
         adr = ReadW (adr | ds);
@@ -729,6 +723,35 @@ switch (spec >> 3) {                                    /* case on spec */
         }                                               /* end switch */
 
 return 0;
+}
+
+/* Specifier register change
+
+   On systems with full memory management, the 11/44, 11/45, and 11/70
+   operate differently than J11. The former do normal register modification
+   and track changes in MMR1; on an abort, the register modifications
+   are visible. The J11 does not perform normal register modification
+   and tracking. Instead, it tracks changes internally and only updates
+   the general registers upon successful completion of the instruction.
+   On an abort, the general registers are unchanged.
+
+   This routine performs the appropriate bookkeeping for the different 
+   models.
+*/
+
+void fp_reg_change (int32 len, int32 reg)
+{
+if (CPUT (CPUT_J)) {                                /* J11? */
+    if (reg == 7)
+        R[reg] = (R[reg] + len) & 0177777;          /* commit PC changes now */
+    else fp_change = FPCHG (len, reg);              /* track other changes */
+    }
+else {                                              /* all others */
+    R[reg] = (R[reg] + len) & 0177777;              /* commit reg changes */
+    if (update_MM)                                  /* if not frozen */
+       MMR1 = ((len & 037) << 3) | reg;             /* update MMR1 */
+    }
+return;
 }
 
 /* Read integer operand
@@ -782,10 +805,11 @@ else {
         (ReadW (exta | ((VA + 6) & 0177777)) << FP_V_F3);
     else fptr->l = 0;
     }
-if ((GET_SIGN (fptr->h) != 0) &&
+if ((GET_SIGN (fptr->h) != 0) &&                    /* undef variable? */
     (GET_EXP (fptr->h) == 0) &&
-    (fpnotrap (FEC_UNDFV) == 0))
-    return FALSE;
+    !fpnotrap (FEC_UNDFV)) {                        /* trap enabled? */
+        return FALSE;                               /* NOP instruction */
+    }
 return TRUE;
 }
 
@@ -1332,7 +1356,7 @@ return 0;
         int     =       FALSE if interrupt enabled, TRUE if disabled
 */
 
-int32 fpnotrap (int32 code)
+t_bool fpnotrap (int32 code)
 {
 static const int32 test_code[] = { 0, 0, 0, FPS_IC, FPS_IV, FPS_IU, FPS_IUV };
 
