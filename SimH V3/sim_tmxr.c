@@ -1,6 +1,6 @@
 /* sim_tmxr.c: Telnet terminal multiplexor library
 
-   Copyright (c) 2001-2021, Robert M Supnik
+   Copyright (c) 2001-2023, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -26,6 +26,7 @@
    Based on the original DZ11 simulator by Thord Nilson, as updated by
    Arthur Krewat.
 
+   07-Feb-23    RMS     Silenced Mac compiler warnings (Ken Rector)
    31-Jan-21    JDB     Added a cast in "tmxr_set_lnorder" from t_addr to uint32
    26-Oct-20    JDB     Line order now supports partial connection lists
    23-Oct-20    JDB     Added tmxr_table and tmxr_post_logs
@@ -967,12 +968,13 @@ for (index = 0; index < TABLE_COUNT; index++)           /* look through the desc
         line_count = mptr->lines;                       /*       and the number of lines */
 
         for (line = 0; line < line_count; line++, lptr++)   /* for all lines in the array */
-            if (lptr->txlog != NULL)                        /*   if the current line's log is active */
+            if (lptr->txlog != NULL) {                      /*   if the current line's log is active */
                 if (close_logs)                             /*     then if closing is requested */
                     tmxr_set_nolog (NULL, line, NULL,       /*        then close the log */
                                     (void *) mptr);
                 else                                        /* otherwise */
                     fflush (lptr->txlog);                   /*   flush the log and leave it open */
+                }
         }
 
 return;
@@ -1110,7 +1112,7 @@ idx = 0;                                                /* initialize the index 
 
 while (*cptr != '\0') {                                     /* while characters remain in the command string */
     if (strncmp (cptr, "ALL;", 4) == 0) {                   /*   if the parameter is "ALL" */
-        if (val != 0 || idx > 0 && idx <= max)              /*     then if some lines are restrictied or unspecified */
+        if (val != 0 || (idx > 0 && idx <= max))            /*     then if some lines are restrictied or unspecified */
             for (line = (uint32) min; line <= max; line++)  /*       then fill them in sequentially */
                 if (set [line] == FALSE)                    /*         setting each unspecified line */
                     list [idx++] = line;                    /*           into the line order */

@@ -1,6 +1,6 @@
 /* sigma_dp.c: moving head disk pack controller
 
-   Copyright (c) 2008-2022, Robert M Supnik
+   Copyright (c) 2008-2023, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,9 @@
 
    dp           moving head disk pack controller
 
+   03-Jun-23    RMS     Fixed SENSE length error detection (Ken Rector)
+   06-Mar-23    RMS     SIO can start despite outstanding seek interrupt (Ken Rector)
+   15-Dec-22    RMS     Moved SIO interrupt test to devices
    09-Dec-22    RMS     Invalid address must set a TDV-visible error flag (Ken Rector)
    23-Jul-22    RMS     SEEK(I), RECAL(I) should be fast operations (Ken Rector)
    02-Jul-22    RMS     Fixed bugs in multi-unit operation
@@ -47,6 +50,16 @@
    one for timing asynchronous seek completions. The controller will not
    start a new operation is it is busy (any of the main units active) or if
    the target device is busy (its seek unit is active).
+
+   The DP's seek interrupt has a unique feature: it comes and goes, lasting only
+   a sector's time; and it gets "knocked down" by any SIO to a different unit.
+   Therefore, the SIO interrupt check is complicated.
+
+   1. If there's a controller interrupt, the SIO fails.
+   2. If there's a seek interrupt on the selected unit, the SIO fails.
+   3. All other seek interrupts are "knocked down" and rescheduled for
+      some time "in the future."
+   4. The SIO completes normally.
 */
 
 #include "sigma_io_defs.h"
@@ -590,6 +603,18 @@ switch (op) {                                           /* case on op */
 
     case OP_SIO:                                        /* start I/O */
         *dvst = dp_tio_status (cidx, un);               /* get status */
+        if ((chan_chk_chi (dva) >= 0) ||                /* channel int pending? */
+            (dp_ctx[cidx].dp_ski & (1u << un))) {       /* seek int on sel unit? */
+            *dvst |= (CC2 << DVT_V_CC);                 /* SIO fails */
+            break;
+            }
+        for (i = 0; i < DP_NUMDR; i++) {                /* knock down other seek ints */
+            if (dp_ctx[cidx].dp_ski & (1u << i)) {      /* seek int on unit? */
+                dp_clr_ski (cidx, i);                   /* knock it down */
+                sim_activate (&dp_unit[i + DP_SEEK], chan_ctl_time * 10);
+                dp_unit[i + DP_SEEK].UCMD = DSC_SEEKW;  /* resched interrupt */
+                }
+            }
         if ((*dvst & (DVS_CST|DVS_DST)) == 0) {         /* ctrl + dev idle? */
             uptr->UCMD = DPS_INIT;                      /* start dev thread */
             sim_activate (uptr, chan_ctl_time);
@@ -759,7 +784,7 @@ switch (uptr->UCMD) {
             if (CHS_IFERR (st))                         /* channel error? */
                 return dp_chan_err (dva, st);
             }
-        if ((i != DPS_NBY) || (st != CHS_ZBC)) {        /* length error? */
+        if (!DP_Q10B (ctx->dp_ctype) && (st != CHS_ZBC)) { /* 16B only: length error? */
             ctx->dp_flags |= DPF_PGE;                   /* set prog err */
             if (chan_set_chf (dva, CHF_LNTE))           /* do we care? */
                 return SCPE_OK;

@@ -1,6 +1,6 @@
 /* sim_console.c: simulator console I/O library
 
-   Copyright (c) 1993-2022, Robert M Supnik
+   Copyright (c) 1993-2023, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -23,6 +23,7 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   07-Feb-22    RMS     Silenced Mac compiler warnings (Ken Rector)
    30-Nov-22    RMS     Made definitions of sim_os_fd_isatty consistent (Dave Bryan)
    27-Sep-22    RMS     Removed MacOS "Classic" and OS/2 support
                         Added sim_ttisatty
@@ -476,10 +477,10 @@ int32 c;
 c = sim_os_poll_kbd ();                                 /* get character */
 if ((c == SCPE_STOP) || (sim_con_tmxr.master == 0))     /* ^E or not Telnet? */
     return c;                                           /* in-window */
-if (sim_con_ldsc.conn == 0)                              /* no Telnet conn? */
+if (sim_con_ldsc.conn == 0)                             /* no Telnet conn? */
     return SCPE_LOST;
 tmxr_poll_rx (&sim_con_tmxr);                           /* poll for input */
-if (c = tmxr_getc_ln (&sim_con_ldsc))                   /* any char? */ 
+if ((c = tmxr_getc_ln (&sim_con_ldsc)) != 0)            /* any char? */ 
     return (c & (SCPE_BREAK | 0377)) | SCPE_KFLAG;
 return SCPE_OK;
 }

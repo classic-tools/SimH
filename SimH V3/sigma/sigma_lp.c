@@ -1,6 +1,6 @@
 /* sigma_lp.c: Sigma 7440/7450 line printer
 
-   Copyright (c) 2007-2021, Robert M. Supnik
+   Copyright (c) 2007-2022, Robert M. Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,7 @@
 
    lp           7440/7445 or 7450 line printer
 
+   15-Dec-2022  RMS     Moved SIO interrupt test to devices
    10-Jun-2021  RMS     Removed use of ftell for pipe compatibility
    09-Mar-2017  RMS     Fixed unclosed file returns in CCT load (COVERITY)
 */
@@ -180,7 +181,9 @@ switch (op) {                                           /* case on op */
 
     case OP_SIO:                                        /* start I/O */
         *dvst = lp_tio_status ();                       /* get status */
-        if ((*dvst & DVS_DST) == 0) {                   /* idle? */
+        if (chan_chk_dvi (dva))                         /* int pending? */
+            *dvst |= (CC2 << DVT_V_CC);                 /* SIO fails */
+        else if ((*dvst & DVS_DST) == 0) {              /* idle? */
             lp_cmd = LPS_INIT;                          /* start dev thread */
             sim_activate (&lp_unit, chan_ctl_time);
             }

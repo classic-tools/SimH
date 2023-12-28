@@ -1,6 +1,6 @@
 /* scp.c: simulator control program
 
-   Copyright (c) 1993-2022, Robert M Supnik
+   Copyright (c) 1993-2023, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -23,6 +23,7 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   07-Feb-23    RMS     Silenced Mac compiler warnings (Ken Rector)
    01-Oct-22    RMS     Replaced readline with editline due to licensing issues (Paul Koning)
    15-Aug-22    RMS     Fixed inconsistent SIM_HAVE_DLOPEN naming (Walter Mueller)
    06-Mar-22    RMS     Removed UNIT_RAW support
@@ -792,14 +793,14 @@ else if (*argv[0]) {                                    /* sim name arg? */
     char nbuf[PATH_MAX + 7], *np;                       /* "path.ini" */
     nbuf[0] = '"';                                      /* starting " */
     strncpy (nbuf + 1, argv[0], PATH_MAX + 1);          /* copy sim name */
-    if (np = match_ext (nbuf, "EXE"))                   /* remove .exe */
+    if ((np = match_ext (nbuf, "EXE")))                 /* remove .exe */
         *np = 0;
     strcat (nbuf, ".ini\"");                            /* add .ini" */
     stat = find_cmd ("DO")->action (-1, nbuf);          /* proc cmd file */
     }
 
 while (stat != SCPE_EXIT) {                             /* in case exit */
-    if (cptr = sim_brk_getact (cbuf, CBUFSIZE))         /* pending action? */
+    if ((cptr = sim_brk_getact (cbuf, CBUFSIZE)))       /* pending action? */
         printf ("sim> %s\n", cptr);                     /* echo */
     else if (sim_vm_read != NULL) {                     /* sim routine? */
         printf ("sim> ");                               /* prompt */
@@ -820,7 +821,7 @@ while (stat != SCPE_EXIT) {                             /* in case exit */
         fprintf (sim_log, "sim> %s\n", cptr);
     cptr = get_glyph (cptr, gbuf, 0);                   /* get command glyph */
     sim_switches = 0;                                   /* init switches */
-    if (cmdp = find_cmd (gbuf))                         /* lookup command */
+    if ((cmdp = find_cmd (gbuf)))                       /* lookup command */
         stat = cmdp->action (cmdp->arg, cptr);          /* if found, exec */
     else stat = SCPE_UNK;
     if (stat >= SCPE_BASE)                              /* error? */
@@ -885,7 +886,7 @@ if (*cptr) {
     cptr = get_glyph (cptr, gbuf, 0);
     if (*cptr)
         return SCPE_2MARG;
-    if (cmdp = find_cmd (gbuf))
+    if ((cmdp = find_cmd (gbuf)))
         sim_printf ("%s", cmdp->help);
     else return SCPE_ARG;
     }
@@ -983,7 +984,7 @@ echo = sim_switches & SWMASK ('V');                     /* -v means echo */
 errabort = sim_switches & SWMASK ('E');                 /* -e means abort on error */
 
 if (flag >= 0)                                          /* if this is not the initialization file */
-    echo = echo | flag & ~0377;                         /*   then propagate the echo flag to the current level */
+    echo = echo | (flag & ~0377);                       /*   then propagate the echo flag to the current level */
 
 c = fcptr;
 for (nargs = 0; nargs < 10; ) {                         /* extract arguments */
@@ -1032,7 +1033,7 @@ do {
     cptr = get_glyph (cptr, gbuf, 0);                   /* get command glyph */
     sim_switches = 0;                                   /* init switches */
     isdo = FALSE;
-    if (cmdp = find_cmd (gbuf)) {                       /* lookup command */
+    if ((cmdp = find_cmd (gbuf))) {                     /* lookup command */
         isdo = (strcmp (cmdp->name, "DO") == 0);
         if (isdo) {                                     /* DO command? */
             if (flag >= DO_NEST_LVL)                    /* nest too deep? */
@@ -1219,18 +1220,18 @@ if (*cptr == 0)                                         /* must be more */
     return SCPE_2FARG;
 cptr = get_glyph (cptr, gbuf, 0);                       /* get glob/dev/unit */
 
-if (dptr = find_dev (gbuf)) {                           /* device match? */
+if ((dptr = find_dev (gbuf))) {                         /* device match? */
     uptr = dptr->units;                                 /* first unit */
     ctbr = set_dev_tab;                                 /* global table */
     lvl = MTAB_VDV;                                     /* device match */
     }
-else if (dptr = find_unit (gbuf, &uptr)) {              /* unit match? */
+else if ((dptr = find_unit (gbuf, &uptr))) {            /* unit match? */
     if (uptr == NULL)                                   /* invalid unit */
         return SCPE_NXUN;
     ctbr = set_unit_tab;                                /* global table */
     lvl = MTAB_VUN;                                     /* unit match */
     }
-else if (gcmdp = find_ctab (set_glob_tab, gbuf))        /* global? */
+else if ((gcmdp = find_ctab (set_glob_tab, gbuf)))      /* global? */
     return gcmdp->action (gcmdp->arg, cptr);            /* do the rest */
 else return SCPE_NXDEV;                                 /* no match */
 if (*cptr == 0)                                         /* must be more */
@@ -1238,7 +1239,7 @@ if (*cptr == 0)                                         /* must be more */
 
 while (*cptr != 0) {                                    /* do all mods */
     cptr = get_glyph (svptr = cptr, gbuf, ',');         /* get modifier */
-    if (cvptr = strchr (gbuf, '='))                     /* = value? */
+    if ((cvptr = strchr (gbuf, '=')))                   /* = value? */
         *cvptr++ = 0;
     for (mptr = dptr->modifiers; mptr && (mptr->mask != 0); mptr++) {
         if ((mptr->mstring) &&                          /* match string */
@@ -1251,7 +1252,7 @@ while (*cptr != 0) {                                    /* do all mods */
                 if (mptr->valid) {                      /* validation rtn? */
                     if (cvptr && (mptr->mask & MTAB_NC)) {
                         get_glyph_nc (svptr, gbuf, ',');
-                        if (cvptr = strchr (gbuf, '='))
+                        if ((cvptr = strchr (gbuf, '=')))
                             *cvptr++ = 0;
                         }
                     r = mptr->valid (uptr, mptr->match, cvptr, mptr->desc);
@@ -1279,7 +1280,7 @@ while (*cptr != 0) {                                    /* do all mods */
             }                                           /* end if match */
         }                                               /* end for */
     if (!mptr || (mptr->mask == 0)) {                   /* no match? */
-        if (glbr = find_c1tab (ctbr, gbuf)) {           /* global match? */
+        if ((glbr = find_c1tab (ctbr, gbuf))) {         /* global match? */
             r = glbr->action (dptr, uptr, glbr->arg, cvptr);    /* do global */
             if (r != SCPE_OK)
                 return r;
@@ -1468,15 +1469,15 @@ GET_SWITCHES (cptr);                                    /* get switches */
 if (*cptr == 0)                                         /* must be more */
     return SCPE_2FARG;
 cptr = get_glyph (cptr, gbuf, 0);                       /* get next glyph */
-if (shptr = find_shtab (show_glob_tab, gbuf))           /* global? */
+if ((shptr = find_shtab (show_glob_tab, gbuf)))         /* global? */
     return shptr->action (ofile, NULL, NULL, shptr->arg, cptr);
 
-if (dptr = find_dev (gbuf)) {                           /* device match? */
+if ((dptr = find_dev (gbuf))) {                         /* device match? */
     uptr = dptr->units;                                 /* first unit */
     shtb = show_dev_tab;                                /* global table */
     lvl = MTAB_VDV;                                     /* device match */
     }
-else if (dptr = find_unit (gbuf, &uptr)) {              /* unit match? */
+else if ((dptr = find_unit (gbuf, &uptr))) {            /* unit match? */
     if (uptr == NULL)                                   /* invalid unit */
         return SCPE_NXUN;
     if (uptr->flags & UNIT_DIS)                         /* disabled? */
@@ -1494,7 +1495,7 @@ if (*cptr == 0) {                                       /* now eol? */
 
 while (*cptr != 0) {                                    /* do all mods */
     cptr = get_glyph (cptr, gbuf, ',');                 /* get modifier */
-    if (cvptr = strchr (gbuf, '='))                     /* = value? */
+    if ((cvptr = strchr (gbuf, '=')))                   /* = value? */
         *cvptr++ = 0;
     for (mptr = dptr->modifiers; mptr && (mptr->mask != 0); mptr++) {
         if (((mptr->mask & MTAB_XTD)?                   /* right level? */
@@ -1508,7 +1509,7 @@ while (*cptr != 0) {                                    /* do all mods */
             }                                           /* end if */
         }                                               /* end for */
     if (!mptr || (mptr->mask == 0)) {                   /* no match? */
-        if (shptr = find_shtab (shtb, gbuf)) {          /* global match? */
+        if ((shptr = find_shtab (shtb, gbuf))) {        /* global match? */
             r = shptr->action (ofile, dptr, uptr, shptr->arg, cptr);
             if (r != SCPE_OK)
                 return r;
@@ -1929,7 +1930,7 @@ uptr = dptr->units;
 if (uptr == NULL)
     return SCPE_IERR;
 max = uptr->capac - 1;
-if (aptr = strchr (cptr, ';')) {                        /* ;action? */
+if ((aptr = strchr (cptr, ';'))) {                      /* ;action? */
     if (flg != SSH_ST)                                  /* only on SET */
         return SCPE_ARG;
     *aptr++ = 0;                                        /* separate strings */
@@ -3423,19 +3424,19 @@ ptr = ((char *) rptr->loc) + (idx * rptr->stride);      /* point at the starting
 
 if (rptr->size == sizeof (uint8))                       /* store the value */
     *((uint8 *) ptr) =                                  /*   using a size */
-      (uint8) (*((uint8 *) ptr) & mask | val);          /*     appropriate to */
+      (uint8) ((*((uint8 *) ptr) & mask) | val);          /*     appropriate to */
                                                         /*       the size of */
 else if (rptr->size == sizeof (uint16))                 /*         the underlying type */
     *((uint16 *) ptr) =
-      (uint16) (*((uint16 *) ptr) & mask | val);
+      (uint16) ((*((uint16 *) ptr) & mask) | val);
 
 else if (rptr->size == sizeof (uint32))
     *((uint32 *) ptr) =
-      (uint32) (*((uint32 *) ptr) & mask | val);
+      (uint32) ((*((uint32 *) ptr) & mask) | val);
 
 else                                                    /* if the element size is non-standard */
     *((t_value *) ptr) =                                /*   then access using the largest size permitted */
-      *((t_value *) ptr) & mask | val;
+      (*((t_value *) ptr) & mask) | val;
 
 return;
 }
@@ -4099,7 +4100,7 @@ DEVICE *dptr;
 sim_ref_type = REF_NONE;                                /* start with no reference type */
 if (uptr == NULL)                                       /* arg error? */
     return NULL;
-if (dptr = find_dev (cptr)) {                           /* exact match? */
+if ((dptr = find_dev (cptr))) {                         /* exact match? */
     sim_ref_type = REF_DEVICE;                          /* indicate a device reference */
     if (qdisable (dptr))                                /* disabled? */
         return NULL;
@@ -4181,7 +4182,7 @@ REG *rptr, *srptr = NULL;
 for (i = 0; (dptr = sim_devices[i]) != 0; i++) {        /* all dev */
     if (dptr->flags & DEV_DIS)                          /* skip disabled */
         continue;
-    if (rptr = find_reg (cptr, optr, dptr)) {           /* found? */
+    if ((rptr = find_reg (cptr, optr, dptr))) {         /* found? */
         if (srptr)                                      /* ambig? err */
             return NULL;
         srptr = rptr;                                   /* save reg */
@@ -4399,15 +4400,15 @@ const char logstr[] = "|&^", cmpstr[] = "=!><";
 logval = cmpval = 0;
 if (*cptr == 0)                                         /* check for clause */
     return NULL;
-for (logop = cmpop = -1; c = *cptr++; ) {               /* loop thru clauses */
-    if (sptr = strchr (logstr, c)) {                    /* check for mask */
+for (logop = cmpop = -1; (c = *cptr++) != 0; ) {        /* loop thru clauses */
+    if ((sptr = strchr (logstr, c))) {                  /* check for mask */
         logop = (int32)(sptr - logstr);
         logval = strtotv (cptr, &tptr, radix);
         if (cptr == tptr)
             return NULL;
         cptr = tptr;
         }
-    else if (sptr = strchr (cmpstr, c)) {               /* check for boolop */
+    else if ((sptr = strchr (cmpstr, c))) {             /* check for boolop */
         cmpop = (int32)(sptr - cmpstr);
         if (*cptr == '=') {
             cmpop = cmpop + strlen (cmpstr);
@@ -5213,12 +5214,12 @@ while (ep != NULL && (*ep == '\'' || *ep == '"')) {     /* if a quoted string is
 
     quote = *ep++;                                      /* save the opening quotation mark */
 
-    while (ep [0] != '\0' && ep [0] != quote)           /* while characters remain within the quotes */
+    while (ep [0] != '\0' && ep [0] != quote) {         /* while characters remain within the quotes */
         if (ep [0] == '\\' && ep [1] == quote)          /*   if an escaped quote sequence follows */
             ep = ep + 2;                                /*     then skip over the pair */
         else                                            /*   otherwise */
             ep = ep + 1;                                /*     skip the non-quote character */
-
+        }
     if (quoted_cmd && *ep == quote) {                   /* if the entire command is quoted */
         sim_brk_act++;                                  /*   then skip the leading quote */
         cmd_len = (size_t) (ep - sim_brk_act);          /*     and set the size to trim the trailing quote */
@@ -5227,12 +5228,12 @@ while (ep != NULL && (*ep == '\'' || *ep == '"')) {     /* if a quoted string is
     ep = strpbrk (++ep, ";\"'");                        /* search for the next semicolon or single or double quote */
     }
 
-if (cmd_len == 0)                                       /* if the command length has not been set */
+if (cmd_len == 0) {                                     /* if the command length has not been set */
     if (ep == NULL)                                     /*   then if no semicolon is present */
         cmd_len = strlen (sim_brk_act);                 /*     then only a single, non-quoted command remains */
     else                                                /*   otherwise */
         cmd_len = (size_t) (ep - sim_brk_act);          /*     the command extends to the semicolon */
-
+    }
 if (cmd_len > (size_t) size - 1)                        /* if the command length won't fit in the buffer */
     cmd_len = (size_t) size - 1;                        /*   then copy only as much as will fit */
 

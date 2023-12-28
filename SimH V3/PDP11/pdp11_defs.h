@@ -1,6 +1,6 @@
 /* pdp11_defs.h: PDP-11 simulator definitions
 
-   Copyright (c) 1993-2022, Robert M Supnik
+   Copyright (c) 1993-2023, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -26,6 +26,7 @@
    The author gratefully acknowledges the help of Max Burnet, Megan Gentry,
    and John Wilson in resolving questions about the PDP-11
 
+   12-May-23    RMS     Added fourth Massbus adapter
    23-Oct-22    RMS     Moved NXM abort priority above MME trap priority
    25-Jul-22    RMS     Removed OPT_RH11 (Mark Pizzolato)
    10-Feb-17    RMS     Fixed RJS11 register block length (Mark Hill)
@@ -585,6 +586,8 @@ typedef struct pdp_dib DIB;
 #define IOLN_TQ         004
 #define IOBA_XU         (IOPAGEBASE + 014510)           /* DEUNA/DELUA */
 #define IOLN_XU         010
+#define IOBA_RPB        (IOPAGEBASE + 016300)           /* RHD: 2nd RP */
+#define IOLN_RPB        040
 #define IOBA_DL         (IOPAGEBASE + 016500)           /* extra KL11/DL11 */
 #define IOLN_DL         (DLX_LINES * 010)
 #define IOBA_RP         (IOPAGEBASE + 016700)           /* RHA: RP/RM */
@@ -683,6 +686,7 @@ typedef struct pdp_dib DIB;
 #define INT_V_RC        17
 #define INT_V_RS        18
 #define INT_V_UCB       19
+#define INT_V_RPB       20
 
 #define INT_V_PIR4      0                               /* BR4 */
 #define INT_V_TTI       1
@@ -730,6 +734,7 @@ typedef struct pdp_dib DIB;
 #define INT_RC          (1u << INT_V_RC)
 #define INT_RS          (1u << INT_V_RS)
 #define INT_UCA         (1u << INT_V_UCA)
+#define INT_RPB         (1u << INT_V_RPB)
 #define INT_PIR4        (1u << INT_V_PIR4)
 #define INT_TTI         (1u << INT_V_TTI)
 #define INT_TTO         (1u << INT_V_TTO)
@@ -780,6 +785,7 @@ typedef struct pdp_dib DIB;
 #define IPL_RC          5
 #define IPL_RS          5
 #define IPL_UCA         5
+#define IPL_RPB         5
 #define IPL_PTR         4
 #define IPL_PTP         4
 #define IPL_TTI         4
@@ -813,6 +819,7 @@ typedef struct pdp_dib DIB;
 #define VEC_PCLK        0104
 #define VEC_XQ          0120
 #define VEC_XU          0120
+#define VEC_RPB         0150
 #define VEC_RQ          0154
 #define VEC_RL          0160
 #define VEC_LPT         0200
@@ -852,10 +859,11 @@ typedef struct pdp_dib DIB;
 
 /* Massbus definitions */
 
-#define MBA_NUM         3                               /* number of MBA's */
+#define MBA_NUM         4                               /* number of MBA's */
 #define MBA_RP          0                               /* MBA for RP */
 #define MBA_TU          1                               /* MBA for TU */
 #define MBA_RS          2                               /* MBA for RS */
+#define MBA_RPB         3                               /* MBA for RPB */
 #define MBA_RMASK       037                             /* max 32 reg */
 #define MBE_NXD         1                               /* nx drive */
 #define MBE_NXR         2                               /* nx reg */

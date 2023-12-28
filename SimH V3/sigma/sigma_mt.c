@@ -1,6 +1,6 @@
 /* sigma_mt.c: Sigma 732X 9-track magnetic tape
 
-   Copyright (c) 2007-2022, Robert M. Supnik
+   Copyright (c) 2007-2023, Robert M. Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -25,6 +25,9 @@
 
    mt           7320 and 7322/7323 magnetic tape
 
+   31-Mar-23    RMS     Mask unit flag before calling status in AIO (Ken Rector)
+   07-Feb-23    RMS     Silenced Mac compiler warnings (Ken Rector)
+   15-Dec-22    RMS     Moved SIO interrupt test to devices
    20-Jul-22    RMS     Space record must set EOF flag on tape mark (Ken Rector)
    03-Jul-22    RMS     Fixed error in handling of channel errors (Ken Rector)
    02-Jul-22    RMS     Fixed bugs in multi-unit operation
@@ -236,7 +239,9 @@ switch (op) {                                           /* case on op */
 
     case OP_SIO:                                        /* start I/O */
         *dvst = mt_tio_status (un);                     /* get status */
-        if ((*dvst & (DVS_CST|DVS_DST)) == 0) {         /* ctrl + dev idle? */
+        if (chan_chk_dvi (dva))                         /* int pending? */
+            *dvst |= (CC2 << DVT_V_CC);                 /* SIO fails */
+        else if ((*dvst & (DVS_CST|DVS_DST)) == 0) {    /* ctrl + dev idle? */
             uptr->UCMD = MCM_INIT;                      /* start dev thread */
             sim_activate (uptr, chan_ctl_time);
             }
@@ -264,7 +269,8 @@ switch (op) {                                           /* case on op */
 
     case OP_AIO:                                        /* acknowledge int */
         un = mt_clr_int (mt_dib.dva);                   /* clr int, get unit and flag */
-        *dvst = (mt_tdv_status (un) & MTAI_MASK) |      /* device status */
+        *dvst =
+            (mt_tdv_status (un & DVA_M_DEVMU) & MTAI_MASK) | /* device status */
             (un & MTAI_INT) |                           /* device int flag */
             ((un & DVA_M_UNIT) << DVT_V_UN);            /* unit number */
         break;
@@ -476,7 +482,7 @@ switch (cmd) {                                          /* case on command */
              sim_activate (uptr, mt_time);              /* continue thread */
              return SCPE_OK;
              }
-        if (r = mt_flush_buf (uptr)) {                  /* flush buffer */
+        if ((r = mt_flush_buf (uptr)) != 0) {           /* flush buffer */
             st = mt_map_err (uptr, r);                  /* map error */
             if (CHS_IFERR (st))                         /* chan or SCP err? */
                 return mt_chan_err (dva, st);           /* uend and stop */

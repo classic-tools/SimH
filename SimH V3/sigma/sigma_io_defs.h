@@ -1,6 +1,6 @@
 /* sigma_io_defs.h: XDS Sigma I/O device simulator definitions
 
-   Copyright (c) 2007-2008, Robert M Supnik
+   Copyright (c) 2007-2022, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -23,6 +23,7 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   15-Dec-22    RMS     Added chan_chk_dvi definition
    21-Jul-22    RMS     Channel UEND flag in wrong bit position (Ken Rector)
 */
 
@@ -252,6 +253,7 @@ void chan_set_chi (uint32 dva, uint32 fl);
 void chan_set_dvi (uint32 dva);
 int32 chan_clr_chi (uint32 dva);
 int32 chan_chk_chi (uint32 dva);
+t_bool chan_chk_dvi (uint32 dva);
 uint32 chan_end (uint32 dva);
 uint32 chan_uen (uint32 dva);
 uint32 chan_RdMemB (uint32 dva, uint32 *dat);

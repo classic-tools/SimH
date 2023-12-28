@@ -25,7 +25,8 @@
 
    coc          7611 communications multiplexor
 
-   24-Aug-22    RMS     Transmit long space is 0x6, not 0xD (Ken Rector)
+   15-Dec-22  RMS       Moved SIO int pending test to devices
+   24-Aug-22  RMS       Transmit long space is 0x6, not 0xD (Ken Rector)
                         Added LNORDER modifier
 */
 
@@ -277,7 +278,9 @@ switch (op) {                                           /* case on op */
 
     case OP_SIO:                                        /* start I/O */
         *dvst = mux_tio_status ();                      /* get status */
-        if ((*dvst & DVS_CST) == 0) {                   /* ctrl idle? */
+        if (chan_chk_dvi (dva))                         /* int pending? */
+            *dvst |= (CC2 << DVT_V_CC);                 /* SIO fails */
+        else if ((*dvst & DVS_CST) == 0) {              /* ctrl idle? */
             muxc_cmd = MUXC_INIT;                       /* start dev thread */
             sim_activate (&mux_unit[MUXC], chan_ctl_time);
             }

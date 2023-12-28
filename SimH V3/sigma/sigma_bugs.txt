@@ -128,6 +128,13 @@
 122. COC: Received break generates a data-in channel transaction with a flag bit set
      in the line number.
 123. DP: dp_inv_adr error must set a TDV visible flag (i.e., PGE) before UEND.
+124. IO, all devices: moved SIO reject-on-interrupt test to devices.
+125. DP: SIO will knock down pending device interrupts and allow operation to proceed.
+126. MT: AIO must mask unit number before calling TDV status.
+127. IO: location 20/21 set incorrectly in the even, non-zero register case.
+128. CPU: WAIT must be implemented for correct operation of CP-V.
+129. DP: On 10 byte models, SENSE length errors can't happen. On 16 byte models,
+     SENSE length errors only occur if length == 0 || length > 16.
 
 Diagnostic Notes
 ----------------

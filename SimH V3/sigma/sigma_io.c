@@ -1,6 +1,6 @@
 /* sigma_io.c: XDS Sigma IO simulator
 
-   Copyright (c) 2007-2022, Robert M Supnik
+   Copyright (c) 2007-2023, Robert M Supnik
 
    Permission is hereby granted, free of charge, to any person obtaining a
    copy of this software and associated documentation files (the "Software"),
@@ -23,6 +23,8 @@
    used in advertising or otherwise to promote the sale, use or other dealings
    in this Software without prior written authorization from Robert M Supnik.
 
+   04-May-2023  RMS     Fixed location 21 usage in even register case (Ken Rector)
+   15-Dec-2022  RMS     Moved SIO interrupt test to devices
    23-Jul-2022  RMS     Made chan_ctl_time accessible as a register
    21-Jul-2022  RMS     Added numeric channel numbers to SET/SHOW
    07-Jul-2022  RMS     Fixed dangling else in read/write direct (Ken Rector)
@@ -353,11 +355,6 @@ if (!io_init_inst (rn, ad, ch, dev, R[0])) {            /* valid inst? */
     CC |= CC1|CC2;
     return 0;
     }
-if (chan[ch].chf[dev] & CHF_INP) {                      /* int pending? */
-    chan[ch].disp[dev] (OP_TIO, ad, &dvst);             /* get status */
-    CC |= (CC2 | io_set_status (rn, ch, dev, dvst, 0)); /* set status */
-    return 0;
-    }
 st = chan[ch].disp[dev] (OP_SIO, ad, &dvst);            /* start I/O */
 CC |= io_set_status (rn, ch, dev, dvst, 0);             /* set status */
 if (CC & cpu_tab[cpu_model].iocc)                       /* error? */
@@ -498,17 +495,17 @@ return (chan[ch].disp[dev] != NULL)? TRUE: FALSE;
 uint32 io_set_status (uint32 rn, uint32 ch, uint32 dev, uint32 dvst, t_bool tdv)
 {
 uint32 mrgst;
-uint32 odd = rn & 1;
 
 if ((rn != 0) && !(dvst & DVT_NOST)) {                  /* return status? */
     if (tdv)
         mrgst = (DVT_GETDVS (dvst) << 8) | (chan[ch].chf[dev] & 0xFF);
     else mrgst = ((DVT_GETDVS(dvst) << 8) & ~CHF_ALL) | (chan[ch].chf[dev] & CHF_ALL);
-    R[rn] = chan[ch].clc[dev];                          /* even reg */
-    if (!odd)                                           /* even pair? */
-        WritePW (0x20, R[rn]);                          /* write to 20 */
+    if ((rn & 1) == 0) {                                /* even reg? */
+        R[rn] = chan[ch].clc[dev];                      /* current addr to R */
+        WritePW (0x20, R[rn]);                          /* and loc 20 */
+        }
     R[rn|1] = (mrgst << 16) | chan[ch].bc[dev];         /* odd reg */
-    WritePW (0x20 + odd, R[rn|1]);                      /* write to 20/21 */
+    WritePW (0x21, R[rn|1]);                            /* write loc 21 */
     }
 return DVT_GETCC (dvst);
 }
@@ -806,7 +803,7 @@ if (chan[ch].chi[dev] & CHI_CTL)                        /* ctl int pending? */
 else return -1;
 }
 
-/* Set device interrupt */
+/* Set, check device interrupt */
 
 void chan_set_dvi (uint32 dva)
 {
@@ -815,6 +812,16 @@ uint32 dev = DVA_GETDEV (dva);
 
 chan[ch].chf[dev] |= CHF_INP;                           /* int pending */
 return;
+}
+
+t_bool chan_chk_dvi (uint32 dva)
+{
+uint32 ch = DVA_GETCHAN (dva);                          /* get ch, dev */
+uint32 dev = DVA_GETDEV (dva);
+
+if ((chan[ch].chf[dev] & CHF_INP) != 0)
+    return TRUE;
+return FALSE;
 }
 
 /* Called by device reset to reset channel registers */
